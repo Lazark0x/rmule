@@ -16,10 +16,22 @@ use super::entry::{
 use super::query::{UnknownSearchOperator, matches_tree, validate_operators};
 use super::result::KeywordResultRow;
 use super::{
-    KEYWORD_DUPLICATE_GUARD_THRESHOLD, KEYWORD_GLOBAL_CAP, KEYWORD_PER_KEYWORD_CAP,
-    KEYWORD_PUBLISH_BATCH_CAP, KEYWORD_RESULT_BUDGET, KEYWORD_SWEEP_INTERVAL,
-    TRUST_WORTHY_THRESHOLD,
+    KEYWORD_BYTE_BUDGET, KEYWORD_DUPLICATE_GUARD_THRESHOLD, KEYWORD_GLOBAL_CAP, KEYWORD_NAME_CAP,
+    KEYWORD_PER_KEYWORD_CAP, KEYWORD_PUBLISH_BATCH_CAP, KEYWORD_RESULT_BUDGET,
+    KEYWORD_SWEEP_INTERVAL, KEYWORD_VERBATIM_TAG_CAP, TRUST_WORTHY_THRESHOLD,
 };
+
+/// `name` within [`KEYWORD_NAME_CAP`], cut on a character.
+fn cut_name(mut name: String) -> String {
+    if name.len() > KEYWORD_NAME_CAP {
+        let mut end = KEYWORD_NAME_CAP;
+        while !name.is_char_boundary(end) {
+            end -= 1;
+        }
+        name.truncate(end);
+    }
+    name
+}
 
 /// The bounded keyword index a **Kad Storer** serves (see the module docs for
 /// the full provenance and simplifications).
@@ -31,6 +43,8 @@ pub struct KeywordStore {
     /// plain `Vec` searched by `find`/`position`).
     keywords: HashMap<KadId, Vec<(KadId, KeywordEntry)>>,
     total_rows: usize,
+    /// What [`KEYWORD_BYTE_BUDGET`] is measured against.
+    held_bytes: usize,
     /// `CKeyEntry::s_globalPublishIPs`: a `/24`-subnet publish-count map
     /// shared across every entry in the store (not just one keyword), read by
     /// [`KeywordEntry::trust`] and kept in step with every entry's tracked
@@ -96,29 +110,32 @@ impl KeywordStore {
     ) -> KeywordFileOutcome {
         // Unconditional, before even the entry validation (`AddKeyword`'s
         // first check).
-        if self.total_rows > KEYWORD_GLOBAL_CAP {
+        if self.total_rows > KEYWORD_GLOBAL_CAP || self.held_bytes >= KEYWORD_BYTE_BUDGET {
             return KeywordFileOutcome::RejectedTotalIndexFull;
         }
         let Some(filename) = file.filename.filter(|name| !name.is_empty()) else {
             return KeywordFileOutcome::RejectedInvalidEntry;
         };
+        let filename = cut_name(filename);
         let Some(size) = file.size.filter(|&size| size != 0) else {
             return KeywordFileOutcome::RejectedInvalidEntry;
         };
+        let mut file_tags = file.tags;
+        file_tags.truncate(KEYWORD_VERBATIM_TAG_CAP);
 
         let Self {
             keywords,
             subnet_publishers,
             total_rows,
+            held_bytes,
             ..
         } = self;
         let rows = keywords.entry(keyword).or_default();
 
         if rows.is_empty() {
-            rows.push((
-                file.file_id,
-                KeywordEntry::new(now, size, filename, file.tags, from, subnet_publishers),
-            ));
+            let entry = KeywordEntry::new(now, size, filename, file_tags, from, subnet_publishers);
+            *held_bytes += entry.held_bytes();
+            rows.push((file.file_id, entry));
             *total_rows += 1;
             return KeywordFileOutcome::Stored { load: 1 };
         }
@@ -137,14 +154,15 @@ impl KeywordStore {
             if index_total > KEYWORD_DUPLICATE_GUARD_THRESHOLD {
                 return KeywordFileOutcome::RejectedRefreshThrottled;
             }
-            entry.refresh(now, size, filename, file.tags, from, subnet_publishers);
+            *held_bytes -= entry.held_bytes();
+            entry.refresh(now, size, filename, file_tags, from, subnet_publishers);
+            *held_bytes += entry.held_bytes();
             return KeywordFileOutcome::Stored { load };
         }
 
-        rows.push((
-            file.file_id,
-            KeywordEntry::new(now, size, filename, file.tags, from, subnet_publishers),
-        ));
+        let entry = KeywordEntry::new(now, size, filename, file_tags, from, subnet_publishers);
+        *held_bytes += entry.held_bytes();
+        rows.push((file.file_id, entry));
         *total_rows += 1;
         KeywordFileOutcome::Stored { load }
     }
@@ -181,9 +199,11 @@ impl KeywordStore {
                 continue;
             }
             let trust = entry.trust(&self.subnet_publishers);
+            // rmule stores at Kad v8, so no publisher reports it an AICH root.
             let row = KeywordResultRow {
                 file_id: *file_id,
                 tags: entry.serve_tags(trust),
+                aich_roots: Vec::new(),
             };
             if trust >= TRUST_WORTHY_THRESHOLD {
                 trusted.push(row);
@@ -206,12 +226,14 @@ impl KeywordStore {
             return;
         }
         let mut removed = 0usize;
+        let mut removed_bytes = 0usize;
         let mut evicted_ips = Vec::new();
         self.keywords.retain(|_, rows| {
             rows.retain(|(_, entry)| {
                 let keep = entry.expires_at > now;
                 if !keep {
                     removed += 1;
+                    removed_bytes += entry.held_bytes();
                     evicted_ips.extend(entry.publishers.iter().map(|publisher| publisher.ip));
                 }
                 keep
@@ -222,6 +244,7 @@ impl KeywordStore {
             decrement_subnet(&mut self.subnet_publishers, ip);
         }
         self.total_rows -= removed;
+        self.held_bytes -= removed_bytes;
         self.next_sweep_at = now + KEYWORD_SWEEP_INTERVAL;
     }
 
@@ -241,6 +264,12 @@ impl KeywordStore {
     #[must_use]
     pub fn len(&self) -> usize {
         self.total_rows
+    }
+
+    /// The bytes of publishers' names and tags the index holds.
+    #[must_use]
+    pub fn held_bytes(&self) -> usize {
+        self.held_bytes
     }
 
     /// Whether the index holds no rows — a driver folds this into its own

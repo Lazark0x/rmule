@@ -3,9 +3,10 @@
 //! its set-aside rows still describe, and an add asks even when nothing
 //! would be read.
 
+use parking_lot::Mutex;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
-use std::sync::{Arc, Mutex};
 
 use rmule_primitives::{FileHashSummary, PartHash};
 
@@ -21,7 +22,7 @@ fn pass_knowing(dir: &Scripted, known: &Known, consent: Consent) -> (PassEnd, Ve
     let end = run_pass(
         dir,
         Path::new(ROOT),
-        known,
+        &mut || Some(known.clone()),
         consent,
         &AtomicBool::new(false),
         &progress,
@@ -35,17 +36,23 @@ fn pass_knowing(dir: &Scripted, known: &Known, consent: Consent) -> (PassEnd, Ve
 /// one no read could produce, so a share of it proves nothing was read.
 fn set_aside(dir: &mut Scripted, path: &str, bytes: &[u8], modified: u64) -> SetAside {
     let stamp = dir.file(path, bytes, modified);
-    let mut entry = row(path, stamp, 0);
-    entry.file_hash = FileHashSummary::digest_bytes(bytes).file_hash();
-    entry.name = Path::new(path)
-        .file_name()
-        .unwrap()
-        .to_string_lossy()
-        .into_owned();
-    entry.part_hashes = vec![PartHash::from_bytes([
-        0x0F, 0x1E, 0x2D, 0x3C, 0x4B, 0x5A, 0x69, 0x78, 0x87, 0x96, 0xA5, 0xB4, 0xC3, 0xD2, 0xE1,
-        0xF0,
-    ])];
+    let row = row(path, stamp, 0);
+    let entry = crate::registry::SharedFileEntry {
+        file_hash: FileHashSummary::digest_bytes(bytes).file_hash(),
+        file_size: row.file_size,
+        path: row.path,
+        name: Path::new(path)
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .into_owned(),
+        source: row.source,
+        part_hashes: vec![PartHash::from_bytes([
+            0x0F, 0x1E, 0x2D, 0x3C, 0x4B, 0x5A, 0x69, 0x78, 0x87, 0x96, 0xA5, 0xB4, 0xC3, 0xD2,
+            0xE1, 0xF0,
+        ])],
+        modified: row.modified,
+    };
     SetAside {
         entry,
         identity: None,
@@ -75,13 +82,13 @@ fn a_directory_added_again_shares_its_set_aside_rows_unread() {
         &dir,
         &known,
         Consent::Confirm(Box::new(move |offer| {
-            *seen.lock().unwrap() = Some(offer);
+            *seen.lock() = Some(offer);
             true
         })),
     );
     assert_eq!(dir.opens(), 0, "nothing read");
     assert_eq!(
-        *asked.lock().unwrap(),
+        *asked.lock(),
         Some(DirectoryOffer {
             files: 2,
             bytes: 20,
@@ -119,10 +126,10 @@ fn an_added_directory_is_asked_about_even_when_it_would_read_nothing() {
         &dir,
         &Known::default(),
         Consent::Confirm(Box::new(move |offer| {
-            *seen.lock().unwrap() = Some(offer);
+            *seen.lock() = Some(offer);
             false
         })),
     );
-    assert_eq!(*asked.lock().unwrap(), Some(DirectoryOffer::default()));
+    assert_eq!(*asked.lock(), Some(DirectoryOffer::default()));
     assert_eq!(end, PassEnd::Declined);
 }

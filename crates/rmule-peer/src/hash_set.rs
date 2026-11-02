@@ -18,8 +18,9 @@
 //! the whole-file hash is already sufficient. Per ADR-0018 an empty answer is
 //! still preserved as an empty `part_hashes`.
 
-use rmule_primitives::{FileHash, Packet, PartHash, WireReader, WireTruncated};
-use thiserror::Error;
+use rmule_primitives::{FileHash, Packet, PartHash, PartHashList, WireReader};
+
+use crate::error::WireFault;
 
 use crate::opcode::PeerOpcode;
 
@@ -38,15 +39,15 @@ pub struct HashSetAnswer {
     /// The file they belong to.
     pub file_hash: FileHash,
     /// One hash per part. Position is the only thing binding a hash to its part, so the order is the contract.
-    pub part_hashes: Vec<PartHash>,
+    pub part_hashes: PartHashList,
 }
 
 impl HashSetRequest {
     /// Read the request.
-    pub fn decode_packet(packet: &Packet) -> Result<Self, HashSetDecodeError> {
+    pub fn decode_packet(packet: &Packet) -> Result<Self, WireFault> {
         let payload = packet.payload();
         if payload.len() != FileHash::BYTE_LEN {
-            return Err(HashSetDecodeError::Truncated {
+            return Err(WireFault::Truncated {
                 needed: FileHash::BYTE_LEN,
                 actual: payload.len(),
             });
@@ -69,11 +70,11 @@ impl HashSetRequest {
 
 impl HashSetAnswer {
     /// Read the answer, checking the declared count against the bytes that follow it.
-    pub fn decode_packet(packet: &Packet) -> Result<Self, HashSetDecodeError> {
+    pub fn decode_packet(packet: &Packet) -> Result<Self, WireFault> {
         let payload = packet.payload();
         let header_len = FileHash::BYTE_LEN + COUNT_LEN;
         if payload.len() < header_len {
-            return Err(HashSetDecodeError::Truncated {
+            return Err(WireFault::Truncated {
                 needed: header_len,
                 actual: payload.len(),
             });
@@ -82,23 +83,29 @@ impl HashSetAnswer {
         let file_hash = reader.read_file_hash("file hash")?;
         let declared_count = usize::from(reader.read_u16_le("part hash count")?);
         let body = reader.remaining_bytes();
-        let expected_body = declared_count.checked_mul(PartHash::BYTE_LEN).ok_or(
-            HashSetDecodeError::CountOverflow {
-                count: declared_count,
-            },
-        )?;
-        if body.len() != expected_body {
-            return Err(HashSetDecodeError::CountPayloadMismatch {
+        let expected_body =
+            declared_count
+                .checked_mul(PartHash::BYTE_LEN)
+                .ok_or(WireFault::CountOverflow {
+                    count: declared_count,
+                })?;
+        // aMule reads the counted hashes and looks no further
+        // (`KnownFile.cpp:505-512`): the count must fit, not fill.
+        if body.len() < expected_body {
+            return Err(WireFault::LengthMismatch {
                 declared: declared_count,
-                got_bytes: body.len(),
+                actual: body.len(),
             });
         }
         let mut part_hashes = Vec::with_capacity(declared_count);
-        for chunk in body.chunks_exact(PartHash::BYTE_LEN) {
+        for chunk in body[..expected_body].chunks_exact(PartHash::BYTE_LEN) {
             let mut buf = [0u8; PartHash::BYTE_LEN];
             buf.copy_from_slice(chunk);
             part_hashes.push(PartHash::from_bytes(buf));
         }
+        let part_hashes = PartHashList::new(part_hashes).map_err(|_| WireFault::CountOverflow {
+            count: declared_count,
+        })?;
         Ok(Self {
             file_hash,
             part_hashes,
@@ -108,14 +115,12 @@ impl HashSetAnswer {
     #[must_use]
     /// Frame the answer.
     pub fn encode_packet(&self) -> Packet {
-        let count = u16::try_from(self.part_hashes.len())
-            .expect("part_hashes count exceeds u16 — wire encoding does not support that");
-        let mut payload = Vec::with_capacity(
-            FileHash::BYTE_LEN + COUNT_LEN + self.part_hashes.len() * PartHash::BYTE_LEN,
-        );
+        let hashes = self.part_hashes.hashes();
+        let mut payload =
+            Vec::with_capacity(FileHash::BYTE_LEN + COUNT_LEN + hashes.len() * PartHash::BYTE_LEN);
         payload.extend_from_slice(self.file_hash.as_bytes());
-        payload.extend_from_slice(&count.to_le_bytes());
-        for h in &self.part_hashes {
+        payload.extend_from_slice(&self.part_hashes.count().to_le_bytes());
+        for h in hashes {
             payload.extend_from_slice(h.as_bytes());
         }
         Packet::new(
@@ -123,44 +128,5 @@ impl HashSetAnswer {
             PeerOpcode::HashSetAnswer.as_u8(),
             payload,
         )
-    }
-}
-
-/// Why a hash-set packet could not be read.
-#[derive(Clone, Debug, Error, PartialEq, Eq)]
-pub enum HashSetDecodeError {
-    #[error("hash-set packet payload truncated: needed {needed} bytes, had {actual}")]
-    /// The payload ended before the header or the declared hashes did.
-    Truncated {
-        /// Bytes the declared count requires.
-        needed: usize,
-        /// Bytes present.
-        actual: usize,
-    },
-
-    #[error("hash-set answer declared {declared} hashes but body has {got_bytes} bytes")]
-    /// The declared hash count and the bytes after it disagree.
-    CountPayloadMismatch {
-        /// Hashes the header declared.
-        declared: usize,
-        /// Bytes that actually followed it.
-        got_bytes: usize,
-    },
-
-    #[error("hash-set answer declared part count {count} overflows usize multiplication")]
-    /// The declared count cannot be held by this platform's `usize`,
-    /// rejected before it sizes any allocation.
-    CountOverflow {
-        /// The count the header declared.
-        count: usize,
-    },
-}
-
-impl From<WireTruncated> for HashSetDecodeError {
-    fn from(truncated: WireTruncated) -> Self {
-        Self::Truncated {
-            needed: truncated.needed,
-            actual: truncated.available,
-        }
     }
 }

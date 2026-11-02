@@ -7,8 +7,9 @@
 //! (ADR-0046). Also home to the OS-entropy challenge minting both
 //! chains draw in production.
 
+use parking_lot::Mutex;
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 
 use rmule_primitives::Ipv4Endpoint;
@@ -47,33 +48,27 @@ impl StatusChallenges {
     /// endpoint), replacing any unanswered one — the sweep's registration hook
     /// (ADR-0052 breakdown 3).
     pub(crate) fn expect(&self, server: Ipv4Endpoint, challenge: u32) {
-        self.0
-            .lock()
-            .expect("outstanding status challenges")
-            .insert(
-                server,
-                OutstandingPing {
-                    challenge,
-                    crypt: false,
-                    sent_at: tokio::time::Instant::now(),
-                },
-            );
+        self.0.lock().insert(
+            server,
+            OutstandingPing {
+                challenge,
+                crypt: false,
+                sent_at: tokio::time::Instant::now(),
+            },
+        );
     }
 
     /// Record an obfuscated crypt-ping challenge (ADR-0046), replacing
     /// any prior entry — a subsequent plain fallback overwrites it back.
     pub(crate) fn expect_crypt(&self, server: Ipv4Endpoint, challenge: u32) {
-        self.0
-            .lock()
-            .expect("outstanding status challenges")
-            .insert(
-                server,
-                OutstandingPing {
-                    challenge,
-                    crypt: true,
-                    sent_at: tokio::time::Instant::now(),
-                },
-            );
+        self.0.lock().insert(
+            server,
+            OutstandingPing {
+                challenge,
+                crypt: true,
+                sent_at: tokio::time::Instant::now(),
+            },
+        );
     }
 
     /// Settle the outstanding challenge for `server` iff `echoed` matches: the
@@ -82,7 +77,7 @@ impl StatusChallenges {
     /// the entry untouched — the genuine answer can still arrive after a forged
     /// one.
     pub(crate) fn settle(&self, server: Ipv4Endpoint, echoed: u32) -> Option<Duration> {
-        let mut outstanding = self.0.lock().expect("outstanding status challenges");
+        let mut outstanding = self.0.lock();
         match outstanding.get(&server) {
             Some(ping) if ping.challenge == echoed => {
                 let round_trip = ping.sent_at.elapsed();
@@ -100,7 +95,6 @@ impl StatusChallenges {
     pub(crate) fn crypt_base_key(&self, server: Ipv4Endpoint) -> Option<u32> {
         self.0
             .lock()
-            .unwrap()
             .get(&server)
             .filter(|ping| ping.crypt)
             .map(|ping| ping.challenge)
@@ -111,7 +105,6 @@ impl StatusChallenges {
     pub(crate) fn awaits(&self, server: Ipv4Endpoint, challenge: u32) -> bool {
         self.0
             .lock()
-            .unwrap()
             .get(&server)
             .is_some_and(|ping| ping.challenge == challenge)
     }
@@ -120,11 +113,7 @@ impl StatusChallenges {
     /// the sweep's fallback gate. A settled reply removes the entry, so
     /// `false` means the probe was answered and no plain fallback is due.
     pub(crate) fn crypt_outstanding(&self, server: Ipv4Endpoint) -> bool {
-        self.0
-            .lock()
-            .unwrap()
-            .get(&server)
-            .is_some_and(|ping| ping.crypt)
+        self.0.lock().get(&server).is_some_and(|ping| ping.crypt)
     }
 }
 

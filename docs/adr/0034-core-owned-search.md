@@ -91,7 +91,7 @@ back. Core reports the whole picture on every move as
 ### Completion
 
 A search completes when no leg holds it open and the Search Quiet Timeout
-(`CoreConfig::search_quiet_timeout`, 3 s) has passed, reset by each batch that reaches the search
+(`CoreConfig::search_quiet_timeout`, 3 s) has passed, reset by each batch that adds a row
 and by each leg settling. A row that arrives while the search is live still lands; after it, the
 row is counted, not shown.
 
@@ -126,8 +126,21 @@ dropped and counted (`SessionCounters::search_rows_unattributed_total`).
   owner and their rows go only where they prove a query. The Owed Set lives and dies with the
   session.
 - **`0x99` answers** have no place: their rows go to every live keyword search that proves them.
+- **A search that names one file proves by its hash.** A phrase that is one word and no
+  constraint, in the forms ed2k-server reads as Lugdunum does (`proto/search.rs:118`: `ed2k::HASH`,
+  `ed2k:SIZE:HASH`, an `ed2k://|file|` link, either magnet), is answered from the server's hash
+  index on both TCP and UDP. Its row carries none of those words, so the words cannot prove it: the
+  hash does, and the size where the phrase gave one. A `0x99` row for it reaches the search instead
+  of being dropped as unattributed.
 - **The same query twice** sends both requests; each answer satisfies both, so both show the same
   rows.
+
+**A stranger's answer costs the batch, within a set of known size.** A batch publishes
+the rows it added or changed, whole; a front end folds them by key, so a sweep costs its
+rows rather than rows times batches. A search keeps 5,000 rows and 32 MiB of counterparty
+text, a row folds at most 32 names, 300 sources and 32 tags, and the first row past a cap
+is reported once as a skip. Only a new row holds the quiet window open, since a repeat
+changes a row's counts for as long as a server cares to send it, so each search ends.
 
 ## Consequences
 

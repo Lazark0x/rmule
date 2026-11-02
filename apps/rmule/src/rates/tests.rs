@@ -9,6 +9,7 @@ use rmule_primitives::FileHash;
 use super::*;
 use crate::fixture::part_map;
 use crate::fixture::peer_endpoint;
+use crate::words::units::{rate, rate_cells, rate_short, rate_short_cells};
 
 const KIB100: u64 = 100 * 1024;
 
@@ -52,8 +53,14 @@ fn downloading(received_bytes: u64, slots: &[(usize, WorkerPhase)]) -> Diagnosti
             workers,
             received_bytes,
             known_sources: 0,
+            source_activity: rmule_core::diagnostics::SourceActivity::default(),
             dials_ended: 0,
             dial_ends: Default::default(),
+            handed_over: Default::default(),
+            allocated_bytes: None,
+            hole_verdict: None,
+            completion: None,
+            part_check: None,
             reask_replies_ignored: 0,
         },
     );
@@ -483,6 +490,54 @@ fn kad_rates_difference_tick_to_tick_and_a_stopped_node_drops_them() {
 
 #[test]
 fn rate_text_is_kb_per_second_at_one_decimal() {
-    assert_eq!(format_rate(0.0), "0.0 KB/s");
-    assert_eq!(format_rate(123.4 * 1024.0), "123.4 KB/s");
+    assert_eq!(rate(0.0), "0.0 KB/s");
+    assert_eq!(rate(123.4 * 1024.0), "123.4 KB/s");
+    assert_eq!(rate(8.0 * 1024.0 * 1024.0), "8.0 MB/s");
+    assert_eq!(rate_short(45.6 * 1024.0), "45.6K");
+    assert_eq!(rate_short(8.0 * 1024.0 * 1024.0), "8.0M");
+}
+
+/// The width a fixed meter reserves holds every reading: the top of a unit
+/// rounds up into the next one, never into a fourth digit.
+#[test]
+fn a_rate_never_outgrows_its_cells_at_a_unit_boundary() {
+    assert_eq!(rate(999.94 * 1024.0), "999.9 KB/s");
+    assert_eq!(rate(999.96 * 1024.0), "1.0 MB/s");
+    assert_eq!(rate_short(999.96 * 1024.0), "1.0M");
+    let mut bps = 1.0;
+    while bps < 1e15 {
+        assert!(rate(bps).len() <= rate_cells(), "{bps}");
+        assert!(rate_short(bps).len() <= rate_short_cells(), "{bps}");
+        bps *= 1.37;
+    }
+}
+
+/// The stall signal is the counter's own last move: it counts from the run's
+/// first sighting, and a byte resets it.
+#[test]
+fn a_download_says_how_long_its_bytes_have_stood_still() {
+    let mut rates = RateSynthesizer::new(Duration::from_secs(4));
+    let start = Instant::now();
+    let quiet = |rates: &TransferRates| rates.download_quiet[&download_id()];
+    assert_eq!(
+        quiet(&rates_at(&mut rates, 100, start)),
+        Duration::ZERO,
+        "a first sighting has stood still for nothing yet"
+    );
+    let at = start + Duration::from_secs(10);
+    assert_eq!(
+        quiet(&rates_at(&mut rates, 100, at)),
+        Duration::from_secs(10)
+    );
+    let at = start + Duration::from_secs(11);
+    assert_eq!(quiet(&rates_at(&mut rates, 200, at)), Duration::ZERO);
+    let at = start + Duration::from_secs(41);
+    assert_eq!(
+        quiet(&rates_at(&mut rates, 200, at)),
+        Duration::from_secs(30)
+    );
+}
+
+fn rates_at(rates: &mut RateSynthesizer, received: u64, at: Instant) -> TransferRates {
+    rates.observe(&downloading(received, &[]), at)
 }

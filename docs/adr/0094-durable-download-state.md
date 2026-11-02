@@ -11,7 +11,7 @@ aMule references are to 2.3.3 (`4e8f2b3c`); read, never ported (ADR-0082).
 
 ## Decision
 
-The Download Set is the downloads with a run. **Quit rewrites nothing:** it aborts each run,
+The Download Set is the downloads with a run. **Quit rewrites no lifecycle:** each run commits its Arrived Checkpoint and ends, aborted past a grace,
 and the row keeps the operator's last word. A crash leaves the same rows and gets the same
 attach. aMule likewise persists only a part file's paused bit (`PartFile.cpp:1059`,
 `:655-657`), and a file loaded without it is processed like any running file
@@ -22,6 +22,7 @@ attach. aMule likewise persists only a part file's paused bit (`PartFile.cpp:105
 | Downloading / Waiting | `Active` | yes, or queued to start | started again by core, paced |
 | Waiting (never started) | `Queued` | no | started by core, paced |
 | Paused | `Paused` | no | reported, not started |
+| Completing | `Completing` | yes | started again by core, straight to the move (ADR-0115) |
 | Failed | `Failed` | no | reported, not started |
 | Completed | `Completed` | no | listed until cleared; the file is in the Shared File Registry |
 | Cancelled | `Cancelled` | no | not reported |
@@ -40,6 +41,16 @@ attach. aMule likewise persists only a part file's paused bit (`PartFile.cpp:105
 - Every resume re-hashes the verified parts against the `.part` file (below). A missing file
   with parts recorded fails the download with `StorageIntegrityFailed(PartFileMissing)`, as
   aMule refuses to load such a part file (`PartFile.cpp:867-869`).
+- **Attach and Resume return at once.** The actor stores `Active`, says `DownloadResumed` and
+  starts the run; the re-hash is the run's first stage, on the blocking pool, under the hashing
+  turn the scans and the Offer Check share (ADR-0102) and under the run's stop. Its findings
+  follow as `DownloadProgressRestored` and any `DamagedPartsDropped` or `DownloadRestarted`, and
+  how far it has read is a level on the download's diagnostics row, so a row checking its parts
+  says so rather than reading as a wait. Since
+  the stage is the run's, a Pause, a Cancel or Quit stops a check the way it stops a transfer: the
+  walk ends before its next part, and what it had not finished changes nothing. The re-hash is the
+  only protection against a power cut (a part file gets no sync before completion), so no start
+  skips it.
 
 **The part picture is the download's, not its run's.** At attach core opens a resting
 diagnostics row for every restored download, `parts` built from the verified-part records over
@@ -71,34 +82,66 @@ never its message). A row failed before the store carried a reason says "reason 
   matches it, it starts over: the recorded parts and any peer-supplied provisional hash set are
   discarded, the `.part` the row names is removed, and the run starts from nothing, keeping the
   download's id, file, name, size, final path and place. An unreadable part file does not start
-  over: its disk or permissions may return. `DownloadRestarted` says `Continued` or `StartedOver`
-  and what it cost. Only the operator's Restart starts over; attach and a paused download's
+  over: its disk or permissions may return. Nor does a missing part file start over while a file
+  of its name stands in the current Temp Directory: the download was moved, not lost, so the
+  Restart is refused and says where that file stands. `DownloadRestarted` says `Continued` or
+  `StartedOver` and what it cost. Only the operator's Restart starts over; attach and a paused download's
   Resume still fail, so a download the operator meant to drop by deleting its part file does not
-  come back on its own. A Restart that fails again leaves the row as it was and says why.
+  come back on its own. A Restart that fails again ends with the row failed as it was, and says
+  why. A
+  download that failed while completing (`CompletedFileNotMoved`, `CompletionCopyFailed`)
+  continues: its run finds every part verified and moves the file again (ADR-0115).
 
 **The run holds its part file.** It opens the file once — creating it for a download with no
-part recorded — and writes every part through that handle, never re-opening by path. Before each
-verified part is written, before finalize, when it leaves a wait, and every second while it waits
+part recorded — and writes every byte through that handle, never re-opening by path. Before each
+batch is written, before finalize, when it leaves a wait, and every second while it waits
 (`WAITING_PART_FILE_CHECK`), it compares the path's device and inode with the handle's and the
-handle's length with the end of the highest recorded part (one `stat` and one `fstat`); a removed
+handle's length with the end of the highest byte it wrote or recorded (one `stat` and one `fstat`); a removed
 file's handle stays writable on macOS and Linux, so an error is never the signal.
 
-- **Gone or replaced:** the run stops writing, reports `PartFileLost` (`Gone`, `Replaced`) with
-  the parts and bytes to fetch again, drops the verified-part records, and fails with
-  `PartFileMissing`. It does not recreate the file: the delete was the operator's.
+- **Gone or replaced:** the file's last name was removed (the handle reads no link left), or
+  another file stands at the path. The run stops writing, reports `PartFileLost` (`Gone`,
+  `Replaced`) with the parts and bytes to fetch again, drops the verified-part records, and fails
+  with `PartFileMissing`. It does not recreate the file: the delete was the operator's.
+- **Path absent, file whole:** the path names nothing while the handle reads a file with a link
+  left: a parent directory renamed, a volume lazily unmounted, the file moved away. Nothing
+  proves a byte lost, so nothing is dropped: the run takes a Volume Stop (below), and
+  revalidation decides at the next hold.
 - **Truncated:** the parts past the end are dropped (`PartFileLost`, `Truncated`) and the run goes
   on fetching them.
 - **A whole-file hash failing at finalize** re-checks every recorded part, drops those that fail,
   and goes on; when no part can be named, every recorded part is dropped.
 
-Who may touch a live part file: only its run's held handle writes it; finalize renames the run's
-own `.part` after the run releases its handle; cancel unlinks the row's `.part` only after the run
-is joined; a starting-over Restart unlinks only for a `Failed` row with no run; clearing completed
+**A volume's refusal is a Volume Stop.** A local write failure is nobody's fault on the network.
+A write the volume refuses, whatever the error (a nearly full exFAT volume answers `EINVAL` as well
+as `ENOSPC`, and a volume forced away `EIO`), reaches no verdict: no ban, no distrust, no refetch of
+the part. Before each write the run reads the free space beside the part file and holds it to
+aMule's floor, one part and `MinFreeDiskSpace`'s default of 1 MiB for the bytes of the write
+(`PartFile.cpp:2485-2510`, checked at each flush, `:2983`). Below the floor, on a refused write, or
+on an absent path with the file whole, the run sends its workers `OP_CANCELTRANSFER`, lets the
+handle go, stores `Paused` and says why (`VolumeStopped`, then `DownloadPaused`), as aMule's
+`PauseFile(true)` does. The assembled part goes with the run: bytes never recorded are fetched
+again. Verified parts stay. aMule's `PS_ERROR` on a failed flush asks the operator to act; a pause
+does the same and carries the sentence.
+
+A stop for free space resumes itself: the core reads the free space beside each such download once
+a minute (`DISKSPACERECHECKTIME`, `DownloadQueue.cpp:1229`) and resumes it at the floor. Any other
+Volume Stop waits for the operator, since no reading says the fault has passed. The wait is the
+actor's and memory only: after a restart the row is a plain `Paused`, as aMule's `m_insufficient`
+is not stored. An operator's Pause of a waiting download ends the wait.
+
+Who may touch a live part file: only its run's held handle writes it; completion moves the run's
+own `.part` after the run releases its handle — a rename, or across volumes a copy to a
+dot-prefixed file beside its destination first (ADR-0115); cancel stores `Cancelled` first and then
+unlinks the row's `.part`, only after the run is joined, and a delete that was refused is told and
+tried again at each attach while the row holds the path; a starting-over Restart unlinks only for a `Failed` row with no run; clearing completed
 downloads, the directory scan and its watch, the rename carry, spare copies, the Registry Check,
 the Had Set and serve reads never open a file under the download directory for writing.
 `ContentFileStore::write_verified_part` writes by path and is called only by tests and tools.
 rmule's other file writes (`clients.met`, `nodes.dat`, the Run Log, capture taps) land in the
-data directory or a capture directory.
+data directory or a capture directory. The run's Hole Probe writes and removes one dot-prefixed
+file of its own beside the `.part`, and the run punches the gaps its own writes open through its
+held handle (ADR-0111).
 
 **Clearing a completed download.** A completed download stays in Transfers until the operator
 clears it, across restarts: attach reports every completed record, so the list shows exactly what
@@ -108,9 +151,9 @@ a clear removes is hidden. Clearing removes the record (row, verified parts, pro
 distrusted peers, in one transaction), its resting diagnostics row and its Transfers row
 (`DownloadCleared`), and never the file, its registry entry, its share totals or the Had Set.
 Only a completed download is cleared (`DownloadNotCompleted` otherwise; a run still in the set
-has not been shared yet). Commands: `ClearDownload`, `ClearCompletedDownloads`. In the TUI, a
+has not been shared yet). Commands: `ClearDownload`, and `ClearDownloads`, which names the rows it clears. In the TUI, a
 completed row's menu offers **Clear from list**, and `C` in Transfers clears every completed
-download after one confirm.
+download after one confirm, with one command.
 
 ## Consequences
 
@@ -125,3 +168,7 @@ download after one confirm.
   difference was; what is on disk decides.
 - **Recreating a part file deleted under a run.** Rejected: it hid the operator's delete and wrote
   holes over verified parts.
+- **A write failure as a failed part.** Rejected: the refetch loop has no cap, and a part's sole
+  writer reads as proven, so a full disk banned an innocent peer's address across the node.
+- **Failing the download on a Volume Stop.** Rejected: a full disk is routine and passes, and a
+  `Failed` row's Restart while the volume is away would discard what it holds.

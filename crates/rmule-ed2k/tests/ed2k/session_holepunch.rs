@@ -6,11 +6,22 @@ use std::net::Ipv4Addr;
 
 use rmule_ed2k::{
     CommandRejectReason, Ed2kCommand, Ed2kCommandKind, Ed2kEvent, HolepunchFail,
-    HolepunchFailReason, HolepunchInfo, HolepunchRole, Output,
+    HolepunchFailReason, HolepunchInfo, HolepunchRole, Output, ServerCapability, ServerTcpFlags,
 };
-use rmule_primitives::{ClientId, Ipv4Endpoint, UserHash};
+use rmule_primitives::{ClientId, Ipv4Endpoint, Packet, PacketProtocol, UserHash};
 
 use crate::fixture;
+
+/// A logged-in session on a server that set `LOWID_HOLEPUNCH`.
+fn on_a_punching_server() -> rmule_ed2k::Ed2kSession {
+    let mut session = fixture::started_session(7);
+    fixture::login_with_flags(
+        &mut session,
+        Some(ServerTcpFlags::from_bits(ServerTcpFlags::LOWID_HOLEPUNCH)),
+    );
+    while session.poll_output().is_some() {}
+    session
+}
 
 fn ask(target: u32) -> Ed2kCommand {
     Ed2kCommand::RequestHolepunch {
@@ -36,7 +47,7 @@ fn a_holepunch_request_goes_out_only_once_logged_in() {
     ));
     assert!(early.poll_output().is_none(), "nothing was written");
 
-    let mut session = fixture::logged_in_session(7);
+    let mut session = on_a_punching_server();
     session.handle_command(ask(1337));
     let Some(Output::Write(bytes)) = session.poll_output() else {
         panic!("the request is a write");
@@ -47,6 +58,58 @@ fn a_holepunch_request_goes_out_only_once_logged_in() {
             0xE3, 0x07, 0x00, 0x00, 0x00, 0x60, 0x39, 0x05, 0x00, 0x00, 0x39, 0x12
         ]
     );
+}
+
+/// README *Is this server doing it?*: some servers close the link on an opcode
+/// they do not know, and a server without `0x20000` is one of those until it
+/// says otherwise. The refusal is local and nothing reaches the wire.
+#[test]
+fn a_server_that_never_set_the_punch_bit_is_never_sent_a_request() {
+    let mut session = fixture::logged_in_session(7);
+    session.handle_command(ask(1337));
+    assert!(matches!(
+        session.poll_output(),
+        Some(Output::Event(Ed2kEvent::CommandRejected {
+            command: Ed2kCommandKind::RequestHolepunch,
+            reason: CommandRejectReason::UnsupportedServerCapability {
+                capability: ServerCapability::LowIdHolepunch,
+            },
+        }))
+    ));
+    assert!(session.poll_output().is_none(), "nothing was written");
+}
+
+/// An address that moves in session goes out as `0x63`, on a server that set
+/// `0x8000`, and is refused locally on any other: `0x8000` exists because
+/// v0.9.82 sets `0x4000` without knowing the opcode (CHANGELOG 0.9.83).
+#[test]
+fn an_ipv6_update_goes_only_to_a_server_that_takes_it() {
+    let update = Ed2kCommand::UpdateIpv6 { address: None };
+
+    let mut session = fixture::logged_in_session(7);
+    session.handle_command(update.clone());
+    assert!(matches!(
+        session.poll_output(),
+        Some(Output::Event(Ed2kEvent::CommandRejected {
+            command: Ed2kCommandKind::UpdateIpv6,
+            reason: CommandRejectReason::UnsupportedServerCapability {
+                capability: ServerCapability::Ipv6Update,
+            },
+        }))
+    ));
+
+    let mut session = fixture::started_session(7);
+    fixture::login_with_flags(
+        &mut session,
+        Some(ServerTcpFlags::from_bits(ServerTcpFlags::IPV6_UPDATE)),
+    );
+    while session.poll_output().is_some() {}
+    session.handle_command(update);
+    let Some(Output::Write(bytes)) = session.poll_output() else {
+        panic!("the update is a write");
+    };
+    assert_eq!(&bytes[..6], [0xE3, 0x11, 0x00, 0x00, 0x00, 0x63]);
+    assert_eq!(&bytes[6..], [0; 16], "zeros withdraw the address");
 }
 
 /// An introduction arrives whether we asked or the peer did, and a refusal
@@ -62,6 +125,8 @@ fn the_servers_answers_surface_as_attributable_events() {
         peer_tcp_port: 4662,
         peer_hash: UserHash::from_bytes([0x44; 16]),
         role: HolepunchRole::Initiator,
+        peer_id: Some(ClientId::from_u32(1337)),
+        peer_crypt: None,
     };
     let wire = info.encode_packet().encode();
     for _ in 0..2 {
@@ -84,4 +149,25 @@ fn the_servers_answers_surface_as_attributable_events() {
         panic!("a refusal is an event");
     };
     assert_eq!(got, fail);
+}
+
+/// ed2k-server appends fields to `0x61`: `peer_id` since v0.9.84
+/// (`holepunch.rs:112`, 29 bytes) and `peer_crypt` on every frame since v0.9.86
+/// (30). A reader that held the old 25 closed the session on every
+/// introduction, on every current server.
+#[test]
+fn an_introduction_with_appended_fields_keeps_the_session_open() {
+    for extra in [4, 5, 9] {
+        let mut session = fixture::logged_in_session(7);
+        let mut body = vec![45, 55, 200, 7, 0x36, 0x12, 0xFF, 0x7C];
+        body.extend_from_slice(&[0x44; 16]);
+        body.push(1);
+        body.extend_from_slice(&vec![0; extra]);
+        session.handle_bytes(&Packet::new(PacketProtocol::Edonkey, 0x61, body).encode());
+        let Some(Output::Event(Ed2kEvent::HolepunchIntroduced { info })) = session.poll_output()
+        else {
+            panic!("{} bytes are an introduction", 25 + extra);
+        };
+        assert_eq!(info.peer_hash, UserHash::from_bytes([0x44; 16]));
+    }
 }

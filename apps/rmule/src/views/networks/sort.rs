@@ -4,11 +4,15 @@
 //! a data tick re-orders — a ping landing, a user count moving — keeps the
 //! selection.
 
+use crate::stored_keys as column_keys;
+use crate::words::columns;
 use std::borrow::Cow;
 
 use rmule_core::ServerPriority;
-use rmule_core::diagnostics::ServerDiagnostics;
+use rmule_core::diagnostics::{PingState, ServerDiagnostics};
 use rmule_primitives::ServerEndpoint;
+
+use crate::row_filter::keeps_row;
 
 use super::{NetworksView, servers};
 use crate::state::UiState;
@@ -44,32 +48,77 @@ impl SortedTable for ServersTable {
     type Row = ServerDiagnostics;
     type Column = ServerColumn;
     type Identity = ServerEndpoint;
-    const TABLE: &'static str = "servers";
+    const TABLE: &'static str = column_keys::TABLE_SERVERS;
     // Priority and Static render as words but are a rank and a flag: they
     // order by that, where their spelling would put `High` before `Low`
     // before `Norm`.
     const COLUMNS: &'static [ColumnSpec<ServerColumn>] = &[
-        ColumnSpec::new(ServerColumn::Name, "name", "Name", ColumnKind::Text),
+        ColumnSpec::new(
+            ServerColumn::Name,
+            column_keys::NAME,
+            columns::NAME,
+            ColumnKind::Text,
+        ),
         ColumnSpec::new(
             ServerColumn::Address,
-            "address",
-            "Address",
+            column_keys::ADDRESS,
+            columns::ADDRESS,
             ColumnKind::Text,
         ),
-        ColumnSpec::new(ServerColumn::Port, "port", "Port", ColumnKind::Quantity),
+        ColumnSpec::new(
+            ServerColumn::Port,
+            column_keys::PORT,
+            columns::PORT,
+            ColumnKind::Quantity,
+        ),
         ColumnSpec::new(
             ServerColumn::Description,
-            "description",
-            "Desc",
+            column_keys::DESCRIPTION,
+            columns::DESC,
             ColumnKind::Text,
         ),
-        ColumnSpec::new(ServerColumn::Ping, "ping", "Ping", ColumnKind::Quantity),
-        ColumnSpec::new(ServerColumn::Users, "users", "Users", ColumnKind::Quantity),
-        ColumnSpec::new(ServerColumn::Files, "files", "Files", ColumnKind::Quantity),
-        ColumnSpec::new(ServerColumn::Age, "age", "Age", ColumnKind::Quantity),
-        ColumnSpec::new(ServerColumn::Priority, "priority", "Prio", ColumnKind::Rank),
-        ColumnSpec::new(ServerColumn::Fails, "fails", "Fail", ColumnKind::Quantity),
-        ColumnSpec::new(ServerColumn::Static, "static", "Static", ColumnKind::Rank),
+        ColumnSpec::new(
+            ServerColumn::Ping,
+            column_keys::PING,
+            columns::PING,
+            ColumnKind::Quantity,
+        ),
+        ColumnSpec::new(
+            ServerColumn::Users,
+            column_keys::USERS,
+            columns::USERS,
+            ColumnKind::Quantity,
+        ),
+        ColumnSpec::new(
+            ServerColumn::Files,
+            column_keys::FILES,
+            columns::FILES,
+            ColumnKind::Quantity,
+        ),
+        ColumnSpec::new(
+            ServerColumn::Age,
+            column_keys::AGE,
+            columns::AGE,
+            ColumnKind::Quantity,
+        ),
+        ColumnSpec::new(
+            ServerColumn::Priority,
+            column_keys::PRIORITY,
+            columns::PRIO,
+            ColumnKind::Rank,
+        ),
+        ColumnSpec::new(
+            ServerColumn::Fails,
+            column_keys::FAILS,
+            columns::FAIL,
+            ColumnKind::Quantity,
+        ),
+        ColumnSpec::new(
+            ServerColumn::Static,
+            column_keys::STATIC,
+            columns::STATIC,
+            ColumnKind::Rank,
+        ),
     ];
     const NAME: ServerColumn = ServerColumn::Name;
 
@@ -80,9 +129,15 @@ impl SortedTable for ServersTable {
             ServerColumn::Address => Some(SortValue::Text(Cow::Borrowed(server.endpoint.host()))),
             ServerColumn::Port => Some(SortValue::Quantity(u64::from(server.endpoint.port()))),
             ServerColumn::Description => text(server.description.to_display_string()),
-            ServerColumn::Ping => row
-                .ping
-                .map(|rtt| SortValue::Quantity(u64::try_from(rtt.as_micros()).unwrap_or(u64::MAX))),
+            // Within its rank ([`Self::rank`]): the round trip, or how
+            // long the pings have gone unanswered.
+            ServerColumn::Ping => match row.ping {
+                PingState::Measured(rtt) => Some(SortValue::Quantity(
+                    u64::try_from(rtt.as_micros()).unwrap_or(u64::MAX),
+                )),
+                PingState::Unanswered { since } => Some(SortValue::Quantity(since.as_secs())),
+                PingState::NotAskedYet | PingState::Awaiting => None,
+            },
             ServerColumn::Users => row.users.map(|n| SortValue::Quantity(u64::from(n))),
             ServerColumn::Files => row.files.map(|n| SortValue::Quantity(u64::from(n))),
             // A quantity, in seconds; a server that never answered has none
@@ -95,6 +150,15 @@ impl SortedTable for ServersTable {
             })),
             ServerColumn::Fails => Some(SortValue::Quantity(u64::from(server.fail_count))),
             ServerColumn::Static => Some(SortValue::Quantity(u64::from(!server.is_static))),
+        }
+    }
+
+    /// A Ping State groups by its rank in both directions — measured,
+    /// awaiting, not asked, unanswered — never by the word its cell reads.
+    fn rank(column: ServerColumn, row: &ServerDiagnostics) -> u8 {
+        match column {
+            ServerColumn::Ping => row.ping.rank(),
+            _ => 0,
         }
     }
 
@@ -111,6 +175,7 @@ impl NetworksView {
             .order(rows)
             .into_iter()
             .map(|at| &rows[at])
+            .filter(|row| keeps_row::<ServersTable>(&self.filter, row))
             .collect()
     }
 
@@ -131,8 +196,9 @@ impl NetworksView {
     /// A click on the header row: sort by the column under it. `None` when
     /// the click was not on a header cell.
     pub(super) fn header_click(&mut self, column: u16, row: u16) -> Option<ViewOutcome> {
+        let (area, widths) = self.drawn.header();
         self.sort
-            .header_click(self.header_area, &self.header_cols, 1, column, row)
+            .header_click(area, widths, crate::table::GAP, column, row)
     }
 }
 
@@ -201,7 +267,7 @@ mod tests {
             sort_to(&mut view, &state, column.column);
             for _ in 0..2 {
                 draw(&mut view, &state, 80);
-                assert_eq!(view.header_area.height, 1, "{column:?}");
+                assert_eq!(view.drawn.header_height(), 1, "{column:?}");
                 view.handle_key(press(KeyCode::Char('S')), &state);
             }
         }
@@ -244,11 +310,13 @@ mod tests {
                 [PRIME, PIN, FLAKY, UNNAMED],
                 [PIN, PRIME, FLAKY, UNNAMED],
             ),
-            // 1.2 s is slower than 42 ms, not "1.2" against "42".
+            // 1.2 s is slower than 42 ms, not "1.2" against "42"; a ping
+            // with no round trip follows every measured one both ways, by
+            // its state's rank: not asked yet, then unanswered.
             (
                 ServerColumn::Ping,
-                [PIN, PRIME, FLAKY, UNNAMED],
-                [PRIME, PIN, FLAKY, UNNAMED],
+                [PIN, PRIME, UNNAMED, FLAKY],
+                [PRIME, PIN, UNNAMED, FLAKY],
             ),
             (
                 ServerColumn::Users,
@@ -330,7 +398,7 @@ mod tests {
             .iter_mut()
             .find(|row| row.server.endpoint.host() == FLAKY)
             .expect("flaky listed")
-            .ping = Some(Duration::from_secs(9));
+            .ping = PingState::Measured(Duration::from_secs(9));
         draw(&mut view, &state, 78);
         assert_eq!(view.server_sel, 0);
         assert_eq!(selected(&view, &state).as_deref(), Some(FLAKY));
@@ -339,7 +407,7 @@ mod tests {
     #[test]
     fn a_header_click_sorts_by_its_column_and_again_reverses_at_two_widths() {
         let state = listed_servers();
-        for width in [78, 110] {
+        for width in [120, 140] {
             let mut view = NetworksView::new();
             let lines = draw(&mut view, &state, width);
             let (x, y) = cell_of(&lines, "Ping");
@@ -360,7 +428,7 @@ mod tests {
             assert_eq!(view.sort.direction(), Direction::Ascending, "width {width}");
             let lines = draw(&mut view, &state, width);
             let (x, y) = cell_of(&lines, "Static");
-            let first_row = view.server_rows.line_of(0).expect("rows drawn");
+            let first_row = view.drawn.line_of(0).expect("rows drawn");
             view.handle_click(x, first_row, &state);
             assert_eq!(
                 view.sort.column(),

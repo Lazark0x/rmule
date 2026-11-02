@@ -14,7 +14,8 @@ use tokio::sync::{mpsc, oneshot, watch};
 use tokio::task::JoinHandle;
 
 use crate::search::{KadKeywordLeg, SearchEnd, SentServerLeg};
-use crate::service::{CoreEvent, FinishedActivity, SearchEvent, SearchFailure, SearchId};
+use crate::service::{FinishedActivity, SearchEvent, SearchFailure, SearchId};
+use crate::supervisor::watched;
 
 use super::join_or_abort;
 
@@ -66,8 +67,8 @@ pub(in crate::service) struct ActiveSearch {
     pub(in crate::service) waiting: WaitingLegs,
 }
 
-/// A running keyword search's legs that wait (ADR-0034, "The legs are
-/// independent"): the server leg and its sweep for a session, the Kad
+/// A running keyword search's legs that wait (ADR-0034, "Legs"): the server leg and its sweep for
+/// a session, the Kad
 /// leg for Kad to run. The actor sends each on its arrival; the task drops
 /// its receiver once the leg can no longer run for it.
 #[derive(Default)]
@@ -126,7 +127,9 @@ impl Searches {
         let task = task(SearchLevers { cancel_rx, more_rx });
         let finished_tx = finished_tx.clone();
         let handle = tokio::spawn(async move {
-            let end = run_watched(task).await;
+            // A panic is a death (ADR-0118): it reaches the same finish notice
+            // as any other end and so the same retire.
+            let end = watched(task).await.unwrap_or(SearchEnd::Panicked);
             let _ = end_tx.send(end);
             if end != SearchEnd::Stopped {
                 let _ = finished_tx
@@ -183,7 +186,7 @@ impl Searches {
     pub(in crate::service) async fn stop(
         &mut self,
         search_id: SearchId,
-        evt_tx: &mpsc::Sender<CoreEvent>,
+        evt_tx: &crate::service::Outbox,
     ) -> bool {
         if let Some(active) = self.running.remove(&search_id) {
             active.retire(search_id, evt_tx).await;
@@ -207,7 +210,7 @@ impl Searches {
         &mut self,
         search_id: SearchId,
         run: u64,
-        evt_tx: &mpsc::Sender<CoreEvent>,
+        evt_tx: &crate::service::Outbox,
     ) {
         if self
             .running
@@ -221,7 +224,7 @@ impl Searches {
 
     /// Quit: every search through its retire, the waiting ones first — they
     /// hold nothing to join.
-    pub(in crate::service) async fn stop_all(&mut self, evt_tx: &mpsc::Sender<CoreEvent>) {
+    pub(in crate::service) async fn stop_all(&mut self, evt_tx: &crate::service::Outbox) {
         for search in self.take_waiting() {
             search.retire(evt_tx).await;
         }
@@ -248,7 +251,7 @@ impl ActiveSearch {
     /// its task is told to stop and joined within the grace, aborted past it;
     /// a task that panicked is said to have failed, and one that did not say
     /// its own end — it stopped or the abort cut it — is said to be cancelled.
-    async fn retire(self, search_id: SearchId, evt_tx: &mpsc::Sender<CoreEvent>) {
+    async fn retire(self, search_id: SearchId, evt_tx: &crate::service::Outbox) {
         let Self {
             cancel_tx,
             handle,
@@ -267,15 +270,13 @@ impl ActiveSearch {
         match end_rx.try_recv() {
             Ok(SearchEnd::Ended) => {}
             Ok(SearchEnd::Panicked) => {
-                let _ = evt_tx
-                    .send(
-                        SearchEvent::SearchFailed {
-                            search_id,
-                            reason: SearchFailure::TaskPanicked,
-                        }
-                        .into(),
-                    )
-                    .await;
+                evt_tx.send(
+                    SearchEvent::SearchFailed {
+                        search_id,
+                        reason: SearchFailure::TaskPanicked,
+                    }
+                    .into(),
+                );
             }
             Ok(SearchEnd::Stopped) | Err(_) => say_cancelled(search_id, evt_tx).await,
         }
@@ -285,41 +286,13 @@ impl ActiveSearch {
 impl WaitingSearch {
     /// A waiting search's retire: it holds nothing but its place, so it is
     /// only said to be cancelled.
-    async fn retire(self, evt_tx: &mpsc::Sender<CoreEvent>) {
+    async fn retire(self, evt_tx: &crate::service::Outbox) {
         say_cancelled(self.search_id, evt_tx).await;
     }
 }
 
-/// Aborts the task it holds when dropped, so aborting the watcher that owns
-/// it (the retire's abort past the grace) takes the task down with it.
-struct AbortOnDrop(JoinHandle<SearchEnd>);
-
-impl Drop for AbortOnDrop {
-    fn drop(&mut self) {
-        self.0.abort();
-    }
-}
-
-/// Run `task` as its own task and read how it ended from its join handle
-/// (ADR-0093): a panic is a death, `SearchEnd::Panicked`, which reaches the
-/// same finish notice as any other end and so the same retire.
-async fn run_watched<F>(task: F) -> SearchEnd
-where
-    F: Future<Output = SearchEnd> + Send + 'static,
-{
-    let mut inner = AbortOnDrop(tokio::spawn(task));
-    match (&mut inner.0).await {
-        Ok(end) => end,
-        Err(joined) if joined.is_panic() => SearchEnd::Panicked,
-        // Aborted from outside this watcher: nobody asked for it to say more.
-        Err(_) => SearchEnd::Stopped,
-    }
-}
-
-async fn say_cancelled(search_id: SearchId, evt_tx: &mpsc::Sender<CoreEvent>) {
-    let _ = evt_tx
-        .send(SearchEvent::SearchCancelled { search_id }.into())
-        .await;
+async fn say_cancelled(search_id: SearchId, evt_tx: &crate::service::Outbox) {
+    evt_tx.send(SearchEvent::SearchCancelled { search_id }.into());
 }
 
 #[cfg(test)]

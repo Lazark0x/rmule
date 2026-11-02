@@ -1,40 +1,38 @@
 //! The download command arms: starting a download against the connected
 //! server, and the cancel / pause / resume asks that reach the runner through
-//! its stop signal. Spawning itself is the shared [`spawn_download`], so both
-//! start paths assemble the same task.
-
-use std::sync::Arc;
+//! its stop signal. Every road that starts a run ends in the one
+//! [`start_run`](CoreActor::start_run), so each assembles the same task.
 
 use rmule_primitives::Ed2kFileLink;
-use tokio::sync::{Mutex, mpsc, watch};
-use tracing::Instrument;
 
 use crate::adapters::{
     KadRuntimeFactory, PeerTransferService, ServeRuntimeService, SourceLookupService,
 };
-use crate::content::{ContentFileStore, RestoredProgress, Revalidation};
+use crate::content::{ContentFileStore, free_space, on_pool};
+use crate::download::part_check::{PartCheck, Restart};
 use crate::download::source_seeds::SourceSeed;
-use crate::download::{
-    DownloadRequest, DownloadTask, RunnerContext, SharedRuntime, StopReason, file_link_from_record,
-};
+use crate::download::{RunNumber, StopReason};
 use crate::service::activity::ActiveDownload;
 use crate::service::{
     CoreCommandRejectReason, CoreEvent, DownloadCommand, DownloadEvent, DownloadId,
-    FinishedActivity, RestartOutcome, send_download_event,
+    send_download_event,
 };
 use crate::storage::DownloadRepository;
-use crate::{
-    CoreError, DownloadFailure, DownloadLifecycle, DurableDownloadRecord, PartFault,
-    StorageIntegrityFault, VerifiedPartRecord,
-};
+use crate::{CoreError, DownloadFailure, DownloadLifecycle, DownloadPaths, DurableDownloadRecord};
 
 use super::{CoreActor, send_event};
 
+mod completion;
 mod placement;
 mod restore;
+mod run;
 mod seeds;
+mod stopping;
 
-pub(super) use restore::attach_downloads;
+pub(super) use restore::{adopt_part_files, attach_downloads};
+pub(super) use run::DownloadRuntime;
+use run::RunStart;
+pub(super) use stopping::Stopping;
 
 impl<S, P, L, K> CoreActor<S, P, L, K>
 where
@@ -45,19 +43,25 @@ where
 {
     /// Enact one download command against the live activity ledger.
     pub(super) async fn on_download_command(&mut self, command: DownloadCommand) {
+        // A download in the middle of a stop answers once it has stopped, so
+        // commands about it run in the order they were sent.
+        let Some(command) = self.stopping.hold(command) else {
+            return;
+        };
         match command {
             DownloadCommand::StartDownload {
                 file,
                 source_hint,
                 name,
                 if_taken,
+                kad_aich_root,
             } => {
                 // A link for a file the Download Set already holds is a second
                 // link, not a second download (ADR-0089's amendment).
                 if self.second_link(&file).await {
                     return;
                 }
-                let paths = match self.place_download(&name, if_taken) {
+                let paths = match self.place_download(&file, &name, if_taken) {
                     Ok(paths) => paths,
                     Err(reason) => {
                         tracing::warn!(
@@ -71,25 +75,25 @@ where
                 // The Download Set admits any number of downloads; the store
                 // refuses the one thing that cannot coexist — a second live
                 // row for the same file or the same output — and says which.
-                let record =
-                    match self
-                        .wiring
-                        .store
-                        .create_download(&file, source_hint.as_ref(), &paths)
-                    {
-                        Ok(record) => record,
-                        Err(error) => {
-                            let reason = start_refusal(&error);
-                            tracing::warn!(
-                                file_hash = %file.file_hash.to_hex_upper(),
-                                %error,
-                                ?reason,
-                                "download start refused",
-                            );
-                            send_event(&self.evt_tx, CoreEvent::CommandRejected { reason }).await;
-                            return;
-                        }
-                    };
+                let record = match self.wiring.store.create_download(
+                    &file,
+                    source_hint.as_ref(),
+                    &paths,
+                    kad_aich_root,
+                ) {
+                    Ok(record) => record,
+                    Err(error) => {
+                        let reason = start_refusal(&error);
+                        tracing::warn!(
+                            file_hash = %file.file_hash.to_hex_upper(),
+                            %error,
+                            ?reason,
+                            "download start refused",
+                        );
+                        send_event(&self.evt_tx, CoreEvent::CommandRejected { reason });
+                        return;
+                    }
+                };
                 let download_id = record.id();
                 // The stored record is the one source of the name and
                 // size both surfaces report — never the command's copy
@@ -111,71 +115,67 @@ where
                         download_id,
                         file_hash: file.file_hash,
                         metadata,
+                        file_path: record.file_path().to_path_buf(),
                     },
-                )
-                .await;
+                );
 
-                // The file-known predicate: this download's
-                // hash, mirrored inline for the firewalled front's `0x99` gate.
-                self.wiring.file_known.download_started(file.file_hash);
-                let active = spawn_download(SpawnDownload {
-                    runtime: &self.download_runtime,
-                    download_id,
+                // A Served Download from its queueing on, against the link's
+                // set (ADR-0113).
+                let link_set = file
+                    .part_hash_set
+                    .as_ref()
+                    .map(|set| set.hashes().to_vec())
+                    .unwrap_or_default();
+                let start = RunStart {
                     file,
-                    identity: self.settings_identity(),
                     verified_part_indexes: Vec::new(),
-                    run: self.activities.take_download_run(),
                     remembered: Vec::new(),
-                });
-                self.activities.download_started(download_id, active);
+                    recovered: None,
+                    part_check: None,
+                };
+                self.start_run(&record, &link_set, start).await;
             }
             DownloadCommand::CancelDownload { download_id } => {
-                if let Some(active) = self.retire_download(download_id) {
-                    let _ = active.stop_tx.send(StopReason::Cancel);
-                    let _ = active.handle.await;
-                } else if !self.holds_place(download_id) {
-                    self.reject(CoreCommandRejectReason::UnknownDownload).await;
-                    return;
+                match self.stop_run(download_id, StopReason::Cancel).await {
+                    Err(reason) => return self.reject(reason).await,
+                    // `on_run_ended` finishes it.
+                    Ok(true) => return,
+                    Ok(false) if !self.holds_place(download_id) => {
+                        return self.reject(CoreCommandRejectReason::UnknownDownload).await;
+                    }
+                    Ok(false) => {}
                 }
-                // Running, waiting its turn or at rest alike: a download with
-                // no run is still the operator's to drop (ADR-0094).
+                // Waiting its turn or at rest alike: a download with no run
+                // is still the operator's to drop (ADR-0094).
                 self.activities.take_restoring(download_id);
                 self.cancel(download_id).await;
             }
             DownloadCommand::PauseDownload { download_id } => {
-                if let Some(active) = self.retire_download(download_id) {
-                    let _ = active.stop_tx.send(StopReason::Pause);
-                    let _ = active.handle.await;
-                } else if self.activities.take_restoring(download_id).is_none() {
-                    self.reject(CoreCommandRejectReason::UnknownDownload).await;
-                    return;
+                // A paused download keeps its offer: its run hands the lease
+                // back as it lets its part file go (ADR-0113).
+                match self.stop_run(download_id, StopReason::Pause).await {
+                    Err(reason) => return self.reject(reason).await,
+                    // `on_run_ended` finishes it.
+                    Ok(true) => return,
+                    // A download waiting for free space is at rest already:
+                    // the operator's Pause ends the wait (ADR-0094).
+                    Ok(false)
+                        if self.activities.take_restoring(download_id).is_none()
+                            && !self.activities.end_space_wait(download_id) =>
+                    {
+                        return self.reject(CoreCommandRejectReason::UnknownDownload).await;
+                    }
+                    Ok(false) => {}
                 }
-                let _ = self
-                    .wiring
-                    .store
-                    .set_lifecycle(download_id, DownloadLifecycle::Paused);
-                tracing::info!(download_id = download_id.as_u64(), "download paused");
-                send_download_event(&self.evt_tx, DownloadEvent::DownloadPaused { download_id })
-                    .await;
+                self.paused(download_id).await;
             }
             DownloadCommand::ClearDownload { download_id } => {
                 if let Err(reason) = self.clear(download_id).await {
                     self.reject(reason).await;
                 }
             }
-            DownloadCommand::ClearCompletedDownloads => {
-                let completed = match self.wiring.store.completed_downloads() {
-                    Ok(completed) => completed,
-                    Err(error) => {
-                        tracing::warn!(%error, "the completed downloads could not be read");
-                        return;
-                    }
-                };
-                for download_id in completed {
-                    // One whose completion is still being shared is skipped;
-                    // the next clear takes it.
-                    let _ = self.clear(download_id).await;
-                }
+            DownloadCommand::ClearDownloads { download_ids } => {
+                self.clear_every(&download_ids);
             }
             DownloadCommand::ResumeDownload { download_id } => {
                 // One waiting its turn after attach starts now instead, with
@@ -186,11 +186,23 @@ where
                     Some(remembered) => remembered,
                     None => self.stored_seeds(download_id),
                 };
+                self.activities.end_space_wait(download_id);
                 if let Err(reason) = self.resume(download_id, remembered).await {
                     self.reject(reason).await;
                 }
             }
         }
+    }
+
+    /// A download with no run left is paused: the row says so, and the front
+    /// end hears it.
+    async fn paused(&mut self, download_id: DownloadId) {
+        let _ = self
+            .wiring
+            .store
+            .set_lifecycle(download_id, DownloadLifecycle::Paused);
+        tracing::info!(download_id = download_id.as_u64(), "download paused");
+        send_download_event(&self.evt_tx, DownloadEvent::DownloadPaused { download_id });
     }
 
     /// A `StartDownload` whose file a live download already holds: its
@@ -203,7 +215,7 @@ where
     async fn second_link(&mut self, file: &Ed2kFileLink) -> bool {
         let holder = self.wiring.store.live_downloads().ok().and_then(|rows| {
             rows.into_iter()
-                .find(|row| row.file_hash() == file.file_hash && row.file_size() == file.size)
+                .find(|row| row.file_hash() == file.file_hash && row.file_size() == file.size())
         });
         let Some(holder) = holder else {
             return false;
@@ -243,96 +255,20 @@ where
         if self.activities.has_download(download_id) {
             return Err(CoreCommandRejectReason::DownloadAlreadyActive);
         }
+        // The run's own revalidation below takes over from an Offer Check
+        // still waiting or running for this row (ADR-0113).
+        self.offer_checks.stop(download_id);
         let Ok(record) = self.wiring.store.load_download(download_id) else {
             return Err(CoreCommandRejectReason::UnknownDownload);
         };
-        let restart = record.lifecycle() == DownloadLifecycle::Failed;
-        let Ok(recorded) = self.wiring.store.verified_parts(download_id) else {
-            return Err(CoreCommandRejectReason::UnknownDownload);
-        };
-        let (recorded_parts, recorded_bytes) = tally(&recorded);
-        // Resume-time revalidation lives behind the repository seam: the
-        // store re-hashes whatever it persisted against the durable
-        // verified-part records and drops the record of any part that no
-        // longer holds, so it is fetched again (ADR-0094, "Damaged parts").
-        // Only a part file that backs nothing recorded fails the download —
-        // or, on the operator's Restart, starts it over.
-        let (restored, restarted) = match self.wiring.store.revalidate(download_id).await {
-            Ok(Revalidation::Restored { progress, damaged }) => {
-                self.drop_damaged(download_id, &record, damaged).await;
-                let kept_parts = u32::try_from(progress.verified_parts()).unwrap_or(u32::MAX);
-                let outcome = RestartOutcome::Continued {
-                    kept_parts,
-                    kept_bytes: progress.verified_bytes(),
-                    dropped_parts: recorded_parts.saturating_sub(kept_parts),
-                    dropped_bytes: recorded_bytes.saturating_sub(progress.verified_bytes()),
-                };
-                (progress, restart.then_some(outcome))
-            }
-            Ok(Revalidation::Condemned(fault)) if restart && starts_over(&fault) => {
-                self.discard(download_id, &record).await?;
-                let outcome = RestartOutcome::StartedOver {
-                    fault,
-                    dropped_parts: recorded_parts,
-                    dropped_bytes: recorded_bytes,
-                };
-                (RestoredProgress::new(0, 0), Some(outcome))
-            }
-            Ok(Revalidation::Condemned(fault)) => {
-                tracing::warn!(
-                    download_id = download_id.as_u64(),
-                    %fault,
-                    "download failed: its part file backs none of its verified parts"
-                );
-                self.fail_at_rest(download_id, DownloadFailure::StorageIntegrityFailed(fault))
-                    .await;
-                return Ok(());
-            }
-            Err(error) => {
-                tracing::warn!(
-                    download_id = download_id.as_u64(),
-                    %error,
-                    "the store could not revalidate a download's verified parts"
-                );
-                return Err(CoreCommandRejectReason::DownloadStoreFailed);
-            }
-        };
-        let Ok(parts) = self.wiring.store.verified_parts(download_id) else {
-            return Err(CoreCommandRejectReason::UnknownDownload);
-        };
-        send_download_event(
-            &self.evt_tx,
-            DownloadEvent::DownloadProgressRestored {
-                download_id,
-                verified_parts: restored.verified_parts(),
-                verified_bytes: restored.verified_bytes(),
-            },
-        )
-        .await;
-        if let Some(outcome) = restarted {
-            tracing::info!(
-                download_id = download_id.as_u64(),
-                ?outcome,
-                "download restarted"
-            );
-            send_download_event(
-                &self.evt_tx,
-                DownloadEvent::DownloadRestarted {
-                    download_id,
-                    outcome,
-                },
-            )
-            .await;
+        if record.lifecycle() == DownloadLifecycle::Completing {
+            return self.resume_completing(&record, remembered).await;
         }
-
-        let file = match file_link_from_record(&record) {
-            Ok(file) => file,
-            Err(reason) => {
-                self.fail_at_rest(download_id, reason).await;
-                return Ok(());
-            }
-        };
-        let verified_part_indexes = parts.iter().map(|part| part.part_index).collect::<Vec<_>>();
+        let file = record.file_link().clone();
+        let restart = (record.lifecycle() == DownloadLifecycle::Failed).then(|| Restart {
+            failure: record.failure().cloned(),
+            moved_to: self.moved_part_candidate(&record),
+        });
         if self
             .wiring
             .store
@@ -341,7 +277,7 @@ where
         {
             return Err(CoreCommandRejectReason::UnknownDownload);
         }
-        send_download_event(&self.evt_tx, DownloadEvent::DownloadResumed { download_id }).await;
+        send_download_event(&self.evt_tx, DownloadEvent::DownloadResumed { download_id });
 
         // The run opens on the row at rest when there is one — its part
         // picture stands until the runner's first settle — and the level
@@ -351,88 +287,22 @@ where
             record.file_hash(),
             record.metadata().clone(),
         );
-        // The file-known predicate, mirrored the same way
-        // `StartDownload` mirrors it.
-        self.wiring.file_known.download_started(record.file_hash());
-        let active = spawn_download(SpawnDownload {
-            runtime: &self.download_runtime,
-            download_id,
+        // A restarted failed row is a Served Download again, as it stands
+        // now; a paused one's entry is the actor's to hand on (ADR-0113).
+        let active_row = self.wiring.store.load_download(download_id);
+        let set = self.recorded_set(download_id);
+        // The re-hash is the run's first stage, so nothing here waits on the
+        // disk: its parts arrive from the check, and a part that no longer
+        // holds is fetched again (ADR-0094, "Damaged parts").
+        let start = RunStart {
             file,
-            identity: self.settings_identity(),
-            verified_part_indexes,
-            run: self.activities.take_download_run(),
+            verified_part_indexes: Vec::new(),
             remembered,
-        });
-        self.activities.download_started(download_id, active);
-        Ok(())
-    }
-
-    /// Tell of the parts revalidation dropped, and rest the part picture on
-    /// the verified set that is left.
-    async fn drop_damaged(
-        &mut self,
-        download_id: DownloadId,
-        record: &DurableDownloadRecord,
-        damaged: Vec<PartFault>,
-    ) {
-        if damaged.is_empty() {
-            return;
-        }
-        let dropped = damaged
-            .iter()
-            .map(ToString::to_string)
-            .collect::<Vec<_>>()
-            .join("; ");
-        tracing::warn!(
-            download_id = download_id.as_u64(),
-            damaged = damaged.len(),
-            %dropped,
-            "verified parts no longer hold on disk; fetching them again"
-        );
-        let held = self
-            .wiring
-            .store
-            .verified_parts(download_id)
-            .map(|parts| parts.iter().map(|part| part.part_index).collect::<Vec<_>>())
-            .unwrap_or_default();
-        self.diagnostics.rest_download(
-            download_id,
-            record.file_hash(),
-            record.metadata().clone(),
-            &held,
-        );
-        send_download_event(
-            &self.evt_tx,
-            DownloadEvent::DamagedPartsDropped {
-                download_id,
-                damaged,
-            },
-        )
-        .await;
-    }
-
-    /// Discard what a failed download recorded and the part file its row
-    /// names, keeping its identity and place, so its run starts from nothing.
-    /// The part file is removed only here, with no run holding it: `resume`
-    /// refuses a download that has one.
-    async fn discard(
-        &mut self,
-        download_id: DownloadId,
-        record: &DurableDownloadRecord,
-    ) -> Result<(), CoreCommandRejectReason> {
-        if let Err(error) = self.wiring.store.discard_progress(download_id) {
-            tracing::warn!(%error, "a failed download's progress could not be discarded");
-            return Err(CoreCommandRejectReason::DownloadStoreFailed);
-        }
-        if let Err(error) = ContentFileStore::delete_part(record.paths()).await {
-            tracing::warn!(%error, "a failed download's part file could not be removed");
-        }
-        self.diagnostics.rest_download(
-            download_id,
-            record.file_hash(),
-            record.metadata().clone(),
-            &[],
-        );
+            recovered: None,
+            part_check: Some(PartCheck { restart }),
+        };
+        self.start_run(active_row.as_ref().unwrap_or(&record), &set, start)
+            .await;
         Ok(())
     }
 
@@ -446,6 +316,7 @@ where
             reason,
         )
         .await;
+        self.end_served(download_id, crate::PartialEnd::Ended).await;
     }
 
     /// Drop a download whose run, if it had one, has ended: its `.part` file,
@@ -458,29 +329,83 @@ where
             .load_download(download_id)
             .ok()
             .map(|record| record.paths().clone());
-        if let Some(paths) = paths {
-            let _ = ContentFileStore::delete_part(&paths).await;
-        }
-        let _ = self
+        // Stored first: a row that says Cancelled with its file still there
+        // is swept at the next attach, and a row still live with its file
+        // gone fails its next start.
+        match self
             .wiring
             .store
-            .set_lifecycle(download_id, DownloadLifecycle::Cancelled);
+            .set_lifecycle(download_id, DownloadLifecycle::Cancelled)
+        {
+            Ok(()) => {
+                if let Some(paths) = paths {
+                    self.delete_cancelled(download_id, &paths).await;
+                }
+            }
+            Err(CoreError::UnknownDownload | CoreError::InvalidLifecycleTransition) => {}
+            Err(error) => {
+                tracing::warn!(
+                    download_id = download_id.as_u64(),
+                    %error,
+                    "a cancel could not be stored, so the download stands"
+                );
+                self.reject(CoreCommandRejectReason::DownloadStoreFailed)
+                    .await;
+                crate::download::persist::tell_store_stop(&self.wiring.store, &self.evt_tx);
+                return;
+            }
+        }
         self.diagnostics.remove_download(download_id);
         tracing::info!(download_id = download_id.as_u64(), "download cancelled");
         send_download_event(
             &self.evt_tx,
             DownloadEvent::DownloadCancelled { download_id },
-        )
-        .await;
+        );
+        self.end_served(download_id, crate::PartialEnd::Ended).await;
+    }
+
+    /// Where a Restart that found the part file gone would look before
+    /// throwing it away: the name in the current Temp Directory (ADR-0094).
+    fn moved_part_candidate(&self, record: &DurableDownloadRecord) -> Option<std::path::PathBuf> {
+        let temp_dir = self.directories.temp_dir.as_deref()?;
+        Some(temp_dir.join(record.paths().part_path().file_name()?))
+    }
+
+    /// Delete a cancelled download's files. A delete that is refused is told;
+    /// the row keeps the path, and each attach tries again.
+    async fn delete_cancelled(&mut self, download_id: DownloadId, paths: &DownloadPaths) {
+        if let Err(error) = ContentFileStore::delete_part(paths).await {
+            tracing::warn!(%error, "a cancelled download's part file could not be deleted");
+            send_download_event(
+                &self.evt_tx,
+                DownloadEvent::CancelledFileLeft {
+                    download_id,
+                    part_path: paths.part_path().to_path_buf(),
+                },
+            );
+            return;
+        }
+        if let Err(error) = self.wiring.store.part_file_gone(download_id) {
+            tracing::warn!(%error, "a deleted part file could not be taken off its row");
+        }
     }
 
     /// Forget one completed download: its record and its resting row, then
-    /// the event. A run still in the **Download Set** has not been shared yet
-    /// (the auto-share rides its retire), so it is refused like any download
-    /// not completed.
+    /// the event. A run still in the **Download Set** is refused like any
+    /// download not completed, unless it has stored `Completed`: its file is
+    /// in place and shared, and all it has left is to end, which the clear
+    /// does not wait on.
     async fn clear(&mut self, download_id: DownloadId) -> Result<(), CoreCommandRejectReason> {
         if self.activities.has_download(download_id) {
-            return Err(CoreCommandRejectReason::DownloadNotCompleted);
+            let completed = self
+                .wiring
+                .store
+                .load_download(download_id)
+                .is_ok_and(|record| record.lifecycle() == DownloadLifecycle::Completed);
+            if !completed {
+                return Err(CoreCommandRejectReason::DownloadNotCompleted);
+            }
+            self.retire_download(download_id);
         }
         match self.wiring.store.clear_completed(download_id) {
             Ok(()) => {}
@@ -497,8 +422,27 @@ where
         }
         self.diagnostics.remove_download(download_id);
         tracing::info!(download_id = download_id.as_u64(), "download cleared");
-        send_download_event(&self.evt_tx, DownloadEvent::DownloadCleared { download_id }).await;
+        send_download_event(&self.evt_tx, DownloadEvent::DownloadCleared { download_id });
         Ok(())
+    }
+
+    /// Forget every completed download of `download_ids`, in one transaction.
+    /// One whose completion is still being shared, or that is no longer
+    /// completed, is passed over; the next clear takes it.
+    fn clear_every(&mut self, download_ids: &[DownloadId]) {
+        let cleared = match self.wiring.store.clear_every_completed(download_ids) {
+            Ok(cleared) => cleared,
+            Err(error) => {
+                tracing::warn!(%error, "the completed downloads could not be cleared");
+                return;
+            }
+        };
+        for download_id in cleared {
+            self.retire_download(download_id);
+            self.diagnostics.remove_download(download_id);
+            tracing::info!(download_id = download_id.as_u64(), "download cleared");
+            send_download_event(&self.evt_tx, DownloadEvent::DownloadCleared { download_id });
+        }
     }
 
     /// Whether the store holds `download_id` as a row that still holds its
@@ -514,12 +458,67 @@ where
                         | DownloadLifecycle::Active
                         | DownloadLifecycle::Paused
                         | DownloadLifecycle::Failed
+                        | DownloadLifecycle::Completing
                 )
             })
     }
 
     async fn reject(&mut self, reason: CoreCommandRejectReason) {
-        send_event(&self.evt_tx, CoreEvent::CommandRejected { reason }).await;
+        send_event(&self.evt_tx, CoreEvent::CommandRejected { reason });
+    }
+
+    /// The once-a-minute look at the downloads a Volume Stop paused for free
+    /// space (ADR-0094): each still paused with room for all it has left, the
+    /// floor over that, resumes, as `CDownloadQueue::CheckDiskspace` resumes an
+    /// insufficient file (`DownloadQueue.cpp:1267-1269`), so a resume does not
+    /// stop again. A row no longer paused left the wait.
+    pub(super) async fn resume_for_space(&mut self) {
+        for download_id in self.activities.awaiting_space() {
+            let paused = self
+                .wiring
+                .store
+                .load_download(download_id)
+                .ok()
+                .filter(|record| record.lifecycle() == DownloadLifecycle::Paused)
+                .map(|record| (record.paths().part_path().to_path_buf(), record.file_size()));
+            let Some((part_path, file_size)) = paused else {
+                self.activities.end_space_wait(download_id);
+                continue;
+            };
+            let store_dir = self.wiring.store.store_directory();
+            let fits = on_pool(move || {
+                free_space::fits_what_is_left(&part_path, store_dir.as_deref(), file_size)
+            });
+            if !fits.await {
+                continue;
+            }
+            self.activities.end_space_wait(download_id);
+            let remembered = self.stored_seeds(download_id);
+            if let Err(reason) = self.resume(download_id, remembered).await {
+                tracing::warn!(
+                    ?reason,
+                    "a download could not resume with its free space back"
+                );
+            }
+        }
+    }
+
+    /// A run's finish notice. A download that ended on its own (a death,
+    /// ADR-0093) retires here; one a stop already retired is gone from the
+    /// ledger, or replaced by a later run, so its late notice retires nothing.
+    pub(super) fn on_run_finished(
+        &mut self,
+        download_id: DownloadId,
+        run: RunNumber,
+        awaits_space: bool,
+    ) {
+        if let Some(active) = self
+            .activities
+            .take_finished(download_id, run, awaits_space)
+        {
+            self.wiring.file_known.download_ended(active.file_hash);
+            self.take_back_served(active.file_hash, active.run);
+        }
     }
 
     /// Retire one download (ADR-0093): take it out of the **Download Set**
@@ -541,118 +540,19 @@ fn start_refusal(error: &CoreError) -> CoreCommandRejectReason {
     match error {
         CoreError::DuplicateDownloadIdentity => CoreCommandRejectReason::DuplicateDownload,
         CoreError::PathConflict => CoreCommandRejectReason::DownloadPathConflict,
-        _ => CoreCommandRejectReason::DownloadStoreFailed,
-    }
-}
-
-/// What the actor keeps to spawn download runners: the core-wide
-/// [`SharedRuntime`] every run clones by one `Arc`, and the three handles
-/// only the actor reads. Built once; [`spawn_download`] clones out of it, so a
-/// new runner handle is added in one place instead of in both the
-/// `StartDownload` and `ResumeDownload` arms.
-pub(super) struct DownloadRuntime<S, P> {
-    /// The handles every run shares. Its `download_reach_tx` clone is the
-    /// actor's own, which keeps the reach arm from ever closing.
-    pub(super) shared: Arc<SharedRuntime<S, P>>,
-    pub(super) peer_concurrency: usize,
-    pub(super) finished_tx: mpsc::Sender<FinishedActivity>,
-    /// The discovery channels every runner waits on, read live (ADR-0093):
-    /// the managed global server list and the Kad activity's liveness.
-    pub(super) discovery: crate::download::DiscoveryLiveness,
-}
-
-/// The per-spawn inputs for one download: the request identity. Nothing
-/// about another activity's liveness rides here (ADR-0093) — the discovery
-/// channels, like the listener conjunct and Self Reach,
-/// are live handles on the shared [`DownloadRuntime`]. Borrows the shared `DownloadRuntime`;
-/// [`spawn_download`] assembles the `DownloadTask` from the two.
-struct SpawnDownload<'a, S, P> {
-    runtime: &'a DownloadRuntime<S, P>,
-    download_id: DownloadId,
-    file: Ed2kFileLink,
-    /// The node's wire identity: the Core Settings' credentials as the
-    /// build-time hash, a TCP port of `0` read live at each hello.
-    identity: rmule_primitives::ClientIdentity,
-    verified_part_indexes: Vec<u32>,
-    /// Which run of the download this is.
-    run: u64,
-    /// The seeds attach loaded for a restored run (ADR-0109); empty otherwise.
-    remembered: Vec<SourceSeed>,
-}
-
-/// Spawn one download runner and return its live handle. The single
-/// `DownloadTask` construction site: both the `StartDownload` and
-/// `ResumeDownload` arms build a [`SpawnDownload`] and call this, so the
-/// ~12-field request + runner-context block is written once and a new field is
-/// a one-place edit. The watch channel, tracing span, and `ActiveDownload`
-/// bookkeeping ride inside.
-fn spawn_download<S, P>(spawn: SpawnDownload<'_, S, P>) -> ActiveDownload
-where
-    S: SourceLookupService,
-    P: PeerTransferService,
-{
-    let SpawnDownload {
-        runtime,
-        download_id,
-        file,
-        identity,
-        verified_part_indexes,
-        run,
-        remembered,
-    } = spawn;
-    let file_hash = file.file_hash;
-    let (stop_tx, stop_rx) = watch::channel(StopReason::Active);
-    let (later_links, later_inbox) = mpsc::unbounded_channel();
-    let (seeds_tx, seeds) = watch::channel(Vec::new());
-    let download_span = tracing::info_span!("download", download_id = download_id.as_u64());
-    let handle = tokio::spawn(
-        DownloadTask {
-            request: DownloadRequest {
-                download_id,
-                file,
-                identity,
-                verified_part_indexes,
-                peer_concurrency: runtime.peer_concurrency,
-                discovery: runtime.discovery.clone(),
-                remembered,
-            },
-            run,
-            runner: RunnerContext {
-                rt: Arc::clone(&runtime.shared),
-                stop_rx,
-                part_file: Mutex::new(None),
-                later_links: Mutex::new(later_inbox),
-                repair: std::sync::atomic::AtomicBool::new(false),
-                seeds_tx,
-            },
-            finished_tx: runtime.finished_tx.clone(),
-        }
-        .run()
-        .instrument(download_span),
-    );
-    ActiveDownload {
-        run,
-        file_hash,
-        stop_tx,
-        handle,
-        later_links,
-        seeds,
-    }
-}
-
-/// How many verified parts `parts` records, and the bytes they hold.
-fn tally(parts: &[VerifiedPartRecord]) -> (u32, u64) {
-    let count = u32::try_from(parts.len()).unwrap_or(u32::MAX);
-    (count, parts.iter().map(|part| part.len).sum())
-}
-
-/// Whether a Restart that met `fault` starts over rather than failing again:
-/// the part file is gone, or none of what it recorded matches it. A part file
-/// that exists but cannot be read may read again once its disk or its
-/// permissions are back, so what it holds is not thrown away for it.
-const fn starts_over(fault: &StorageIntegrityFault) -> bool {
-    match fault {
-        StorageIntegrityFault::PartFileMissing | StorageIntegrityFault::NoPartHolds { .. } => true,
-        StorageIntegrityFault::PartFileUnreadable { .. } => false,
+        CoreError::DownloadAlreadyExists
+        | CoreError::UnknownDownload
+        | CoreError::InvalidLifecycleTransition
+        | CoreError::PartOutOfBounds
+        | CoreError::Repository(_)
+        | CoreError::File(_)
+        | CoreError::PathNotUtf8(_)
+        | CoreError::SecureIdentKey(_)
+        | CoreError::ServiceGone(_)
+        | CoreError::StoreRefused { .. }
+        | CoreError::ProvisionalAuthorityConflict
+        | CoreError::KadUnavailable(_)
+        | CoreError::ListenerBind(_)
+        | CoreError::ServiceStopped => CoreCommandRejectReason::DownloadStoreFailed,
     }
 }

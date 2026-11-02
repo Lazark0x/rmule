@@ -3,7 +3,7 @@
 use super::super::ProbeAnswer;
 use super::{
     AddressFamily, Instant, MappingCommand, MappingError, MappingProtocol, PROBE_GRACE, Phase,
-    PortMapper, SLOW_PROBE_GRACE,
+    PortMapper, ProbeRound, SLOW_PROBE_GRACE,
 };
 
 impl PortMapper {
@@ -22,9 +22,11 @@ impl PortMapper {
             self.enter_backoff(now, None);
             return;
         }
+        self.round = self.round.next();
         for protocol in &outstanding {
             self.commands.push_back(MappingCommand::Probe {
                 protocol: *protocol,
+                round: self.round,
             });
         }
         self.phase = Phase::Probing {
@@ -55,6 +57,7 @@ impl PortMapper {
     pub(super) fn on_probe(
         &mut self,
         protocol: MappingProtocol,
+        round: ProbeRound,
         outcome: &Result<ProbeAnswer, MappingError>,
         now: Instant,
     ) {
@@ -62,6 +65,11 @@ impl PortMapper {
             && answer.epoch_reset
         {
             self.queue_readds(now);
+        }
+        // The reset above is a fact about the gateway. Everything below is the
+        // round's, and a round holds each protocol once, by its own answer.
+        if round != self.round {
+            return;
         }
         let usable = self.probe_is_usable(outcome);
         if !matches!(self.phase, Phase::Probing { .. }) {

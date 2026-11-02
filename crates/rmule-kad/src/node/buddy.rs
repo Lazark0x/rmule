@@ -4,7 +4,8 @@
 
 use rmule_primitives::Ipv4Endpoint;
 
-use super::{KadEvent, KadNode, KadNodeDiagnostic};
+use super::send_gate::{PacedSend, SendOffer, SendRoad};
+use super::{KadCallbackPace, KadEvent, KadNode, KadNodeDiagnostic};
 use crate::buddy::{BuddyMessage, confirms_recruitment, recruitment_target};
 use crate::{KadEnvelope, KadId, KadInstant, KadNodeEndpoint};
 
@@ -75,13 +76,15 @@ impl KadNode {
         self.send_envelope(requester, &answer.encode());
     }
 
-    /// Emit a plaintext `0x52 KADEMLIA_CALLBACK_REQ` to `buddy` — the emit behind
-    /// [`RequestBuddyCallback`](crate::KadCommand::RequestBuddyCallback).
-    /// Bypasses the obfuscation matrix on purpose: aMule sends this one
-    /// unencrypted because nothing tells it the buddy's Kad version, and a
-    /// buddy that is also a stored crypt contact must still read it.
+    /// Offer a plaintext `0x52 KADEMLIA_CALLBACK_REQ` to `buddy` — the emit behind
+    /// [`RequestBuddyCallback`](crate::KadCommand::RequestBuddyCallback) — and
+    /// say what the **Callback Pace** made of it. Bypasses the obfuscation
+    /// matrix on purpose: aMule sends this one unencrypted because nothing
+    /// tells it the buddy's Kad version, and a buddy that is also a stored
+    /// crypt contact must still read it.
     pub(super) fn request_buddy_callback(
         &mut self,
+        now: KadInstant,
         buddy: KadNodeEndpoint,
         buddy_id: KadId,
         file_hash: rmule_primitives::FileHash,
@@ -92,10 +95,45 @@ impl KadNode {
             file_hash,
             requester_tcp_port: tcp_port,
         };
-        self.outputs.push_back(super::KadOutput::Datagram {
-            to: buddy,
-            bytes: request.encode().encode(),
-        });
+        let pace = self.pace_callback(
+            now,
+            PacedSend {
+                to: buddy,
+                envelope: request.encode(),
+                road: SendRoad::Clear,
+            },
+        );
+        self.emit_event(KadEvent::BuddyCallbackPaced { buddy_id, pace });
+    }
+
+    /// The one way a `0x52` leaves: through the **Kad Send Gate**, at once when
+    /// its IP's window is open.
+    pub(super) fn pace_callback(&mut self, now: KadInstant, send: PacedSend) -> KadCallbackPace {
+        match self.send_gate.offer(now, send) {
+            SendOffer::Leave(send) => {
+                self.send_paced(&send);
+                KadCallbackPace::Left
+            }
+            SendOffer::Held(leaves_in) => KadCallbackPace::Held { leaves_in },
+            SendOffer::Refused => KadCallbackPace::Refused,
+        }
+    }
+
+    /// Every held send whose instant has come goes out.
+    pub(super) fn release_held_sends(&mut self, now: KadInstant) {
+        while let Some(send) = self.send_gate.take_due(now) {
+            self.send_paced(&send);
+        }
+    }
+
+    pub(super) fn send_paced(&mut self, send: &PacedSend) {
+        match send.road {
+            SendRoad::Clear => self.outputs.push_back(super::KadOutput::Datagram {
+                to: send.to,
+                bytes: send.envelope.encode(),
+            }),
+            SendRoad::Contact => self.send_envelope(send.to, &send.envelope),
+        }
     }
 
     /// Consume a `0x51`/`0x5A`/`0x52` buddy/callback datagram (ADR-0061). The node
@@ -121,12 +159,19 @@ impl KadNode {
                 buddy_id,
                 requester_hash,
                 requester_tcp_port,
-            } => self.emit_event(KadEvent::FindBuddyRequested {
-                requester: Ipv4Endpoint::new(from.ip(), from.udp_port()),
-                buddy_id,
-                requester_hash,
-                requester_tcp_port,
-            }),
+            } => {
+                let check_collision = self
+                    .firewall
+                    .as_ref()
+                    .is_some_and(|firewall| firewall.is_check_ip(from.ip(), now));
+                self.emit_event(KadEvent::FindBuddyRequested {
+                    requester: Ipv4Endpoint::new(from.ip(), from.udp_port()),
+                    buddy_id,
+                    requester_hash,
+                    requester_tcp_port,
+                    check_collision,
+                });
+            }
             // `0x5A`: an answer to our own recruitment. Accept only from a tracked
             // `0x51` target whose echoed buddyID XOR-inverts to our Kad ID (aMule's
             // `CHECK_TRACKED_PACKET` + `GetKadID() == check`); else drop it.

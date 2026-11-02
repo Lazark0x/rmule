@@ -2,23 +2,19 @@
 //! the callbacks servers relay back) and client-UDP (peer reask), each behind
 //! a trait so core drives datagrams without owning a socket.
 
+use parking_lot::Mutex;
 use std::future::Future;
 use std::net::SocketAddrV4;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
-use rmule_ed2k::GlobCallbackRequest;
 use rmule_net::family::{RECEIVE_ERROR_BACKOFF, ReceiveErrorBudget, ReceiveErrorOutcome};
 use rmule_primitives::Ipv4Endpoint;
-use tokio::sync::mpsc;
-
-use crate::global_sources::GlobCallbackSend;
-use crate::server_udp::ServerUdpSeal;
 
 /// Datagram transport for the server-UDP socket (ADR-0051). `&self` (not
 /// `&mut`) so the engine can receive while every sender sends on the one
 /// socket. Sending is fire-and-forget; a non-answering server is harmless over
 /// UDP. The transport knows no server-UDP port rule: the
-/// [`ServerUdpSeal`] names every
+/// [`ServerUdpSeal`](crate::server_udp::ServerUdpSeal) names every
 /// destination.
 pub(crate) trait ServerUdpTransport: Send + Sync + 'static {
     /// Send one datagram, as given, to `to`.
@@ -40,23 +36,6 @@ impl<T: ServerUdpTransport> ServerUdpTransport for Arc<T> {
 
     fn recv(&self) -> impl Future<Output = Option<(Vec<u8>, Ipv4Endpoint)>> + Send {
         (**self).recv()
-    }
-}
-
-/// The global-callback relay (ADR-0051): the socket-side consumer
-/// of the runner's per-server callback channel. Each [`GlobCallbackSend`] a
-/// download's runner emits becomes an `OP_GLOBCALLBACKREQUEST` sent to the
-/// source-server through the seal, carrying rmule's own contact and the target
-/// Low-ID. Ends when every callback sender drops (Core shutting down).
-pub(crate) async fn relay_global_callbacks<T: ServerUdpTransport>(
-    seal: ServerUdpSeal<T>,
-    mut callback_rx: mpsc::Receiver<GlobCallbackSend>,
-) {
-    while let Some(send) = callback_rx.recv().await {
-        let datagram = GlobCallbackRequest::new(send.requester, send.low_id)
-            .encode_packet()
-            .encode_udp();
-        seal.send(send.source_server, datagram).await;
     }
 }
 
@@ -127,10 +106,7 @@ impl ServerUdpTransport for RuntimeServerUdpTransport {
         loop {
             match self.socket.recv().await {
                 Ok((bytes, from)) => {
-                    self.receive_budget
-                        .lock()
-                        .expect("server-UDP receive budget mutex poisoned")
-                        .record_success();
+                    self.receive_budget.lock().record_success();
                     match from.as_v4() {
                         Some(from) => return Some((bytes, from)),
                         None => tracing::debug!(
@@ -147,11 +123,7 @@ impl ServerUdpTransport for RuntimeServerUdpTransport {
                 Err(error) => {
                     // The lock guard must not outlive this statement: it is
                     // not `Send`, and the arm below awaits.
-                    let outcome = self
-                        .receive_budget
-                        .lock()
-                        .expect("server-UDP receive budget mutex poisoned")
-                        .record_error(error.kind());
+                    let outcome = self.receive_budget.lock().record_error(error.kind());
                     match outcome {
                         ReceiveErrorOutcome::Tolerated => {
                             tracing::debug!(%error, "transient server-UDP receive error");
@@ -214,20 +186,13 @@ impl crate::client_udp::ClientUdpTransport for RuntimeClientUdpTransport {
         loop {
             match self.socket.recv().await {
                 Ok((bytes, src)) => {
-                    self.receive_budget
-                        .lock()
-                        .expect("client-UDP receive budget mutex poisoned")
-                        .record_success();
+                    self.receive_budget.lock().record_success();
                     return Some((src, bytes));
                 }
                 Err(error) => {
                     // The lock guard must not outlive this statement: it is
                     // not `Send`, and the arm below awaits.
-                    let outcome = self
-                        .receive_budget
-                        .lock()
-                        .expect("client-UDP receive budget mutex poisoned")
-                        .record_error(error.kind());
+                    let outcome = self.receive_budget.lock().record_error(error.kind());
                     match outcome {
                         ReceiveErrorOutcome::Tolerated => {
                             tracing::debug!(%error, "transient client-UDP receive error");
@@ -253,7 +218,7 @@ impl crate::client_udp::ClientUdpTransport for RuntimeClientUdpTransport {
 /// (aMule `ServerUDPSocket.cpp` — `SendPacket` targets `host->GetPort() + 4`, and
 /// the receive side reads each answer's source as `port - 4`). The managed server
 /// list holds TCP ports, so the **Server-UDP Seal** sends every plain server-UDP
-/// datagram (source queries and per-server callbacks alike) to that port + 4.
+/// datagram (source queries among them) to that port + 4.
 /// Cite-and-rewrite only (ADR-0004).
 pub(crate) const SERVER_UDP_PORT_OFFSET: u16 = 4;
 

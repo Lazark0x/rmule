@@ -80,6 +80,17 @@ impl KadNode {
 
     /// Process one inbound datagram.
     pub fn handle_datagram(&mut self, now: KadInstant, from: KadNodeEndpoint, bytes: &[u8]) {
+        self.receive(now, from, bytes, false);
+    }
+
+    /// Process one inbound datagram from an address under the Hush (ADR-0064):
+    /// it goes on only if it proves a round trip by a valid receiver key, and
+    /// this node is the one place that can read that key.
+    pub fn handle_hushed_datagram(&mut self, now: KadInstant, from: KadNodeEndpoint, bytes: &[u8]) {
+        self.receive(now, from, bytes, true);
+    }
+
+    fn receive(&mut self, now: KadInstant, from: KadNodeEndpoint, bytes: &[u8], hushed: bool) {
         // Dual-path receive (ADR-0046), always on like aMule's
         // `DecryptReceivedClient`: a known plaintext Kad marker (`0xE4`/`0xE5`)
         // bypasses decryption, any other first byte is trial-decrypted keyed on
@@ -108,6 +119,11 @@ impl KadNode {
             return;
         }
 
+        if hushed && !received_key.valid_receiver_key {
+            self.emit_diagnostic(KadNodeDiagnostic::HushedDropped { from });
+            return;
+        }
+
         let plain = decrypted.as_ref().map_or(bytes, |d| d.payload.as_slice());
         let envelope = match decode_exact(plain) {
             // A packed datagram is already inflated to its logical plain twin.
@@ -121,15 +137,20 @@ impl KadNode {
         // ADR-0064 entry gate 2: the per-(IP, opcode) leaky flood limiter,
         // LAN-exempt like the publish-tolerance gate. An untracked opcode —
         // every response, solicitation correlation owns those — always
-        // admits without allocating a bucket.
+        // admits without allocating a bucket. Proof splits the buckets, so a
+        // forger's plaintext neither spends a keyed sender's allowance nor
+        // leaves its next keyed datagram to cross the line.
         if !net::is_lan_ip(from.ip()) {
             let opcode = envelope.opcode();
-            if let FloodVerdict::Drop { offender } = self.flood.gate(now, from.ip(), opcode) {
+            let proven = received_key.valid_receiver_key;
+            if let FloodVerdict::Drop { offender } = self.flood.gate(now, from.ip(), opcode, proven)
+            {
                 self.emit_diagnostic(KadNodeDiagnostic::FloodLimited { from, opcode });
                 if offender {
                     self.emit_event(KadEvent::FloodOffenderDetected {
                         ip: from.ip(),
                         opcode,
+                        proven,
                     });
                 }
                 return;
@@ -164,6 +185,7 @@ impl KadNode {
         // packet (`KademliaUDPListener.cpp:254`). After dispatch, so a first
         // datagram's sender is already a seed the lookup can walk from.
         self.launch_udp_helper_lookup(now);
+        self.drive_walk_starts(now);
     }
 
     /// Route one gate-passed, decoded datagram to its handler.

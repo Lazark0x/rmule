@@ -1,11 +1,12 @@
-//! Spare copies against a scripted directory (ADR-0100, "Spare copies are
-//! recorded"): recorded once, trusted unread at every later start, the place
+//! Spare copies against a scripted directory (ADR-0100): recorded once, trusted unread at every
+//! later start, the place
 //! a row whose file goes or changes moves to without a read, and dropped —
 //! never Had — when they go or change themselves.
 
+use parking_lot::Mutex;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
-use std::sync::{Arc, Mutex};
 
 use rmule_primitives::FileHashSummary;
 
@@ -14,7 +15,7 @@ use super::super::{
     Consent, FileStamp, Known, Memory, PassEnd, ProgressCell, ScanReport, SpareCopy, run_pass,
 };
 use super::shared_paths;
-use crate::registry::SharedFileEntry;
+use crate::registry::SharedRow;
 
 fn pass_knowing(dir: &Scripted, known: &Known) -> (PassEnd, Vec<ScanReport>) {
     let progress: ProgressCell = Arc::new(Mutex::new(None));
@@ -22,7 +23,7 @@ fn pass_knowing(dir: &Scripted, known: &Known) -> (PassEnd, Vec<ScanReport>) {
     let end = run_pass(
         dir,
         Path::new(ROOT),
-        known,
+        &mut || Some(known.clone()),
         Consent::Given,
         &AtomicBool::new(false),
         &progress,
@@ -33,14 +34,14 @@ fn pass_knowing(dir: &Scripted, known: &Known) -> (PassEnd, Vec<ScanReport>) {
 }
 
 /// The registry row for `bytes` at `path`, with its real hash.
-fn shared(dir: &mut Scripted, path: &str, bytes: &[u8]) -> SharedFileEntry {
+fn shared(dir: &mut Scripted, path: &str, bytes: &[u8]) -> SharedRow {
     let stamp = dir.file(path, bytes, 1);
     let mut entry = row(path, stamp, 0);
     entry.file_hash = FileHashSummary::digest_bytes(bytes).file_hash();
     entry
 }
 
-fn spare_of(row: &SharedFileEntry, path: &str, stamp: FileStamp) -> SpareCopy {
+fn spare_of(row: &SharedRow, path: &str, stamp: FileStamp) -> SpareCopy {
     SpareCopy {
         path: PathBuf::from(path),
         file_hash: row.file_hash,

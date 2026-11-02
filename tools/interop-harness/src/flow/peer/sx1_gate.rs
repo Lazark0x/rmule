@@ -8,7 +8,7 @@
 //! offers a file of its own; a downloading rmule finds it there, dials it and
 //! is queued; the fake counts the `0xC5/0x81` and `0xC5/0x83` rmule sends.
 //! Version 3 is the control that shows the ask would have been visible. The
-//! summaries land in `sx1-gate/verdict.txt`.
+//! summaries land in `sx1-gate/sx1-gate-verdict.toml`.
 
 use std::fs;
 use std::time::Duration;
@@ -19,6 +19,7 @@ use crate::artifacts::RunLayout;
 use crate::docker::RunContainer;
 use crate::flow::bench::{Bench, run_checked};
 use crate::flow::ed2k_server::search_wire::SUBNET;
+use crate::verdict::{self, Verdict};
 
 /// The fake, written into the run dir and mounted.
 const FAKE_SOURCE: &str = include_str!("sx1_gate/fake_source.py");
@@ -174,12 +175,9 @@ pub fn run_sx1_gate(options: Sx1GateOptions<'_>) -> Result<()> {
         && !asked(&summaries[0])
         && dialled(&summaries[1])
         && asked(&summaries[1]);
-    let verdict = format!(
-        "verdict={} (fake-backed)\n{}\n",
-        if pass { "PASS" } else { "FAIL" },
-        summaries.join("\n")
-    );
-    fs::write(root.join("verdict.txt"), &verdict).context("write verdict")?;
-    print!("{verdict}");
+    let verdict = if pass { Verdict::Pass } else { Verdict::Fail };
+    let report = format!("fake-backed\n{}\n", summaries.join("\n"));
+    verdict::write_report(&root, "sx1-gate", verdict, &report)?;
+    print!("verdict={verdict} {report}");
     Ok(())
 }

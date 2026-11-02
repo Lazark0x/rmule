@@ -31,8 +31,9 @@ impl PartIndex {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-/// Which parts of a file a peer holds, as the wire carries it: one bit
-/// per part, LSB first, padded to whole bytes.
+/// Which parts of a file a peer holds: one bit per part, LSB first, padded
+/// to whole bytes. What a peer states reaches it only through
+/// [`WireStatus::advertised_parts`](crate::WireStatus::advertised_parts).
 pub struct PartBitmap {
     part_count: u32,
     bytes: Vec<u8>,
@@ -91,55 +92,24 @@ impl PartBitmap {
         Self { part_count, bytes }
     }
 
-    #[must_use]
-    /// aMule's writer-side "complete source" sentinel: a literal part count
-    /// of zero and no bitmap bytes at all, the shape `SendFileRequest`
-    /// writes for a fully-owned shared file (`ClientTCPSocket.cpp`
-    /// `OP_SETREQFILEID`, kno `ab483654`: `IsPartFile() ?  WritePartStatus()
-    /// : data.WriteUInt16(0)` — a complete file is never a `CPartFile`, so
-    /// there is no bitmap to spell out).
-    pub fn complete_source_sentinel() -> Self {
-        Self {
-            part_count: 0,
-            bytes: Vec::new(),
-        }
-    }
-
-    #[must_use]
-    /// A downloader's own availability, as aMule's `CPartFile::WritePartStatus`
-    /// writes it (stock 2.3.3 `PartFile.cpp:1338`) into a name ask, a UDP
-    /// reask or a status answer: `size / PARTSIZE + 1` parts
-    /// (`m_iED2KPartCount`, `KnownFile.cpp:422`) — one more than the file has
-    /// when its size is an exact multiple of the part size, and that phantom
-    /// part always reads held (`GapList.cpp:291`). The count matters: aMule's
-    /// uploader drops the whole status on any other count (`UploadClient.cpp`
-    /// `ProcessExtendedInfo`), and inside a bundle it then reads the unread
-    /// bitmap bytes as sub-opcodes. `held` answers for the file's real parts.
-    pub fn downloader(file_size: u64, held: impl Fn(PartIndex) -> bool) -> Self {
-        let real = rmule_primitives::part_count(file_size);
-        let counted =
-            u32::try_from(file_size / rmule_primitives::ED2K_PART_SIZE + 1).unwrap_or(u32::MAX);
-        let mut bytes = vec![0u8; expected_byte_len(counted)];
-        for part in 0..counted {
-            if part >= real || held(PartIndex::new(part)) {
+    /// A `part_count`-part bitmap holding the parts `held` names.
+    pub(crate) fn from_fn(part_count: u32, held: impl Fn(PartIndex) -> bool) -> Self {
+        let mut bytes = vec![0u8; expected_byte_len(part_count)];
+        for part in 0..part_count {
+            if held(PartIndex::new(part)) {
                 bytes[(part / 8) as usize] |= 1 << (part % 8);
             }
         }
-        Self {
-            part_count: counted,
-            bytes,
-        }
+        Self { part_count, bytes }
+    }
+
+    /// The first `part_count` parts of this bitmap, which must hold as many.
+    pub(crate) fn first(&self, part_count: u32) -> Self {
+        Self::from_fn(part_count, |part| self.has(part))
     }
 
     #[must_use]
-    /// [`Self::downloader`] for a download that holds nothing yet.
-    pub fn downloader_empty(file_size: u64) -> Self {
-        Self::downloader(file_size, |_| false)
-    }
-
-    #[must_use]
-    /// Whether every part is present — the shape aMule's writer collapses to
-    /// [`Self::complete_source_sentinel`] instead of spelling out bit by bit.
+    /// Whether every part is present.
     pub fn is_complete(&self) -> bool {
         self.part_count > 0 && self.iter_present().count() as u32 == self.part_count
     }
@@ -148,6 +118,11 @@ impl PartBitmap {
     /// The bitmap's wire bytes, padding included.
     pub fn encode(&self) -> Vec<u8> {
         self.bytes.clone()
+    }
+
+    /// The bitmap's bytes, padding included.
+    pub(crate) fn into_bytes(self) -> Vec<u8> {
+        self.bytes
     }
 
     #[must_use]
@@ -221,31 +196,8 @@ mod tests {
     }
 
     #[test]
-    fn complete_source_sentinel_is_the_zero_part_empty_bitmap() {
-        let sentinel = PartBitmap::complete_source_sentinel();
-        assert_eq!(sentinel.part_count(), 0);
-        assert_eq!(sentinel.encode(), Vec::<u8>::new());
-    }
-
-    #[test]
-    fn a_downloader_counts_parts_the_way_amules_writer_does() {
-        use rmule_primitives::ED2K_PART_SIZE;
-        // 2.5 parts, part 1 held: three parts, one bit.
-        let partial = PartBitmap::downloader(ED2K_PART_SIZE * 5 / 2, |i| i.value() == 1);
-        assert_eq!((partial.part_count(), partial.encode()), (3, vec![0b010]));
-        // Exactly two parts, nothing held: aMule counts three and reads the
-        // phantom third as held (`GapList.cpp:291`).
-        let exact = PartBitmap::downloader_empty(ED2K_PART_SIZE * 2);
-        assert_eq!((exact.part_count(), exact.encode()), (3, vec![0b100]));
-        // Sixteen parts exactly: the phantom spills into a third byte.
-        let spill = PartBitmap::downloader(ED2K_PART_SIZE * 16, |_| true);
-        assert_eq!(spill.encode(), vec![0xFF, 0xFF, 0x01]);
-    }
-
-    #[test]
     fn is_complete_requires_every_part_present_and_at_least_one_part() {
         assert!(PartBitmap::all_present(5).is_complete());
         assert!(!PartBitmap::decode(5, &[0b0_1111]).unwrap().is_complete());
-        assert!(!PartBitmap::complete_source_sentinel().is_complete());
     }
 }

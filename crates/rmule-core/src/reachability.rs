@@ -332,21 +332,20 @@ impl Reachability {
 /// server that trusts rather than dials back leaves us here forever, and that
 /// must read as "nothing was probed", not as "probed and failed".
 #[derive(Clone, Debug, Default)]
-pub(crate) struct SharedIpv6Probe(std::sync::Arc<std::sync::Mutex<Ipv6Probe>>);
+pub(crate) struct SharedIpv6Probe(std::sync::Arc<parking_lot::Mutex<Ipv6Probe>>);
 
 impl SharedIpv6Probe {
-    /// The published verdict. A poisoned lock reads the honest default.
+    /// The published verdict.
     pub(crate) fn get(&self) -> Ipv6Probe {
-        self.0.lock().map_or(Ipv6Probe::Unknown, |probe| *probe)
+        *self.0.lock()
     }
 
     /// Publish what the connected server's `ST_IPV6_STATUS` said (the
     /// `OP_SERVERIDENT` reader that feeds this lands with the IPv6 dialect,
     /// ADR-0087).
     pub(crate) fn set(&self, probe: Ipv6Probe) {
-        if let Ok(mut slot) = self.0.lock() {
-            *slot = probe;
-        }
+        let mut slot = self.0.lock();
+        *slot = probe;
     }
 
     /// The session ended: the verdict clears, because it was that server's

@@ -8,9 +8,10 @@
 //! which is the edge, exactly as the Kad driver is the edge that maps real
 //! time onto the sans-I/O node's explicit scale.
 
+use parking_lot::Mutex;
 use std::collections::BTreeMap;
 use std::net::{IpAddr, Ipv4Addr};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Instant;
 
 use rmule_net::family::{FamilyBinds, HalfBound};
@@ -22,7 +23,7 @@ use tokio::sync::watch;
 
 use crate::reachability::Ipv6Probe;
 
-use super::admissible::{is_carrier_grade_nat, is_publicly_usable, is_site_local};
+use super::admissible::{is_carrier_grade_nat, is_publicly_usable};
 use super::ladder::{KadAgreement, Ladder, Rung};
 use super::{
     AddressObservation, AdvertReachability, AdvertisedEndpoints, AssignedAddress, ConfidenceTier,
@@ -48,9 +49,14 @@ pub(crate) struct AddressLearning {
     /// closed: a socket the settings leave to the OS (port `0`) binds it
     /// again, as aMule changes its ports only on a restart of the program.
     held_ports: BTreeMap<SocketRole, u16>,
-    /// The addresses this host currently holds, newest refresh wins. Both a
-    /// tier of its own and the corroboration filter's evidence.
+    /// The publicly usable addresses this host currently holds, newest
+    /// refresh wins. Both a tier of its own and the corroboration filter's
+    /// evidence.
     interfaces: Vec<IpAddr>,
+    /// Every address the last refresh enumerated, routable or not — the
+    /// evidence a hairpin needs: a refused reflection naming one of these
+    /// never left our NAT.
+    enumerated: Vec<IpAddr>,
     /// Hints raised when an observation was refused; the disagreement hint is
     /// derived on read instead, because it changes as tiers age.
     hints: BTreeMap<AddressFamily, NatHint>,
@@ -85,6 +91,12 @@ impl AddressLearning {
         match observation {
             AddressObservation::Address { address, .. } => {
                 self.record_address(source, address, now)
+            }
+            // A `0` is no port (ADR-0084): recorded, it would dissent in the
+            // Own Mapping as if an observer had seen one.
+            AddressObservation::Port { port: 0, .. } => ObservationOutcome::PortZeroRefused,
+            AddressObservation::Endpoint { endpoint, .. } if endpoint.port() == 0 => {
+                ObservationOutcome::PortZeroRefused
             }
             AddressObservation::Port { role, port, .. } => {
                 self.ports.entry(role).or_insert_with(port_ladder).record(
@@ -227,6 +239,7 @@ impl AddressLearning {
             .copied()
             .filter(|address| is_publicly_usable(*address))
             .collect();
+        self.enumerated = addresses.to_vec();
     }
 
     /// Record what one role's **Family Pair** bound — the families that came
@@ -297,25 +310,22 @@ impl AddressLearning {
     /// hole punched to an address we hold, so asking for one while our own v6
     /// is merely a stale last-known would open it at the wrong address.
     pub(crate) fn known_address(&self, family: AddressFamily, now: Instant) -> Option<IpAddr> {
-        let rungs = self.address_rungs(family);
+        let rungs = self.address_rungs(family, now);
         best_fresh(&rungs, family, now).map(|rung| rung.value)
     }
 
     /// Which tier `family`'s address verdict currently rests on, or `None` when
     /// none holds.
     ///
-    /// The **Port Mapping** runtime reads this as the connected server's ID
-    /// verdict: [`Server`](ConfidenceTier::Server) holding an IPv4 *is* a
-    /// High-ID, since that tier exists only while a session assigned us one. It
-    /// is read here rather than plumbed from the session because the session
-    /// layer does not know a port mapper exists, and "what the server says our
-    /// address is" already lives in exactly one place.
+    /// [`Server`](ConfidenceTier::Server) holding an IPv4 *is* a High-ID, since
+    /// that tier exists only while a session assigned us one.
+    #[cfg(test)]
     pub(crate) fn address_tier(
         &self,
         family: AddressFamily,
         now: Instant,
     ) -> Option<ConfidenceTier> {
-        let rungs = self.address_rungs(family);
+        let rungs = self.address_rungs(family, now);
         best_fresh(&rungs, family, now).map(|rung| rung.tier)
     }
 
@@ -326,7 +336,7 @@ impl AddressLearning {
         role: SocketRole,
         now: Instant,
     ) -> EndpointVerdict {
-        let rungs = self.address_rungs(family);
+        let rungs = self.address_rungs(family, now);
         let port = self.port(role, now);
         if let Some(rung) = best_fresh(&rungs, family, now)
             && let Some(port) = port
@@ -360,7 +370,7 @@ impl AddressLearning {
     /// Asking for a full endpoint there would make the crypt layer wait on a
     /// listener it has nothing to do with.
     pub(crate) fn address(&self, family: AddressFamily, now: Instant) -> Option<IpAddr> {
-        let rungs = self.address_rungs(family);
+        let rungs = self.address_rungs(family, now);
         best_fresh(&rungs, family, now)
             .map(|rung| rung.value)
             .or_else(|| {
@@ -376,7 +386,7 @@ impl AddressLearning {
     /// "disagreement is a fact, not an error"). A live disagreement outranks a
     /// remembered refusal: it is the one that describes the path right now.
     pub(crate) fn nat_hint(&self, family: AddressFamily, now: Instant) -> Option<NatHint> {
-        let rungs = self.address_rungs(family);
+        let rungs = self.address_rungs(family, now);
         best_fresh(&rungs, family, now)
             .and_then(|adopted| {
                 rungs
@@ -393,9 +403,8 @@ impl AddressLearning {
             .or_else(|| self.hints.get(&family).copied())
     }
 
-    /// Whether anything at all has been observed — the "no learning has
-    /// happened yet" case a diagnostics consumer renders as unknown rather
-    /// than as an empty result.
+    /// Whether anything at all has been observed.
+    #[cfg(test)]
     pub(crate) fn is_empty(&self) -> bool {
         self.interfaces.is_empty()
             && self.addresses.values().all(Ladder::is_empty)
@@ -445,7 +454,7 @@ impl AddressLearning {
     pub(crate) fn learned_port(&self, role: SocketRole, now: Instant) -> Option<u16> {
         self.ports.get(&role).and_then(|ladder| {
             ladder
-                .rungs()
+                .rungs(now)
                 .into_iter()
                 .filter(|rung| rung.is_fresh(now) && rung.tier.port_rank().is_some())
                 .min_by_key(|rung| rung.tier.port_rank())
@@ -476,6 +485,27 @@ impl AddressLearning {
         }
     }
 
+    /// Withdraw what one ended port-mapping grant fed (ADR-0086, "Every grant
+    /// has one owner and one end"): `role`'s port-ladder grant when the row
+    /// is IPv4 — an IPv6 pinhole never fed one — and `family`'s address-ladder
+    /// grant unless `sibling_held`, another `Mapped` lease in that family
+    /// still standing behind the same gateway address.
+    pub(crate) fn withdraw_mapping_grant(
+        &mut self,
+        role: SocketRole,
+        family: AddressFamily,
+        sibling_held: bool,
+    ) {
+        if family == AddressFamily::V4
+            && let Some(ladder) = self.ports.get_mut(&role)
+        {
+            ladder.withdraw(ConfidenceTier::MappingGrant);
+        }
+        if !sibling_held && let Some(ladder) = self.addresses.get_mut(&family) {
+            ladder.withdraw(ConfidenceTier::MappingGrant);
+        }
+    }
+
     /// The external port for `role`: the best fresh port tier, else the port
     /// the role actually bound.
     pub(super) fn port(&self, role: SocketRole, now: Instant) -> Option<u16> {
@@ -489,11 +519,11 @@ impl AddressLearning {
 
     /// Every address rung `family` offers, corroboration filter applied, plus
     /// the interface rung the ladder cannot produce on its own.
-    fn address_rungs(&self, family: AddressFamily) -> Vec<Rung<IpAddr>> {
+    fn address_rungs(&self, family: AddressFamily, now: Instant) -> Vec<Rung<IpAddr>> {
         let mut rungs: Vec<Rung<IpAddr>> = self
             .addresses
             .get(&family)
-            .map(Ladder::rungs)
+            .map(|ladder| ladder.rungs(now))
             .unwrap_or_default()
             .into_iter()
             .filter(|rung| {
@@ -598,11 +628,13 @@ impl AddressLearning {
         self.interfaces.contains(&address)
     }
 
-    /// Whether this host holds `address` on some interface, routable or not.
-    /// The interface *tier* keeps only publicly usable addresses; hairpin
-    /// detection needs the unroutable ones too, so the bind table answers it.
+    /// Whether this host holds `address` on some interface, routable or not,
+    /// or it is loopback. The interface *tier* keeps only publicly usable
+    /// addresses; hairpin detection needs the unroutable ones too, so the
+    /// enumeration's whole set answers it — a private address some other
+    /// host holds is no hairpin (ADR-0084).
     fn interfaces_hold_locally(&self, address: IpAddr) -> bool {
-        self.interfaces.contains(&address) || address.is_loopback() || is_site_local(address)
+        self.enumerated.contains(&address) || address.is_loopback()
     }
 }
 
@@ -680,7 +712,7 @@ const fn join(address: IpAddr, port: u16) -> Option<PeerEndpoint> {
 /// [`AddressLearning`] itself reads no clock: every rule takes `now` as a
 /// parameter, so a test drives thirty minutes of freshness in a microsecond.
 /// This wrapper is where real time enters, exactly as the Kad driver is where
-/// real time enters the sans-I/O node. A `std::sync::Mutex` guards it because
+/// real time enters the sans-I/O node. A `parking_lot::Mutex` guards it because
 /// every write is a point-in-time update that never crosses an `.await`.
 #[derive(Clone, Debug)]
 pub(crate) struct SharedAddressLearning {
@@ -809,6 +841,16 @@ impl SharedAddressLearning {
         self.with(|store, now| store.next_lapse(now))
     }
 
+    /// See [`AddressLearning::withdraw_mapping_grant`].
+    pub(crate) fn withdraw_mapping_grant(
+        &self,
+        role: SocketRole,
+        family: AddressFamily,
+        sibling_held: bool,
+    ) {
+        self.write(|store, _| store.withdraw_mapping_grant(role, family, sibling_held));
+    }
+
     /// See [`AddressLearning::forget_kad_port_round`].
     pub(crate) fn forget_kad_port_round(&self, role: SocketRole) {
         self.write(|store, _| store.forget_kad_port_round(role));
@@ -854,6 +896,7 @@ impl SharedAddressLearning {
 
     /// Which tier one family's verdict rests on (see
     /// [`AddressLearning::address_tier`]).
+    #[cfg(test)]
     pub(crate) fn address_tier(&self, family: AddressFamily) -> Option<ConfidenceTier> {
         self.with(|store, now| store.address_tier(family, now))
     }
@@ -889,6 +932,7 @@ impl SharedAddressLearning {
     }
 
     /// Whether anything at all has been learned yet.
+    #[cfg(test)]
     pub(crate) fn is_empty(&self) -> bool {
         self.with(|store, _| store.is_empty())
     }
@@ -909,7 +953,7 @@ impl SharedAddressLearning {
     }
 
     fn with<R>(&self, act: impl FnOnce(&mut AddressLearning, Instant) -> R) -> R {
-        let mut store = self.store.lock().expect("address-learning mutex poisoned");
+        let mut store = self.store.lock();
         act(&mut store, Instant::now())
     }
 }

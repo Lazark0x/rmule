@@ -14,7 +14,7 @@
 //! 2. **transport** — the requester claims a transport we can raise;
 //! 3. **target** — the three-part precedence rule resolves a public endpoint;
 //! 4. **self-punch** — that endpoint is not one of our own interfaces;
-//! 5. **budget** — that endpoint has not been punched inside the window (the
+//! 5. **budget** — that endpoint, port included, has not been punched inside the window (the
 //!    acting path's own limiter, never the relay service's).
 //!
 //! The budget is last so that only a rendezvous that would otherwise be
@@ -27,11 +27,12 @@ use std::time::{Duration, Instant};
 use rmule_peer::natt::{
     NattTransport, PunchTarget, RendezvousBody, RendezvousTrigger, resolve_punch_target,
 };
-use rmule_primitives::{AccountingKey, FileHash, Ipv4Endpoint, PeerEndpoint, UserHash};
+use rmule_peer::peer_udp::crypt::stance_from_connect_options;
+use rmule_primitives::{CryptStance, FileHash, Ipv4Endpoint, PeerEndpoint, UserHash};
 
 use crate::interval_limiter::IntervalLimiter;
 
-/// Minimum time between two bursts at one destination bucket —
+/// Minimum time between two bursts at one destination endpoint —
 /// eMuleAI's `ESERVERBUDDY_RELAY_REASK_TIME`, the only per-request relay
 /// interval its tree publishes. A legitimate requester retries after a relay
 /// timeout nearly twice this long, so the window never bites it.
@@ -83,6 +84,8 @@ pub(crate) enum ActingVerdict {
     /// it is armed immediate rather than jittered.
     Punch {
         requester: UserHash,
+        /// The crypt bits of the requester's connect-options byte.
+        crypt: CryptStance,
         file_hash: Option<FileHash>,
         target: PunchTarget,
         transport: NattTransport,
@@ -111,7 +114,7 @@ pub enum ActingRefusal {
 /// The acting path's one piece of state: its own limiter.
 #[derive(Debug)]
 pub(crate) struct ActingPath {
-    destinations: IntervalLimiter,
+    destinations: IntervalLimiter<Ipv4Endpoint>,
 }
 
 impl Default for ActingPath {
@@ -163,15 +166,13 @@ impl ActingPath {
         }
         // Bucketed on where the burst would land, not on who asked: the
         // requester hash is a free claim, and what the limit protects is the
-        // address thirty-eight datagrams are about to be sent to.
-        if !self
-            .destinations
-            .admit(AccountingKey::of(target.endpoint.ip.into()), now)
-        {
+        // endpoint thirty-eight datagrams are about to be sent to.
+        if !self.destinations.admit(target.endpoint, now) {
             return ActingVerdict::Refuse(ActingRefusal::RateLimited);
         }
         ActingVerdict::Punch {
             requester: body.requester,
+            crypt: stance_from_connect_options(body.options.as_byte()),
             file_hash: body.file_hash,
             target,
             transport,
@@ -245,6 +246,7 @@ mod tests {
             verdict,
             ActingVerdict::Punch {
                 requester: UserHash::from_bytes([0x11; 16]),
+                crypt: CryptStance::disabled(),
                 file_hash: None,
                 target: PunchTarget {
                     endpoint: requester_seen(),
@@ -387,6 +389,29 @@ mod tests {
             act(&mut path, t0 + ACTING_MIN_INTERVAL),
             ActingVerdict::Punch { .. }
         ));
+    }
+
+    /// The window protects one endpoint: a second requester behind the same
+    /// public address holds its own mapping and gets its own burst.
+    #[test]
+    fn two_requesters_behind_one_address_are_each_punched() {
+        let mut path = ActingPath::default();
+        let t0 = Instant::now();
+        let carried_from = |port| RendezvousCarrier::BuddyTcp {
+            link_peer: PeerEndpoint::V4(buddy()),
+            observed: at(45, 55, 200, 7, port),
+        };
+        for port in [5000, 5001] {
+            assert!(matches!(
+                path.consume(
+                    &body(0x80, None),
+                    carried_from(port),
+                    ctx(Some(buddy())),
+                    t0
+                ),
+                ActingVerdict::Punch { .. }
+            ));
+        }
     }
 
     /// Correction 4. The guard asks the interface set; a punch aimed at an

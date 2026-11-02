@@ -1,16 +1,16 @@
-┌ Search ───────────────────────────────────── / focus  ←→ method  o options ┐
+┌ Search ──────────────────────────────────────────────── i focus  o options ┐
 │❯ alpha                                                                     │
-│Method: eD2k server ▾  Kad ▾ (always on — every search also walks Kad)      │
+│Asks: nobody yet; a search waits for a server or Kad                        │
 │Filters: none   o edit                                                      │
 └────────────────────────────────────────────────────────────────────────────┘
 [alpha · 3…]
-┌ Results · Running… ───────────────── [ ] search  x stop  s sort  S reverse ┐
-│  Name ▲  ┌ Download again? ─────────────────────────────────────┐Type      │
-│▸ clip_low│clip_low.avi                                          │Videos    │
-│  distro_h│You have this file, at                                │CD-Images │
-│  song_mid│/home/me/Downloads/clip_low.avi                       │Audio     │
+┌ Results · Running… ─── Enter menu  / filter  [ ] search  x stop  Space tag ┐
+│  Name ▲  ┌ Download again? ─────────────────────────────────────┐ Type     │
+│▸ have · c│clip_low.avi                                          │ Videos   │
+│  distro_h│You have this file, at                                │ CD-Images│
+│  song_mid│/home/me/Downloads/clip_low.avi                       │ Audio    │
 │          │                                                      │          │
-│          │y download again    Esc keep                          │          │
+│          │y yes    n no                                         │          │
 │          └──────────────────────────────────────────────────────┘          │
 │                                                                            │
 │                                                                            │
@@ -18,4 +18,4 @@
 │                                                                            │
 │                                                                            │
 │                                                                            │
-└────────────────────────────────────────────────────────────────────────────┘
+└───────────────────────────────────────────────────────────────────── 1 / 3 ┘

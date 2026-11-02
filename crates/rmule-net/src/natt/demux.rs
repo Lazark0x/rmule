@@ -12,17 +12,16 @@
 //! dual-path decrypt (ADR-0046) recovered it before the protocol demux ran — so
 //! this layer reads one form and the send path owns the other.
 
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use parking_lot::{Mutex, MutexGuard};
+use std::sync::Arc;
+use std::time::Instant;
 
 use rmule_peer::natt::{
-    CapsFrame, CapsNegotiation, HelloNattClaim, NattConnectOptions, NattFrame,
-    NattFrameDecodeError, NattTransport,
+    CapsFrame, HelloNattClaim, NattConnectOptions, NattFrame, NattFrameDecodeError, NattTransport,
 };
 use rmule_primitives::{FileHash, PeerEndpoint, UserHash};
 
-use super::registry::{Admission, TunnelRegistry};
+use super::registry::{Admission, ExpectsSource, TunnelRegistry};
 use super::send::{NattDatagramSink, NattOwnHash, NattSender};
 use super::utp::UtpEngine;
 
@@ -99,65 +98,31 @@ pub enum NattDisposition {
     /// A CAPS frame whose sender hash contradicts what this endpoint asserted
     /// in its **Key Frame**. Dropped.
     CapsContradictsKey,
-    /// A KEY frame; the endpoint's hash is now known and the next transport
-    /// frame to it goes out obfuscated.
+    /// A KEY frame; the endpoint's hash is now known, and transport frames to
+    /// it go out obfuscated once nothing charges it as unidentified.
     KeyLearned(UserHash),
+    /// A KEY frame naming a hash other than the live one, from an endpoint
+    /// that holds a tunnel, or other than the endpoint's name, key or no key
+    /// yet. Dropped: a NAT rebinding moves the endpoint, never the hash at one,
+    /// so this can only be a spoof (ADR-0091, security rule 11).
+    KeyContradictsTunnel,
+    /// A KEY or CAPS frame from an endpoint with no slot that may not open
+    /// one: the same stranger an opener would be, and the same answer
+    /// (ADR-0091, security rule 10). Dropped in silence, before any table.
+    Unadmitted,
     /// The datagram did not decode. Dropped in silence.
     Malformed(NattFrameDecodeError),
 }
 
-/// How long an endpoint's **CAPS Negotiation** is kept once nothing has
-/// touched it — the learned-hash window, so a negotiation never outlives the
-/// key that would obfuscate the tunnel it chose. Every bound the negotiation
-/// itself keeps (the 1500 ms legacy window, the 120 s QUIC blacklist) is
-/// shorter, so a pruned row is one that would have answered from its seed.
-const NEGOTIATION_IDLE_TTL: Duration = super::keys::LEARNED_HASH_TTL;
-
-/// The per-endpoint negotiation rows, each with when it was last touched.
-///
-/// A CAPS frame addressed to us creates a row from any source, and nothing
-/// removed one, so the table grew by one row per endpoint ever heard from.
-/// A new endpoint now prunes rows idle past [`NEGOTIATION_IDLE_TTL`].
-#[derive(Default)]
-struct NegotiationTable {
-    rows: HashMap<PeerEndpoint, (CapsNegotiation, Instant)>,
-}
-
-impl NegotiationTable {
-    /// `peer`'s row, seeded from `seed` when there is none, and touched.
-    fn touch(
-        &mut self,
-        peer: PeerEndpoint,
-        seed: HelloNattClaim,
-        now: Instant,
-    ) -> &mut CapsNegotiation {
-        if !self.rows.contains_key(&peer) {
-            self.rows.retain(|_, (_, touched)| {
-                now.saturating_duration_since(*touched) < NEGOTIATION_IDLE_TTL
-            });
-        }
-        let (row, touched) = self
-            .rows
-            .entry(peer)
-            .or_insert_with(|| (CapsNegotiation::new(seed), now));
-        *touched = now;
-        row
-    }
-
-    fn get(&self, peer: PeerEndpoint) -> Option<&CapsNegotiation> {
-        self.rows.get(&peer).map(|(row, _)| row)
-    }
-}
-
-/// The node's NAT-T front: the frame demux, the per-endpoint **CAPS
-/// Negotiation** table, and the engines behind them.
+/// The node's NAT-T front: the frame demux and the engines behind it, over
+/// the one **Tunnel Registry** their send path keys from.
 pub struct NattDemux<S> {
     identity: NattIdentity,
     own_hash: Arc<dyn NattOwnHash>,
     sender: Arc<NattSender<S>>,
     utp: UtpEngine<S>,
     quic: Option<super::quic::QuicEngine<S>>,
-    negotiation: Mutex<NegotiationTable>,
+    registry: Arc<Mutex<TunnelRegistry>>,
 }
 
 impl<S: NattDatagramSink> NattDemux<S> {
@@ -171,8 +136,8 @@ impl<S: NattDatagramSink> NattDemux<S> {
         identity: NattIdentity,
         own_hash: Arc<dyn NattOwnHash>,
         sender: Arc<NattSender<S>>,
-        registry: Arc<Mutex<TunnelRegistry>>,
     ) -> Result<Self, NattStartError> {
+        let registry = sender.registry();
         let utp = UtpEngine::start(Arc::clone(&sender), Arc::clone(&registry))
             .map_err(NattStartError::Utp)?;
         let quic = identity
@@ -193,7 +158,7 @@ impl<S: NattDatagramSink> NattDemux<S> {
             sender,
             utp,
             quic,
-            negotiation: Mutex::new(NegotiationTable::default()),
+            registry,
         })
     }
 
@@ -215,11 +180,15 @@ impl<S: NattDatagramSink> NattDemux<S> {
         &self.sender
     }
 
-    /// Route one already-plaintext `0xB2` datagram from `peer`.
+    /// Route one already-plaintext `0xB2` datagram from `peer`. `expects` is
+    /// asked, only for a frame that would leave state from an endpoint with no
+    /// slot, whether its IP is one the caller expects a tunnel from (ADR-0091,
+    /// security rule 10).
     pub async fn on_datagram(
         &self,
         peer: PeerEndpoint,
         datagram: &[u8],
+        expects: &ExpectsSource<'_>,
         now: Instant,
     ) -> NattDisposition {
         let frame = match NattFrame::decode(datagram) {
@@ -230,22 +199,46 @@ impl<S: NattDatagramSink> NattDemux<S> {
             }
         };
         match frame {
-            NattFrame::Utp(packet) => NattDisposition::Utp(self.utp.inject(peer, packet, now)),
+            NattFrame::Utp(packet) => {
+                NattDisposition::Utp(self.utp.inject(peer, packet, expects, now))
+            }
             NattFrame::Quic(packet) => match &self.quic {
-                Some(engine) => NattDisposition::Quic(engine.inject(peer, packet, now)),
+                Some(engine) => NattDisposition::Quic(engine.inject(peer, packet, expects, now)),
                 None => {
                     tracing::trace!(%peer, "QUIC NAT-T frame with no QUIC runtime; dropped");
                     NattDisposition::QuicUnavailable
                 }
             },
-            NattFrame::Caps(caps) => self.on_caps(peer, caps, true, now).await,
-            NattFrame::CapsAck(caps) => self.on_caps(peer, caps, false, now).await,
-            NattFrame::Key(hash) => {
-                self.sender.learn_key(peer, hash, now);
-                tracing::debug!(%peer, "NAT-T key frame adopted; transport frames now obfuscated");
-                NattDisposition::KeyLearned(hash)
-            }
+            NattFrame::Caps(caps) => self.on_caps(peer, caps, true, expects, now).await,
+            NattFrame::CapsAck(caps) => self.on_caps(peer, caps, false, expects, now).await,
+            NattFrame::Key(hash) => self.on_key(peer, hash, expects, now),
         }
+    }
+
+    /// The registry, under its one lock.
+    fn registry(&self) -> MutexGuard<'_, TunnelRegistry> {
+        self.registry.lock()
+    }
+
+    /// Learn the hash a KEY frame carried, if its endpoint may leave a row.
+    fn on_key(
+        &self,
+        peer: PeerEndpoint,
+        hash: UserHash,
+        expects: &ExpectsSource<'_>,
+        now: Instant,
+    ) -> NattDisposition {
+        let mut registry = self.registry();
+        if registry.admit(peer, true, expects, now) == Admission::Drop {
+            tracing::trace!(%peer, "NAT-T key frame from an unadmitted endpoint; dropped");
+            return NattDisposition::Unadmitted;
+        }
+        if !registry.learn_key(peer, hash, now) {
+            tracing::debug!(%peer, "NAT-T key frame contradicts the held tunnel's key; dropped");
+            return NattDisposition::KeyContradictsTunnel;
+        }
+        tracing::debug!(%peer, "NAT-T key frame adopted");
+        NattDisposition::KeyLearned(hash)
     }
 
     /// Read a CAPS or CAPS-ACK body, adopt what it says about the endpoint, and
@@ -255,6 +248,7 @@ impl<S: NattDatagramSink> NattDemux<S> {
         peer: PeerEndpoint,
         caps: CapsFrame,
         probe: bool,
+        expects: &ExpectsSource<'_>,
         now: Instant,
     ) -> NattDisposition {
         let Some(own_hash) = self.own_hash.user_hash() else {
@@ -265,34 +259,45 @@ impl<S: NattDatagramSink> NattDemux<S> {
             tracing::debug!(%peer, "NAT-T CAPS frame addressed to another node; dropped");
             return NattDisposition::CapsNotOurs;
         }
-        // The endpoint's own **Key Frame** is the only hash claim this layer
-        // stores, so it is the only thing a CAPS sender hash can contradict.
-        // A CAPS hash is *reported* rather than written into the crypt key map:
-        // eMuleAI keys obfuscation from the KEY frame's map alone, and widening
-        // that here would obfuscate to an endpoint that never asked us to.
-        if let Some(known) = self.sender.key_for(peer, now)
-            && known != caps.sender
-        {
-            tracing::debug!(%peer, "NAT-T CAPS sender hash contradicts its key frame; dropped");
-            return NattDisposition::CapsContradictsKey;
-        }
-        let transport = {
-            let mut table = self
-                .negotiation
-                .lock()
-                .expect("the NAT-T negotiation table is never poisoned");
-            let state = table.touch(peer, HelloNattClaim::default(), now);
+        let (transport, answer_due) = {
+            let mut registry = self.registry();
+            if registry.admit(peer, true, expects, now) == Admission::Drop {
+                tracing::trace!(%peer, "NAT-T CAPS frame from an unadmitted endpoint; dropped");
+                return NattDisposition::Unadmitted;
+            }
+            // The endpoint's own **Key Frame** is the only hash claim this
+            // layer stores, so it is the only thing a CAPS sender hash can
+            // contradict. A CAPS hash is *reported* rather than written into
+            // the crypt key map: eMuleAI keys obfuscation from the KEY frame's
+            // map alone, and widening that here would obfuscate to an endpoint
+            // that never asked us to.
+            if registry
+                .key_for(peer, now)
+                .is_some_and(|known| known != caps.sender)
+            {
+                tracing::debug!(%peer, "NAT-T CAPS sender hash contradicts its key frame; dropped");
+                return NattDisposition::CapsContradictsKey;
+            }
+            let state = registry
+                .negotiations
+                .touch(peer, HelloNattClaim::default(), now);
             state.caps_answered(caps.connect_options);
-            match state.verdict(now, self.identity.local) {
+            let transport = match state.verdict(now, self.identity.local) {
                 rmule_peer::natt::TransportVerdict::Ready(transport) => Some(transport),
                 _ => None,
-            }
+            };
+            (
+                transport,
+                probe && registry.negotiations.claim_answer(peer, now),
+            )
         };
-        if probe {
+        if answer_due {
             let answer = NattFrame::CapsAck(self.our_caps(own_hash, caps.sender, now, peer));
             if let Err(error) = self.sender.send_frame(peer, &answer).await {
                 tracing::debug!(%peer, %error, "NAT-T CAPS answer could not be sent");
             }
+        }
+        if probe {
             return NattDisposition::CapsAnswered {
                 sender: caps.sender,
                 transport,
@@ -307,20 +312,16 @@ impl<S: NattDatagramSink> NattDemux<S> {
     /// Record that a CAPS probe went out to `peer`, starting its 1500 ms
     /// legacy window, and what the peer's hello claimed.
     pub fn probe_sent(&self, peer: PeerEndpoint, hello: HelloNattClaim, now: Instant) {
-        let mut table = self
-            .negotiation
-            .lock()
-            .expect("the NAT-T negotiation table is never poisoned");
-        table.touch(peer, hello, now).probe_sent(now);
+        self.registry()
+            .negotiations
+            .touch(peer, hello, now)
+            .probe_sent(now);
     }
 
     /// Blacklist QUIC on `peer` for 120 s — what a failed QUIC handshake does.
     pub fn quic_failed(&self, peer: PeerEndpoint, now: Instant) {
-        let mut table = self
-            .negotiation
-            .lock()
-            .expect("the NAT-T negotiation table is never poisoned");
-        table
+        self.registry()
+            .negotiations
             .touch(peer, HelloNattClaim::default(), now)
             .quic_failed(now);
     }
@@ -334,11 +335,8 @@ impl<S: NattDatagramSink> NattDemux<S> {
         hello: HelloNattClaim,
         now: Instant,
     ) -> rmule_peer::natt::TransportVerdict {
-        let mut table = self
-            .negotiation
-            .lock()
-            .expect("the NAT-T negotiation table is never poisoned");
-        table
+        self.registry()
+            .negotiations
             .touch(peer, hello, now)
             .verdict(now, self.identity.local)
     }
@@ -373,44 +371,9 @@ impl<S: NattDatagramSink> NattDemux<S> {
     }
 
     fn quic_blacklisted(&self, peer: PeerEndpoint, now: Instant) -> bool {
-        self.negotiation
-            .lock()
-            .expect("the NAT-T negotiation table is never poisoned")
+        self.registry()
+            .negotiations
             .get(peer)
             .is_some_and(|state| state.quic_blacklisted(now))
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use std::net::Ipv4Addr;
-
-    use rmule_primitives::Ipv4Endpoint;
-
-    use super::*;
-
-    fn endpoint(last: u8) -> PeerEndpoint {
-        PeerEndpoint::V4(Ipv4Endpoint::new(Ipv4Addr::new(198, 51, 100, last), 4672))
-    }
-
-    /// Prior review-4 section 6: every endpoint that ever sent a CAPS frame
-    /// kept a row. A row idle past the window goes when a new endpoint
-    /// arrives; one still in use is kept, however old it is.
-    #[test]
-    fn an_idle_negotiation_row_is_pruned_and_a_touched_one_is_kept() {
-        let now = Instant::now();
-        let mut table = NegotiationTable::default();
-        for last in 1..=100 {
-            table.touch(endpoint(last), HelloNattClaim::default(), now);
-        }
-        let later = now + NEGOTIATION_IDLE_TTL;
-        table.touch(
-            endpoint(1),
-            HelloNattClaim::default(),
-            later - Duration::from_secs(1),
-        );
-        table.touch(endpoint(200), HelloNattClaim::default(), later);
-        assert_eq!(table.rows.len(), 2, "the idle rows went");
-        assert!(table.get(endpoint(1)).is_some(), "the touched row stayed");
     }
 }

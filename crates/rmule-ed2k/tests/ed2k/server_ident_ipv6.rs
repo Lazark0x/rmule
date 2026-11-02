@@ -5,9 +5,8 @@
 //! **Evidence: deterministic tier, awaiting a pinned IPv6 server.** No pinnable
 //! ed2k-server build with IPv6 exists — its public `master` contains no IPv6
 //! at all and the last release predates the work — so these are the spec's
-//! bytes, not a capture's. eNode-go is the second oracle for this surface, so
-//! the rows are *not* `single-oracle`; they are simply un-captured, and upgrade
-//! when such a build is pinned.
+//! bytes, not a capture's. The rows are un-captured, and upgrade when such a
+//! build is pinned.
 
 use rmule_ed2k::ServerIdent;
 use rmule_primitives::{

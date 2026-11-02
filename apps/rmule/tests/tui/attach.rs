@@ -2,10 +2,11 @@
 //! directory: the same core `main` builds, with the one swap a test needs — a
 //! canned fetch and no router backends, so nothing here reaches past the host.
 
+use parking_lot::Mutex;
 use rmule_testkit::HANG_GUARD;
 use std::net::Ipv4Addr;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 
 use rmule::attach::{Attachment, Deployment, attach};
@@ -14,9 +15,9 @@ use rmule_bootstrap::{BootstrapConfig, FetchError, Fetcher};
 use rmule_core::port_mapping::{MappingProtocol, PortMappingMode};
 use rmule_core::{
     Core, CoreCommand, CoreEvent, CoreSettingsHandle, DataDir, DataDirSource, DirectoryRefusal,
-    DirectoryRole, DirectoryState, DurableAppConfig, LoginStep, ManagedServer, MappingBackend,
-    ScanEvent, ServerConnectFailure, ServerConnectionEvent, ServerListEvent, ServerListStore,
-    Setting, TakesEffect, open_durable_store,
+    DirectoryRole, DirectoryState, DurableAppConfig, Flag, LoginStep, ManagedServer,
+    MappingBackend, ScanEvent, ServerConnectFailure, ServerConnectionEvent, ServerListEvent,
+    ServerListStore, Setting, TakesEffect, open_durable_store,
 };
 use rmule_primitives::{Ipv4Endpoint, ServerEndpoint};
 use rmule_testkit::ScriptedBackend;
@@ -31,24 +32,20 @@ struct CannedFetch {
 
 impl CannedFetch {
     fn asked(&self) -> Vec<String> {
-        self.asked.lock().expect("asked").clone()
+        self.asked.lock().clone()
     }
 }
 
 impl Fetcher for CannedFetch {
-    fn get(
-        &self,
-        url: &str,
-        _max_bytes: usize,
-    ) -> impl std::future::Future<Output = Result<Vec<u8>, FetchError>> + Send {
-        self.asked.lock().expect("asked").push(url.to_owned());
+    fn get<'a>(&'a self, url: &'a str, _max_bytes: usize) -> rmule_bootstrap::FetchFuture<'a> {
+        self.asked.lock().push(url.to_owned());
         let answer = match &self.body {
             Some(body) => Ok(body.to_vec()),
             None => Err(FetchError::Timeout {
                 url: url.to_owned(),
             }),
         };
-        async move { answer }
+        Box::pin(async move { answer })
     }
 }
 
@@ -71,6 +68,7 @@ struct Scratch {
     fetch: CannedFetch,
     backends: Vec<Arc<dyn MappingBackend>>,
     home: Option<PathBuf>,
+    seeds: rmule_bootstrap::Seeds,
 }
 
 impl Deployment for Scratch {
@@ -78,6 +76,10 @@ impl Deployment for Scratch {
 
     fn fetcher(&self, _bootstrap: &BootstrapConfig) -> Result<CannedFetch, FetchError> {
         Ok(self.fetch.clone())
+    }
+
+    fn seeds(&self) -> rmule_bootstrap::Seeds {
+        self.seeds.clone()
     }
 
     fn mapping_backends(&self, _port_map_secret: u32) -> Vec<Arc<dyn MappingBackend>> {
@@ -109,7 +111,7 @@ async fn attach_in(dir: &tempfile::TempDir, deployment: &Scratch) -> Attachment<
         path: dir.path().to_path_buf(),
         source: DataDirSource::Flag,
     };
-    match attach(Some(resolved), deployment).await {
+    match attach(Some(resolved), deployment, Default::default()).await {
         Ok(attachment) => attachment,
         Err(failure) => panic!("the core did not attach: {failure:?}"),
     }
@@ -182,6 +184,62 @@ async fn a_fresh_data_dir_fetches_its_server_list_once_at_attach() {
     );
 }
 
+/// ADR-0120 at the app's own door: the mirror answers nothing, and the seeds
+/// are what the operator finds listed, ahead of the fetch's failure.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_first_run_with_the_mirror_gone_lists_the_seeds() {
+    let dir = data_dir(|_, _| {});
+    let deployment = Scratch {
+        seeds: rmule_bootstrap::Seeds::parse("server 192.0.2.1:4661\nserver 192.0.2.2:4661\n")
+            .expect("documentation seeds"),
+        ..Scratch::default()
+    };
+
+    let Attachment {
+        mut core, no_seeds, ..
+    } = attach_in(&dir, &deployment).await;
+    assert!(!no_seeds, "this run carries seeds");
+    let listed = tokio::time::timeout(HANG_GUARD, async {
+        let mut listed = Vec::new();
+        loop {
+            match core.next_event().await.expect("core alive") {
+                CoreEvent::ServerList(ServerListEvent::ServerAdded { server }) => {
+                    listed.push(server.host().to_owned());
+                }
+                CoreEvent::ServerList(ServerListEvent::ServerListUpdateFailed { .. }) => {
+                    return listed;
+                }
+                CoreEvent::ServerList(ServerListEvent::ServerListUpdated { .. }) => {
+                    panic!("the canned mirror answers nothing")
+                }
+                _ => {}
+            }
+        }
+    })
+    .await
+    .expect("the first-run fetch fails");
+
+    assert_eq!(listed, ["192.0.2.1", "192.0.2.2"]);
+}
+
+/// A build with no seed list says so, and only on a cold start.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_build_without_seeds_says_so_only_on_a_first_run() {
+    let cold = data_dir(|_, _| {});
+    let Attachment { no_seeds, .. } = attach_in(&cold, &Scratch::default()).await;
+    assert!(no_seeds);
+
+    let warm = data_dir(|store, _| {
+        store
+            .merge_server(ManagedServer::listed(
+                ServerEndpoint::new("192.0.2.7", 4661).expect("endpoint"),
+            ))
+            .expect("a row");
+    });
+    let Attachment { no_seeds, .. } = attach_in(&warm, &Scratch::default()).await;
+    assert!(!no_seeds);
+}
+
 /// The Settings tab edits through the attached core's own Core Settings
 /// handle (ADR-0069): a live key is taken up at once, and a start-shaped one
 /// is kept for the next start.
@@ -190,13 +248,81 @@ async fn the_settings_tab_edits_through_the_attached_core() {
     let dir = data_dir(|_, _| {});
     let Attachment { core, config, .. } = attach_in(&dir, &Scratch::default()).await;
     let effect = |edit: PrefEdit| config.commit(&edit).expect("commit");
-    assert_eq!(effect(PrefEdit::DeadServerRetries(5)), TakesEffect::Now);
-    assert_eq!(effect(PrefEdit::UdpPort(4999)), TakesEffect::NextStart);
+    assert_eq!(
+        effect(PrefEdit::Core(Setting::DeadServerRetries(5))),
+        TakesEffect::Now
+    );
+    assert_eq!(
+        effect(PrefEdit::Core(Setting::UdpPort(4999))),
+        TakesEffect::NextStart
+    );
     core.shutdown().await;
     assert_eq!(
-        config.load(None).expect("load").dead_server_retries,
+        config
+            .load(None)
+            .expect("load")
+            .core
+            .server_policy
+            .dead_after,
         5,
         "and the store holds it"
+    );
+}
+
+/// The auto-update walk (ADR-0065), turned on in Settings: attaching walks
+/// every address once through the actor, the first-run mirror in front when
+/// the list is empty too, so one acquisition runs and none is refused for
+/// another in flight.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_auto_update_walk_runs_once_at_attach_with_the_first_run_in_front() {
+    let urls = vec![
+        "http://one.example/server.met".to_owned(),
+        "http://two.example/server.met".to_owned(),
+    ];
+    let dir = data_dir(|_, settings| {
+        settings
+            .set(Setting::Flag(Flag::AutoUpdateServerMet, true))
+            .expect("turn the walk on");
+        settings
+            .set(Setting::ServerMetAutoUpdateUrls(urls.clone()))
+            .expect("set the addresses");
+    });
+    let fetch = CannedFetch {
+        body: Some(Arc::new(server_met(&[(
+            Ipv4Addr::new(198, 51, 100, 7),
+            4661,
+        )]))),
+        ..CannedFetch::default()
+    };
+    let deployment = Scratch {
+        fetch: fetch.clone(),
+        ..Scratch::default()
+    };
+
+    let Attachment { mut core, .. } = attach_in(&dir, &deployment).await;
+    let total = tokio::time::timeout(HANG_GUARD, async {
+        loop {
+            match core.next_event().await.expect("core alive") {
+                CoreEvent::ServerList(ServerListEvent::ServerListUpdated { total, .. }) => {
+                    return total;
+                }
+                CoreEvent::CommandRejected { reason } => panic!("refused: {reason:?}"),
+                _ => {}
+            }
+        }
+    })
+    .await
+    .expect("the walk lands");
+
+    assert_eq!(total, 1);
+    assert_eq!(
+        fetch.asked(),
+        [
+            rmule_bootstrap::DEFAULT_SERVER_MET_URL,
+            urls[0].as_str(),
+            urls[1].as_str()
+        ],
+        "one walk: the first-run mirror, then each address in order"
     );
 }
 
@@ -206,7 +332,7 @@ async fn the_settings_tab_edits_through_the_attached_core() {
 async fn the_off_switch_keeps_a_first_run_from_fetching() {
     let dir = data_dir(|_, settings| {
         settings
-            .set(Setting::AutoFetchServerMet(false))
+            .set(Setting::Flag(Flag::AutoFetchServerMet, false))
             .expect("turn the fetch off");
     });
     let deployment = Scratch::default();

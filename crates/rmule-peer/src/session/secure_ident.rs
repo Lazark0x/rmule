@@ -6,9 +6,9 @@
 //! preconditions are met, so packet order does not matter. A failed
 //! exchange costs the peer its secured credit, never the connection.
 
-use rmule_primitives::SecureIdentPublicKey;
+use rmule_primitives::{Ed2kIp, SecureIdentPublicKey};
 
-use super::{PeerEvent, PeerSession, SecureIdentFailure};
+use super::{PeerEvent, PeerSession, SecureIdentFailure, State};
 use crate::ConnectionEvent;
 use crate::secure_ident::{
     CRYPT_CIP_LOCALCLIENT, CRYPT_CIP_NONECLIENT, CRYPT_CIP_REMOTECLIENT, PublicKeyPacket,
@@ -40,8 +40,10 @@ pub(super) struct SuiState {
     peer_wants_signature: bool,
     /// We have already sent our signature (send exactly once).
     our_signature_sent: bool,
-    /// We have already verified the peer and emitted `IdentityVerified`.
-    verified: bool,
+    /// A signature was judged on this link, its verdict emitted: one is all it
+    /// gets, a failed one included, as a verify costs an RSA operation per packet
+    /// (`BaseClient.cpp:2638`, `:2670`).
+    judged: bool,
 }
 
 impl PeerSession {
@@ -106,6 +108,14 @@ impl PeerSession {
 
     /// Inbound `OP_SIGNATURE`: the peer's proof over the challenge we sent.
     pub(super) fn on_signature(&mut self, packet: SignaturePacket) {
+        // The V2 form reads only from a peer that claims V2; aMule logs any
+        // other and returns (`BaseClient.cpp:2182-2189`).
+        let claims_v2 = self
+            .peer_misc_options
+            .is_some_and(|opts| opts.secure_identification_version() & 0b10 != 0);
+        if packet.ip_kind.is_some() && !claims_v2 {
+            return;
+        }
         self.sui.peer_signature = Some(packet.signature);
         self.sui.peer_signature_ip_kind = packet.ip_kind;
         self.try_verify_peer();
@@ -145,7 +155,7 @@ impl PeerSession {
             (self.ctx.ed2k_client_id.as_u32(), CRYPT_CIP_LOCALCLIENT)
         } else {
             match self.peer.as_v4() {
-                Some(peer) => (u32::from_le_bytes(peer.ip.octets()), CRYPT_CIP_REMOTECLIENT),
+                Some(peer) => (Ed2kIp::new(peer.ip).wire(), CRYPT_CIP_REMOTECLIENT),
                 // Unreachable while `sui_v2_negotiated` refuses V2 on a
                 // native-IPv6 session (ADR-0087); kept because the *verify*
                 // side still has to read this kind from a peer that sends it.
@@ -165,12 +175,9 @@ impl PeerSession {
     /// IPv6 peer, whose 32-bit address we never observe.
     fn v2_verify_ip(&self, ip_kind: u8) -> Option<u32> {
         match ip_kind {
-            CRYPT_CIP_LOCALCLIENT => self
-                .peer
-                .as_v4()
-                .map(|peer| u32::from_le_bytes(peer.ip.octets())),
+            CRYPT_CIP_LOCALCLIENT => self.peer.as_v4().map(|peer| Ed2kIp::new(peer.ip).wire()),
             CRYPT_CIP_REMOTECLIENT => Some(match self.ctx.public_ip {
-                Some(ip) => u32::from_le_bytes(ip.octets()),
+                Some(ip) => Ed2kIp::new(ip).wire(),
                 None if self.ctx.ed2k_client_id.is_high_id() => self.ctx.ed2k_client_id.as_u32(),
                 None => 0,
             }),
@@ -224,10 +231,14 @@ impl PeerSession {
     /// signature folds in the address its kind byte names — an IP
     /// mismatch (or an unknown kind) simply fails, non-terminally.
     fn try_verify_peer(&mut self) {
-        if self.sui.verified {
+        if self.sui.judged {
             return;
         }
-        let verified = {
+        let State::Identified(identity) = &self.state else {
+            return;
+        };
+        let user_hash = identity.user_hash();
+        let (verified, public_key) = {
             let (Some(config), Some(peer_der), Some(our_challenge), Some(signature)) = (
                 self.secure_ident.as_ref(),
                 self.sui.peer_public_key_der.as_ref(),
@@ -242,6 +253,7 @@ impl PeerSession {
                     Some(ip) => Some((ip, kind)),
                     None => {
                         // Unknown kind: no defined input to verify against.
+                        self.sui.judged = true;
                         self.emit_sui_failed(SecureIdentFailure::BadSignature);
                         return;
                     }
@@ -255,20 +267,10 @@ impl PeerSession {
                 verify_input.extend_from_slice(&ip.to_le_bytes());
                 verify_input.push(kind);
             }
-            peer_key.verify(&verify_input, signature)
+            (peer_key.verify(&verify_input, signature), peer_der.clone())
         };
+        self.sui.judged = true;
         if verified {
-            self.sui.verified = true;
-            let public_key = self
-                .sui
-                .peer_public_key_der
-                .clone()
-                .expect("peer public key present in the verified branch");
-            let user_hash = self
-                .peer_identity
-                .as_ref()
-                .expect("peer identified before a signature can be verified")
-                .user_hash();
             self.core
                 .push_event(PeerEvent::Connection(ConnectionEvent::IdentityVerified {
                     user_hash,

@@ -15,7 +15,7 @@ use rmule_peer::{
 use rmule_primitives::session::drain;
 use rmule_primitives::{
     ClientId, CryptStance, Ed2kText, FileHash, Ipv4Endpoint, OutboundCrypt, Packet, PacketProtocol,
-    PeerSource, SourceCryptOptions, SourceSighting, Tag, TagName, TagValue, UserHash,
+    PeerSource, SourceClaim, SourceCryptOptions, SourceSighting, Tag, TagName, TagValue, UserHash,
 };
 use rmule_testkit::peer_session::{ctx, events, file_hash, last_write_bytes, peer_at, writes};
 
@@ -66,7 +66,7 @@ fn solicited_session(source_exchange_nibble: u8, hash: FileHash) -> PeerSession 
     session.handle_command(PeerCommand::Requester(RequesterCommand::RequestFile {
         file_hash: hash,
         file_size: 4096,
-        own_status: rmule_peer::PartBitmap::downloader_empty(4096),
+        own_status: rmule_peer::WireStatus::downloader_empty(4096),
         want_sources: false,
         want_aich_root: false,
     }));
@@ -112,7 +112,7 @@ fn peer_claimed_nibble_resolves_a_v3_answer_a_nibble_of_one_would_reject() {
     let h = file_hash(0x10);
     let mut session = solicited_session(3, h);
     let id = u32::from_le_bytes([1, 2, 3, 4]); // High-ID 1.2.3.4, ed2k order
-    let source = SourceSighting::plain(PeerSource::new(ClientId::from_u32(id), 4662));
+    let source = SourceClaim::plain(PeerSource::new(ClientId::from_u32(id), 4662));
     let packet = AnswerSources {
         file_hash: h,
         sources: vec![SourceExchangeEntry::plain(source)],
@@ -176,7 +176,7 @@ fn crypt_capable_v4_source_keeps_its_obfuscation_dial_hash_after_the_filter() {
     let id = u32::from_le_bytes([9, 8, 7, 6]); // High-ID, ed2k order
     let hash = UserHash::from_bytes([0xAB; UserHash::BYTE_LEN]);
     let crypt = SourceCryptOptions::from_byte(0b001); // supports_crypt
-    let source = SourceSighting::new(
+    let source = SourceClaim::new(
         PeerSource::new(ClientId::from_u32(id), 4662),
         Some(hash),
         Some(crypt),
@@ -303,7 +303,7 @@ fn per_file_cap_is_honored_cumulatively_across_answers() {
     session.handle_command(PeerCommand::Requester(RequesterCommand::RequestFile {
         file_hash: other_hash,
         file_size: 4096,
-        own_status: rmule_peer::PartBitmap::downloader_empty(4096),
+        own_status: rmule_peer::WireStatus::downloader_empty(4096),
         want_sources: false,
         want_aich_root: false,
     }));
@@ -458,7 +458,7 @@ fn request_sources_asks_a_non_sx2_peer_with_op_requestsources() {
 
 /// The requester consume path for `OP_ANSWERSOURCES2` (`0x84`): an SX2 answer
 /// to our own `0x83` ask fans in through the *same* sanity-filter / provenance
-/// / cap core as `0x82` (ADR-0055 "one semantic core"), surfacing
+/// / cap core as `0x82` (ADR-0054 "one semantic core"), surfacing
 /// `SourcesReceived`. v4 carries crypt+hash provenance, and a HighID rides
 /// hybrid on the wire, so the decoded id must swap back to ed2k order.
 #[test]
@@ -546,7 +546,7 @@ fn request_sources_frames_op_requestsources_and_answer_projects_sources_received
     let id = u32::from_le_bytes([1, 2, 3, 4]);
     let answer = AnswerSources {
         file_hash: h,
-        sources: vec![SourceExchangeEntry::plain(SourceSighting::plain(
+        sources: vec![SourceExchangeEntry::plain(SourceClaim::plain(
             PeerSource::new(ClientId::from_u32(id), 4662),
         ))],
     }
@@ -625,7 +625,7 @@ fn an_extsx_dual_stack_record_surfaces_as_one_source_with_both_addresses() {
 
     let v4 = Ipv4Endpoint::new(Ipv4Addr::new(198, 51, 100, 7), 4662);
     let v6 = rmule_primitives::Ipv6Endpoint::new("3fff:ed2:1::7".parse().unwrap(), 4662);
-    let dual = SourceSighting::plain(PeerSource::HighId(v4)).with_ipv6_half(Some(v6));
+    let dual = SourceClaim::plain(PeerSource::HighId(v4)).with_ipv6_half(Some(v6));
     let answer = rmule_peer::AnswerSources2 {
         version: SourceExchangeVersion::V1,
         file_hash: hash,
@@ -657,7 +657,7 @@ fn a_peer_below_source_exchange_version_two_is_never_asked_for_sources() {
         session.handle_command(PeerCommand::Requester(RequesterCommand::RequestFile {
             file_hash: h,
             file_size: 4096,
-            own_status: rmule_peer::PartBitmap::downloader_empty(4096),
+            own_status: rmule_peer::WireStatus::downloader_empty(4096),
             want_sources: true,
             want_aich_root: false,
         }));

@@ -3,6 +3,7 @@
 //! the event stream into the routing-health numbers a live run is judged by.
 
 use std::net::Ipv4Addr;
+use std::time::Duration;
 
 use rmule_primitives::{FileHash, Ipv4Endpoint, SourceLookupTarget, UserHash};
 
@@ -77,6 +78,10 @@ pub enum KadEvent {
         /// The file these rows answer, hash and size — the lookup the request
         /// carried, echoed back whole.
         target: SourceLookupTarget,
+        /// The storer that answered. Every address on its rows is its
+        /// observation, so a loopback one is a peer only when the storer
+        /// itself is on this host (ADR-0085).
+        storer: KadNodeEndpoint,
         /// The projected rows: a Peer Source per direct High-ID row, a
         /// diagnostic for every row the projection refused.
         candidates: Vec<KadSourceCandidate>,
@@ -239,17 +244,18 @@ pub enum KadEvent {
         user_hash: Option<UserHash>,
     },
     /// A per-`(IP, opcode)` flood bucket crossed the report threshold
-    /// (`count > 5 × rate`, ADR-0064). aMule bans the IP at its eD2k
-    /// client-list layer here — Kad itself keeps answering the IP's other
-    /// opcodes unchanged (the per-opcode bucket already contains the flood).
-    /// `KadNode` only reports: a future core-owned `BanStore` is the
-    /// enforcement consumer of this event.
+    /// (`count > 5 × rate`, ADR-0064). `KadNode` only reports; core's
+    /// `BanStore` enforces, and `proven` picks what it enforces: a ban at every
+    /// door, or the Hush a datagram that proves nothing earns.
     FloodOffenderDetected {
         /// The flooding IP.
         ip: Ipv4Addr,
         /// The opcode whose bucket overflowed — the flood is per-opcode, so
         /// this IP's other traffic is still being served.
         opcode: u8,
+        /// Whether the bucket counted datagrams carrying a valid receiver key,
+        /// each proving its sender receives at `ip`.
+        proven: bool,
     },
     /// A TCP firewall check was asked of `helper` (aMule
     /// `AddKadFirewallRequest`): its connect-back is awaited for
@@ -386,6 +392,9 @@ pub enum KadEvent {
         requester_hash: UserHash,
         /// The TCP port its buddy link is reached at.
         requester_tcp_port: u16,
+        /// A TCP firewall check to this IP is running, and the two links would
+        /// collide (aMule's `IsKadFirewallCheckIP`, `ClientList.cpp:913`).
+        check_collision: bool,
     },
     /// Our own buddy recruitment succeeded (ADR-0061, `0x5A KADEMLIA_FINDBUDDY_RES`,
     /// rmule-as-firewalled-node): a `0x5A` from an endpoint we sent a `0x51` to,
@@ -425,6 +434,15 @@ pub enum KadEvent {
         /// What it came to.
         end: KadCallbackWalkEnd,
     },
+    /// What the **Callback Pace** made of a
+    /// [`RequestBuddyCallback`](crate::KadCommand::RequestBuddyCallback),
+    /// answered once per command, in command order.
+    BuddyCallbackPaced {
+        /// The buddy ID the `0x52` names.
+        buddy_id: KadId,
+        /// What became of it.
+        pace: KadCallbackPace,
+    },
     /// A peer asked our firewalled buddy to dial it back (ADR-0061,
     /// `0x52 KADEMLIA_CALLBACK_REQ`). Core verifies `buddy_id` against our
     /// registered buddy (the ADR-0061 tightening, both relays) and, on match,
@@ -454,6 +472,21 @@ pub enum KadEvent {
     Diagnostic(KadNodeDiagnostic),
 }
 
+/// What the **Callback Pace** made of one `0x52` (ADR-0061).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum KadCallbackPace {
+    /// It went out now.
+    Left,
+    /// Its IP's window is shut: it goes out after this long, deferred, not
+    /// dropped. The callback wait starts then.
+    Held {
+        /// How long until it leaves.
+        leaves_in: Duration,
+    },
+    /// It would wait too long to be worth a held slot: nothing will leave.
+    Refused,
+}
+
 /// How a **Callback Walk** ended.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum KadCallbackWalkEnd {
@@ -461,6 +494,17 @@ pub enum KadCallbackWalkEnd {
     /// the buddy ID. Whether one of them was the buddy only the firewalled
     /// client's dial-back can tell.
     Asked(usize),
+    /// The `0x52` is on its way to this many contacts, and the **Callback
+    /// Pace** holds some: the last leaves after `leaves_in`, and the callback
+    /// wait starts then.
+    Held {
+        /// How many contacts it left or will leave for.
+        asked: usize,
+        /// How long until the last one leaves.
+        leaves_in: Duration,
+    },
+    /// Contacts were near, and the **Callback Pace** refused every send.
+    Refused,
     /// No responded contact was within tolerance of the buddy ID — or none
     /// responded at all — so no `0x52` left: nobody the walk met can be the
     /// buddy.

@@ -94,6 +94,10 @@ pub(crate) enum KadWalkPurpose {
     /// proper. It has no terminal fan-out; convergence just ends the walk (the
     /// warming is the lookup traffic itself, not a search or publish).
     SelfLookup { target: KadId },
+    /// The big timer's **refresh lookup** (`CRoutingZone::RandomLookup`): a walk
+    /// toward a random ID of a quiet bucket, whose only yield is the contacts
+    /// its answers name. No terminal fan-out.
+    RefreshLookup { target: KadId },
     /// The **FINDBUDDY walk** (ADR-0061 firewalled-node recruitment, aMule
     /// `Search.cpp#L784`): walk toward `~ourKadID` and ask the closest
     /// responded contact to be our buddy (`0x51`). Its terminal action is a
@@ -129,6 +133,7 @@ impl KadWalkPurpose {
             Self::SearchKeyword { target }
             | Self::PublishKeyword { target }
             | Self::SelfLookup { target }
+            | Self::RefreshLookup { target }
             | Self::FindBuddy { target }
             | Self::UdpFirewallHelpers { target } => target,
             Self::CallbackWalk { buddy_id, .. } => buddy_id,
@@ -202,6 +207,8 @@ struct InFlightQuery {
 struct TerminalPhase {
     /// The fan recipients — the only endpoints whose answers are solicited.
     endpoints: Vec<KadNodeEndpoint>,
+    /// Each recipient's Kad version, by the same index as `endpoints`.
+    versions: Vec<u8>,
     deadline: KadInstant,
     /// Search: result rows consumed (capped by the result budget).
     rows_consumed: usize,
@@ -286,6 +293,15 @@ impl KadLookupWalk {
         !self.purpose.is_search() && self.is_terminal_endpoint(from)
     }
 
+    /// The Kad version the walk knew the fan recipient at `from` by when it
+    /// fanned, `None` for an endpoint it did not fan: what a searcher reads an
+    /// answer's version-gated tags by (eMule 0.70b `Search.cpp:1041-1054`).
+    pub(crate) fn fan_recipient_version(&self, from: KadNodeEndpoint) -> Option<u8> {
+        let terminal = self.terminal.as_ref()?;
+        let index = terminal.endpoints.iter().position(|&at| at == from)?;
+        terminal.versions.get(index).copied()
+    }
+
     fn is_terminal_endpoint(&self, from: KadNodeEndpoint) -> bool {
         self.terminal
             .as_ref()
@@ -301,6 +317,12 @@ impl KadLookupWalk {
             return Some(terminal.deadline);
         }
         self.in_flight.iter().map(|query| query.deadline).min()
+    }
+
+    /// Whether a query to `from` is in flight: a `KADEMLIA2_RES` from it is
+    /// this walk's to consume.
+    pub(crate) fn awaits(&self, from: KadNodeEndpoint) -> bool {
+        self.in_flight.iter().any(|query| query.endpoint == from)
     }
 
     /// Consume a `KADEMLIA2_RES` (already target-matched by the node), or
@@ -392,6 +414,53 @@ impl KadLookupWalk {
             });
         }
         (true, actions)
+    }
+
+    /// The **Kad Send Gate** holds this walk's datagram to `to` until
+    /// `leaves`: its clock starts then, not now.
+    pub(crate) fn on_send_held(&mut self, to: KadNodeEndpoint, leaves: KadInstant) {
+        let window = if self.purpose.is_search() {
+            KadNode::SOURCE_SEARCH_WINDOW
+        } else {
+            KadNode::PUBLISH_ACK_WINDOW
+        };
+        if let Some(terminal) = &mut self.terminal {
+            terminal.deadline = terminal.deadline.max(leaves + window);
+        } else if let Some(query) = self.in_flight.iter_mut().find(|q| q.endpoint == to) {
+            query.deadline = leaves + KadNode::LOOKUP_QUERY_TIMEOUT;
+        }
+    }
+
+    /// The **Kad Send Gate** refused this walk's datagram to `to`, so no answer
+    /// will come. A query frees its slot without spending the budget, and the
+    /// contact is not tried again; a fan recipient leaves the fan, and a fan
+    /// left empty ends the walk as one that found nobody.
+    pub(crate) fn on_send_refused(
+        &mut self,
+        now: KadInstant,
+        to: KadNodeEndpoint,
+    ) -> Vec<KadWalkAction> {
+        let mut actions = Vec::new();
+        if let Some(terminal) = &mut self.terminal {
+            let Some(index) = terminal.endpoints.iter().position(|&at| at == to) else {
+                return actions;
+            };
+            terminal.endpoints.remove(index);
+            terminal.versions.remove(index);
+            if terminal.endpoints.is_empty() {
+                self.complete = true;
+                actions.push(KadWalkAction::Complete {
+                    outcome: nobody_reached(self.purpose.is_search()),
+                });
+            }
+            return actions;
+        }
+        if let Some(position) = self.in_flight.iter().position(|q| q.endpoint == to) {
+            self.in_flight.remove(position);
+            self.queries_sent -= 1;
+            self.advance(now, &mut actions);
+        }
+        actions
     }
 
     /// Expire due query deadlines and the terminal window.
@@ -516,7 +585,10 @@ impl KadLookupWalk {
     fn converge(&mut self, now: KadInstant, actions: &mut Vec<KadWalkAction>) {
         // A self-lookup has no terminal action — it warmed the neighborhood by
         // walking, and simply ends. No `0x34`/`0x44` fan-out, empty table or not.
-        if let KadWalkPurpose::SelfLookup { .. } = self.purpose {
+        if matches!(
+            self.purpose,
+            KadWalkPurpose::SelfLookup { .. } | KadWalkPurpose::RefreshLookup { .. }
+        ) {
             self.complete = true;
             actions.push(KadWalkAction::Complete {
                 outcome: KadWalkOutcome::SelfLookup,
@@ -568,17 +640,7 @@ impl KadLookupWalk {
         if fan.is_empty() {
             self.complete = true;
             actions.push(KadWalkAction::Complete {
-                outcome: if self.purpose.is_search() {
-                    KadWalkOutcome::Search {
-                        result_rows: 0,
-                        ended_by: KadSearchEnd::NoSearchableContacts,
-                    }
-                } else {
-                    KadWalkOutcome::Publish {
-                        acked_stores: 0,
-                        ended_by: KadPublishEnd::NoPublishableContacts,
-                    }
-                },
+                outcome: nobody_reached(self.purpose.is_search()),
             });
             return;
         }
@@ -593,6 +655,7 @@ impl KadLookupWalk {
         };
         self.terminal = Some(TerminalPhase {
             endpoints: fan.iter().map(|contact| contact.endpoint()).collect(),
+            versions: fan.iter().map(|contact| contact.version()).collect(),
             deadline: now + window,
             rows_consumed: 0,
             acked: Vec::new(),
@@ -600,5 +663,80 @@ impl KadLookupWalk {
         for contact in fan {
             actions.push(action(contact));
         }
+    }
+}
+
+/// How a walk ends whose terminal fan reached nobody.
+const fn nobody_reached(search: bool) -> KadWalkOutcome {
+    if search {
+        KadWalkOutcome::Search {
+            result_rows: 0,
+            ended_by: KadSearchEnd::NoSearchableContacts,
+        }
+    } else {
+        KadWalkOutcome::Publish {
+            acked_stores: 0,
+            ended_by: KadPublishEnd::NoPublishableContacts,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::net::Ipv4Addr;
+    use std::time::Duration;
+
+    use super::*;
+
+    const T0: KadInstant = KadInstant::EPOCH;
+
+    fn id(byte: u8) -> KadId {
+        KadId::from_bytes([byte; KadId::BYTE_LEN])
+    }
+
+    fn contact(byte: u8) -> KadContact {
+        let endpoint = KadNodeEndpoint::new(Ipv4Addr::new(203, 0, 113, byte), 4672);
+        KadContact::new(id(byte), endpoint, 4662, 8)
+    }
+
+    fn walk(seeds: Vec<KadContact>) -> (KadLookupWalk, Vec<KadWalkAction>) {
+        let purpose = KadWalkPurpose::RefreshLookup { target: id(0) };
+        KadLookupWalk::start(T0, purpose, id(0xFF), seeds)
+    }
+
+    #[test]
+    fn a_held_query_waits_from_when_it_leaves() {
+        let (mut walk, _) = walk(vec![contact(1)]);
+        let leaves = T0 + Duration::from_secs(6);
+        walk.on_send_held(contact(1).endpoint(), leaves);
+
+        assert!(walk.tick(T0 + KadNode::LOOKUP_QUERY_TIMEOUT).is_empty());
+        assert!(walk.awaits(contact(1).endpoint()));
+        walk.tick(leaves + KadNode::LOOKUP_QUERY_TIMEOUT);
+        assert!(walk.is_complete(), "silent past its own deadline");
+    }
+
+    #[test]
+    fn a_refused_query_takes_the_next_candidate_and_spends_no_budget() {
+        let seeds = vec![contact(1), contact(2), contact(3), contact(4)];
+        let (mut walk, actions) = walk(seeds);
+        assert_eq!(actions.len(), KadNode::LOOKUP_ALPHA);
+        let refused = contact(1).endpoint();
+
+        let actions = walk.on_send_refused(T0, refused);
+
+        assert!(matches!(
+            actions.as_slice(),
+            [KadWalkAction::SendLookup { contact: next }] if next.id() == id(4)
+        ));
+        assert!(!walk.awaits(refused));
+        assert_eq!(walk.queries_sent, KadNode::LOOKUP_ALPHA);
+    }
+
+    #[test]
+    fn a_walk_whose_every_query_was_refused_ends() {
+        let (mut walk, _) = walk(vec![contact(1)]);
+        walk.on_send_refused(T0, contact(1).endpoint());
+        assert!(walk.is_complete());
     }
 }

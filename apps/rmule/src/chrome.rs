@@ -1,26 +1,30 @@
 //! Always-on chrome (spec §3.1): the outer frame whose top border is the tab
 //! bar and whose bottom border is the 4-segment status bar, plus the help
-//! overlay (`?`) and the transient action flash (~3 s amber ✱).
+//! overlay (`?`) and the transient action flash (~3 s ✱).
 //!
 //! Rendering is pure — `UiState` + `ChromeState` + injected `now` → widgets —
 //! so every chrome state goldens under `TestBackend`.
+use crate::wrap::display_width;
 use std::time::{Duration, Instant};
 
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Paragraph};
+use ratatui::widgets::Block;
 
 use crate::action::Action;
+use crate::config::AppFlag;
 use crate::state::UiState;
 use crate::theme::Theme;
 use crate::view::ViewId;
+use crate::words::units::rate;
 use help::draw_help;
 use status_bar::render as status_bar;
 use tabs::{BRAND, brand_fits, tabs_line};
 
 mod help;
 
+mod quit_confirm;
 mod status_bar;
 mod tabs;
 
@@ -39,15 +43,23 @@ struct Flash {
 pub struct ChromeState {
     /// The view whose content fills the frame.
     pub active: ViewId,
-    /// Whether the help overlay is up. It is modal while it is: only
-    /// `Esc`/`q`/`?` and its scroll keys act, and mouse input is dropped.
+    /// Whether the help overlay is up. It is modal while it is: `Esc`, `?` and
+    /// its scroll keys act, every other key types into its filter, and only
+    /// the wheel of the mouse acts.
     pub help_open: bool,
+    /// Whether the quit confirm is up, the same kind of modal as help.
+    pub quit_open: bool,
     /// The help overlay's first line on screen, and how far it can scroll and
     /// page as the last draw laid it out — the same draw-time cache as
     /// `frame_width`.
     help_scroll: help::HelpScroll,
     /// The build line the help overlay opens with.
     help_version: help::HelpVersion,
+    /// What is typed over the help overlay, which narrows it.
+    help_filter: crate::row_filter::RowFilter,
+    /// Whether a view's text field holds the keyboard, as the app read it
+    /// before this frame: the status bar then names the way out of it.
+    pub text_open: std::cell::Cell<bool>,
     flash: Option<Flash>,
     /// Frame width from the last draw, cached because the tab bar's *form*
     /// depends on it and a click has to be hit-tested against the form that
@@ -58,11 +70,8 @@ pub struct ChromeState {
 
 /// One frame of chrome furniture (frame + tabs + status bar). Returns the
 /// content rect the active view draws into; overlays go on top afterwards
-/// via [`draw_overlays`], so the z-order is chrome → view → modal.
-///
-/// When the status info text cannot fit the bottom border whole (the
-/// never-truncate rule), it spills onto wrapped rows just above the border and the
-/// returned content rect shrinks by exactly those rows.
+/// via [`draw_overlays`], so the z-order is chrome → view → modal. The rect
+/// is the frame's inside at any status text: the bar takes no rows.
 pub fn draw_frame(
     frame: &mut Frame,
     state: &UiState,
@@ -80,38 +89,59 @@ pub fn draw_frame(
     let mut outer = Block::bordered()
         .border_style(theme.chrome())
         .title_top(tabs)
-        .title_bottom(status.border);
+        .title_bottom(status.left)
+        .title_bottom(status.right.right_aligned());
     if show_brand {
         outer = outer.title_top(Line::from(Span::styled(BRAND, theme.dim_text())).right_aligned());
     }
-    let mut content = outer.inner(area);
+    let content = outer.inner(area);
     frame.render_widget(outer, area);
-
-    let spill = u16::try_from(status.overflow.len()).unwrap_or(u16::MAX);
-    if spill > 0 && content.height > spill {
-        let strip = Rect::new(content.x, content.bottom() - spill, content.width, spill);
-        frame.render_widget(Paragraph::new(status.overflow), strip);
-        content.height -= spill;
-    }
     content
 }
 
-/// Chrome-owned overlays, drawn after the view so they sit on top.
-pub fn draw_overlays(frame: &mut Frame, chrome: &ChromeState, theme: &Theme) {
-    if chrome.help_open {
+/// Chrome-owned overlays, drawn after the view so they sit on top. Where the
+/// caret of the overlay's text field is.
+pub fn draw_overlays(
+    frame: &mut Frame,
+    state: &UiState,
+    chrome: &ChromeState,
+    theme: &Theme,
+) -> Option<ratatui::layout::Position> {
+    if chrome.quit_open {
+        quit_confirm::draw(frame, state.quit_cost(), theme);
+        None
+    } else if chrome.help_open {
         draw_help(
             frame,
             frame.area(),
-            &chrome.help_scroll,
-            &chrome.help_version,
+            (&chrome.help_scroll, &chrome.help_filter),
+            (&chrome.help_version, chrome.active),
             theme,
-        );
+        )
+    } else {
+        None
     }
+}
+
+/// The terminal's title this state asks for; `None` while the setting is off.
+#[must_use]
+pub fn terminal_title(state: &UiState) -> Option<String> {
+    state
+        .preferences
+        .flags
+        .is_on(AppFlag::TerminalTitle)
+        .then(|| {
+            crate::words::app::terminal_title(
+                &rate(state.rates.down_total_bps),
+                &rate(state.rates.up_total_bps),
+                state.tally(),
+            )
+        })
 }
 
 /// Char width of one status segment.
 fn spans_width(spans: &[Span<'static>]) -> usize {
-    spans.iter().map(|span| span.content.chars().count()).sum()
+    spans.iter().map(|span| display_width(&span.content)).sum()
 }
 
 impl ChromeState {
@@ -135,12 +165,25 @@ impl ChromeState {
             Action::ToggleHelp => {
                 self.help_open = !self.help_open;
                 self.help_scroll.top();
+                self.help_filter = crate::row_filter::RowFilter::typing_from_the_start();
+                true
+            }
+            Action::HelpKey(key) => {
+                self.help_filter.key(key, true);
+                // Enter takes nothing from a list: the field stays.
+                self.help_filter.keep_typing();
+                self.help_scroll.top();
                 true
             }
             Action::ScrollHelp(lines) => self.help_scroll.scroll(*lines),
+            Action::AskQuit => {
+                self.quit_open = true;
+                true
+            }
             Action::DismissOverlay => {
-                let was_open = self.help_open;
+                let was_open = self.help_open || self.quit_open;
                 self.help_open = false;
+                self.quit_open = false;
                 was_open
             }
             Action::Flash(text) => {
@@ -153,19 +196,31 @@ impl ChromeState {
             Action::Core(_)
             | Action::Snapshot(_)
             | Action::CoreClosed
-            | Action::Note(_)
+            | Action::Note(..)
             | Action::Input(_)
             | Action::Command(_)
             | Action::Commands(_)
             | Action::Actions(_)
             | Action::CopyLink(_)
             | Action::Preference(_)
+            | Action::SettingsEdit(_)
             | Action::ConfirmDownloadDir(_)
             | Action::ForgetSearch(_)
+            | Action::RestoreSearch(_)
             | Action::SearchRelated(_)
             | Action::StartKad
-            | Action::Quit => false,
+            | Action::Preview(_)
+            | Action::Quit
+            | Action::Repaint
+            | Action::Suspend
+            | Action::Continued => false,
         }
+    }
+
+    /// Whether anything is typed over the help overlay.
+    #[must_use]
+    pub(crate) fn help_typed(&self) -> bool {
+        !self.help_filter.is_empty()
     }
 
     /// How many lines a page of the help overlay is, as last drawn.

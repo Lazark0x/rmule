@@ -33,7 +33,7 @@ where
     /// no other leg back; with neither a session nor Kad the whole
     /// search waits and says so. With no session the server leg and its sweep
     /// wait while the operator's Server Intent stands, and are not sent
-    /// otherwise (ADR-0034, "A server leg's states"); a session that ended
+    /// otherwise (ADR-0034, "Legs"); a session that ended
     /// before the request reached it is no session. It never dials.
     pub(super) async fn start_keyword_search(
         &mut self,
@@ -124,8 +124,7 @@ where
         send_event(
             &self.evt_tx,
             SearchEvent::SearchStarted { search_id }.into(),
-        )
-        .await;
+        );
         self.run_search(
             search_id,
             stream,
@@ -169,11 +168,7 @@ where
         // (ADR-0051).
         let sweep = crate::search::GlobalSearchSweep {
             seal: ctx.seal.clone(),
-            servers: self
-                .global_source_servers
-                .lock()
-                .expect("global source server list")
-                .clone(),
+            servers: self.global_source_servers.lock().clone(),
             capabilities: Arc::clone(&ctx.capabilities),
             connected,
             query: query.clone(),
@@ -227,8 +222,7 @@ where
             send_event(
                 &self.evt_tx,
                 SearchEvent::SearchRefused { search_id, reason }.into(),
-            )
-            .await;
+            );
             return;
         };
         let query: SearchQuery = query.into();
@@ -243,8 +237,7 @@ where
         send_event(
             &self.evt_tx,
             SearchEvent::SearchStarted { search_id }.into(),
-        )
-        .await;
+        );
         // No sweep and no Kad walk: the server leg is its only one, so the
         // search completes on the server's answer or its answer wait.
         self.run_search(
@@ -277,8 +270,7 @@ where
                 reason: SearchFailure::ServerDisconnected,
             }
             .into(),
-        )
-        .await;
+        );
     }
 
     /// Put `query` on the session: the search's server leg.

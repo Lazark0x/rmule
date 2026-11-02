@@ -65,7 +65,7 @@ fn request_rejects_truncated_header() {
     let packet = request_packet(PeerOpcode::MultiPacket, short_hash);
     assert!(matches!(
         MultiPacketRequest::decode_packet(&packet, ExtendedRequests::NONE),
-        Err(MultiPacketDecodeError::Truncated { .. })
+        Err(WireFault::Truncated { .. })
     ));
 }
 
@@ -76,7 +76,7 @@ fn ext_request_rejects_truncated_size_field() {
     let packet = request_packet(PeerOpcode::MultiPacketExt, payload);
     assert!(matches!(
         MultiPacketRequest::decode_packet(&packet, ExtendedRequests::NONE),
-        Err(MultiPacketDecodeError::Truncated { .. })
+        Err(WireFault::Truncated { .. })
     ));
 }
 
@@ -122,7 +122,7 @@ fn an_ext_bundles_name_status_is_read_by_the_size_it_carries() {
         read.items,
         vec![
             RequestItem::Name {
-                part_status: Some(PartBitmap::decode(1, &[0x01]).unwrap())
+                part_status: Some(WireStatus::decode(1, &[0x01]).unwrap())
             },
             RequestItem::SetReqId
         ]
@@ -131,13 +131,13 @@ fn an_ext_bundles_name_status_is_read_by_the_size_it_carries() {
     assert_eq!(
         bundle(&[0x58, 0x01, 0x00]).cut,
         Some(BundleCut::NameStatus(Some(
-            PartBitmap::decode(1, &[0x00]).unwrap()
+            WireStatus::decode(1, &[0x00]).unwrap()
         )))
     );
 }
 
 #[test]
-fn request_stops_at_unknown_sub_and_reports_it() {
+fn request_passes_over_an_unknown_sub_and_reports_it() {
     let mut payload = hash().as_bytes().to_vec();
     payload.push(0x58); // Name — parsed
     payload.push(0x4F); // SetReqId — parsed
@@ -228,7 +228,7 @@ fn answer_decodes_every_known_sub_item_in_order() {
         ans.items,
         vec![
             AnswerItem::Name(Ed2kText::from_bytes(name.to_vec())),
-            AnswerItem::Status(PartBitmap::decode(10, &[0b1010_1010, 0b0000_0011]).unwrap()),
+            AnswerItem::Status(WireStatus::decode(10, &[0b1010_1010, 0b0000_0011]).unwrap()),
             AnswerItem::AichRoot(AichRootHash::from_bytes([0x22; AichRootHash::BYTE_LEN])),
         ]
     );
@@ -240,7 +240,7 @@ fn answer_rejects_truncated_header() {
     let packet = answer_packet(vec![0u8; FileHash::BYTE_LEN - 1]);
     assert!(matches!(
         MultiPacketAnswer::decode_packet(&packet),
-        Err(MultiPacketDecodeError::Truncated { .. })
+        Err(WireFault::Truncated { .. })
     ));
 }
 
@@ -251,7 +251,7 @@ fn answer_rejects_truncated_name_length_prefix() {
     payload.push(0x00); // only one length byte
     assert!(matches!(
         MultiPacketAnswer::decode_packet(&answer_packet(payload)),
-        Err(MultiPacketDecodeError::Truncated { .. })
+        Err(WireFault::Truncated { .. })
     ));
 }
 
@@ -263,7 +263,7 @@ fn answer_rejects_name_length_overrun() {
     payload.extend_from_slice(b"only-3");
     assert!(matches!(
         MultiPacketAnswer::decode_packet(&answer_packet(payload)),
-        Err(MultiPacketDecodeError::Truncated { .. })
+        Err(WireFault::Truncated { .. })
     ));
 }
 
@@ -275,12 +275,12 @@ fn answer_rejects_truncated_status_bitmap() {
     payload.push(0xFF); // only 1 given
     assert!(matches!(
         MultiPacketAnswer::decode_packet(&answer_packet(payload)),
-        Err(MultiPacketDecodeError::Truncated { .. })
+        Err(WireFault::Truncated { .. })
     ));
 }
 
 #[test]
-fn answer_stops_at_unknown_sub_and_reports_it() {
+fn answer_passes_over_an_unknown_sub_and_reports_it() {
     let mut payload = hash().as_bytes().to_vec();
     payload.push(0x59);
     payload.extend_from_slice(&0u16.to_le_bytes()); // empty name, parsed
@@ -307,7 +307,7 @@ fn answer_round_trips_through_encode_and_decode() {
         file_hash: hash(),
         items: vec![
             AnswerItem::Name(Ed2kText::from_utf8("clip.mkv")),
-            AnswerItem::Status(PartBitmap::decode(3, &[0b0000_0101]).unwrap()),
+            AnswerItem::Status(WireStatus::decode(3, &[0b0000_0101]).unwrap()),
             AnswerItem::AichRoot(AichRootHash::from_bytes([0x33; AichRootHash::BYTE_LEN])),
         ],
         unknown_sub: None,
@@ -348,10 +348,11 @@ fn a_hostile_ext_size_is_refused_before_any_status_read() {
             ExtendedRequests::negotiated(1, 2),
         ));
     });
-    assert_eq!(
-        result.expect("ran"),
-        Err(MultiPacketDecodeError::FileSizeOutOfRange { size: hostile })
-    );
+    let bundle = result
+        .expect("ran")
+        .expect("a size past the ceiling keeps the link");
+    assert_eq!(bundle.file_size, Some(hostile));
+    assert!(bundle.items.is_empty());
     assert!(took < std::time::Duration::from_millis(1), "took {took:?}");
 
     // The ceiling itself names a file and is walked.
@@ -384,8 +385,8 @@ fn a_status_count_is_checked_against_any_size_without_a_bitmap() {
 
     // Same verdict as the bitmap's own count, `size / PARTSIZE + 1`.
     for size in [1, ED2K_PART_SIZE, ED2K_PART_SIZE + 1, 5 << 30] {
-        let own = PartBitmap::downloader_empty(size).part_count();
-        let count = u16::try_from(own).expect("small file").to_le_bytes();
+        let own = WireStatus::downloader_empty(size).count();
+        let count = own.to_le_bytes();
         let bitmap = vec![0u8; usize::from(u16::from_le_bytes(count)).div_ceil(8)];
         let tail = [count.as_slice(), &bitmap].concat();
         assert!(

@@ -107,7 +107,16 @@ fn ipv6_net_accept() {
     if !bench_enabled("ipv6-net-accept") {
         return;
     }
-    let mut args = vec!["--skip-build", "--timeout", "120", "--settle", "20"];
+    let natgw = concat!(env!("CARGO_MANIFEST_DIR"), "/images/natgw");
+    let mut args = vec![
+        "--skip-build",
+        "--timeout",
+        "120",
+        "--settle",
+        "20",
+        "--natgw-build-context",
+        natgw,
+    ];
     let run_root = bench_run_root();
     if let Some(root) = &run_root {
         args.extend_from_slice(&["--run-root", root]);
@@ -167,10 +176,10 @@ fn built_rmule_tools_binary() -> PathBuf {
 /// decodes ed2k-server#12's documented sentinel-source payload through the
 /// compiled reader. aMule's half is `--drive-legacy`: an rmule-authored
 /// stimulus hands a sentinel-bearing `OP_FOUNDSOURCES` to a **stock aMule
-/// 2.3.3** and the flow judges aMule alone — it must dial the records either
-/// side of the Sentinel Source at their own ports, dial nothing at the
-/// sentinel's port or at the `255.255.255.255` its id unpacks to, and keep its
-/// session. The emission fires on the harness's trigger file, which is what
+/// 2.3.3** and the flow judges aMule alone — it must dial the record before the
+/// Sentinel Source, dial the endpoint the first six inline address bytes spell,
+/// never reach the record after it, dial nothing at the sentinel's port or at
+/// the `255.255.255.255` its id unpacks to, and keep its session. The emission fires on the harness's trigger file, which is what
 /// puts it after the tap; the wrapper asserts that too, because a `PASS` whose
 /// list went out before the capture started would be unwitnessed.
 #[test]
@@ -221,10 +230,10 @@ fn sentinel_sources_legacy() {
     for expected in [
         "verdict = \"PASS\"",
         "sentinel_reader_present = true",
-        "legacy_leg = \"PASS\"",
+        "legacy_leg = \"STRIDE-MISREAD\"",
         "legacy_emit_trigger = \"trigger-file\"",
         "amule_dialled_before_sentinel = true",
-        "amule_dialled_after_sentinel = true",
+        "amule_dialled_after_sentinel = false",
         "amule_dialled_sentinel_port = 0",
         "amule_dialled_broadcast_id = 0",
         "legacy_session_survived = true",

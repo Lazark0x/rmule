@@ -49,6 +49,7 @@
 //! the run is CLI-only (about 30 minutes); a retained run is re-scored by
 //! [`score_run_dir`](self::verdict::score_run_dir).
 
+pub mod sharer_asks;
 mod stimulus;
 pub(crate) mod verdict;
 
@@ -111,6 +112,8 @@ pub struct PeerLowIdCallbackReaskOptions<'a> {
     pub timeout_secs: u64,
     /// Seconds to sit past rmule's queueing: `FILEREASKTIME` plus margin.
     pub reask_window_secs: u64,
+    /// Run the sharer-asks leg instead of waiting for the reask.
+    pub sharer_asks: bool,
     /// The aMule image the sharer and the holders run.
     pub amule_image: &'a str,
     /// Build context for the aMule image.
@@ -160,13 +163,12 @@ pub fn run_peer_lowid_callback_reask(options: PeerLowIdCallbackReaskOptions<'_>)
             options.layout.root(),
         )?;
     }
-    if !options.skip_build {
-        bench.build_rmule_tools_image(
-            options.rmule_tools_image,
-            options.rmule_tools_dockerfile,
-            options.rmule_tools_build_context,
-        )?;
-    }
+    bench.rmule_tools_image(
+        options.rmule_tools_image,
+        options.rmule_tools_dockerfile,
+        options.rmule_tools_build_context,
+        options.skip_build,
+    )?;
     let root = options.layout.root().join(ROOT_DIR);
     fs::create_dir_all(&root).with_context(|| format!("create {}", root.display()))?;
     let timeout = Duration::from_secs(options.timeout_secs);
@@ -214,6 +216,9 @@ pub fn run_peer_lowid_callback_reask(options: PeerLowIdCallbackReaskOptions<'_>)
         };
         bench.start_extra(&server_tap, tap.container(), "run the server tap")?;
 
+        if options.sharer_asks {
+            sharer_asks::stage(&root, &options.layout.synthetic_dir())?;
+        }
         let link = fs::read_to_string(options.layout.synthetic_ed2k_file())
             .with_context(|| format!("read {}", options.layout.synthetic_ed2k_file().display()))?;
         let link = link.trim();
@@ -277,8 +282,12 @@ pub fn run_peer_lowid_callback_reask(options: PeerLowIdCallbackReaskOptions<'_>)
             &rmule,
             options.layout.root(),
             &server,
-            link,
-            deadline,
+            (link, deadline),
+            &if options.sharer_asks {
+                sharer_asks::rmule_flags()
+            } else {
+                Vec::new()
+            },
         );
         let command = bench.docker.run_container(download);
         bench.start_rmule_container(command, "run the rmule download")?;
@@ -303,11 +312,24 @@ pub fn run_peer_lowid_callback_reask(options: PeerLowIdCallbackReaskOptions<'_>)
         let queued = format!("download.peer_queued id=1 peer={SHARER_IP}:");
         wait_for_container_log(&bench.docker, &rmule, &queued, timeout)?;
         println!("peer_lowid_callback_reask rmule_queued_by_the_low_id_sharer=true");
+        if options.sharer_asks {
+            sharer_asks::ask(
+                &bench,
+                &options.layout.synthetic_dir(),
+                &sharer,
+                &rmule,
+                RMULE_IP,
+                SHARER_IP,
+            )?;
+        }
         sit_tap_window(
             "peer_lowid_callback_reask",
             Duration::from_secs(options.reask_window_secs),
         );
 
+        if options.sharer_asks {
+            sharer_asks::stop_rmule(&bench, &rmule)?;
+        }
         collect_rmule_logs(&bench.docker, options.layout, &rmule)?;
         collect_amule_role_logs(&bench.docker, options.layout, "sharer", &sharer)?;
         for (holder, role, _) in &holders {
@@ -333,7 +355,11 @@ pub fn run_peer_lowid_callback_reask(options: PeerLowIdCallbackReaskOptions<'_>)
             toml::to_string_pretty(&addresses).context("serialize the addresses")?,
         )
         .with_context(|| format!("write {}", path.display()))?;
-        let verdict = verdict::score_run_dir(options.layout.root())?;
+        let verdict = if options.sharer_asks {
+            sharer_asks::score_run_dir(options.layout.root())?
+        } else {
+            verdict::score_run_dir(options.layout.root())?
+        };
         println!("peer_lowid_callback_reask verdict={verdict}");
         Ok(())
     })();
@@ -379,7 +405,7 @@ fn save_logs(bench: &Bench, container: &str, path: &Path) -> Result<()> {
 
 /// A stock aMule on the bench at `ip`, logged in to `ed2ksrv` with plain
 /// frames, so the server tap reads every one.
-fn amule_on_ed2ksrv(bench: &Bench, image: &str, name: &str, ip: &str) -> RunContainer {
+pub(super) fn amule_on_ed2ksrv(bench: &Bench, image: &str, name: &str, ip: &str) -> RunContainer {
     RunContainer::new(image.to_owned())
         .detach()
         .name(name)
@@ -399,8 +425,8 @@ fn rmule_download(
     name: &str,
     run_root: &Path,
     server: &SocketAddrV4,
-    link: &str,
-    max_seconds: u64,
+    (link, max_seconds): (&str, u64),
+    flags: &[String],
 ) -> RunContainer {
     [
         "ed2k",
@@ -421,6 +447,8 @@ fn rmule_download(
         &max_seconds.to_string(),
     ]
     .iter()
+    .copied()
+    .chain(flags.iter().map(String::as_str))
     .fold(
         hold_image_until_released(
             RunContainer::new(image.to_owned())
@@ -432,7 +460,7 @@ fn rmule_download(
                 .volume(run_root, "/w"),
             "/w",
         ),
-        |container, arg| container.arg(*arg),
+        |container, arg| container.arg(arg),
     )
 }
 

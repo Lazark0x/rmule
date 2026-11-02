@@ -1,19 +1,22 @@
-//! A running download's server leg (ADR-0093, "A download's sources are
-//! independent"): each server session that comes up while the run is
+//! A running download's server leg (ADR-0097, "A download's sources are independent"): each server
+//! session that comes up while the run is
 //! running is asked for the file's sources, as aMule asks the server it has
 //! just connected to for every file in its queue. A run that started on Kad
 //! alone gains the server's sources when the operator connects, and a
-//! re-made session is asked again. The leg never dials: it rides the session
-//! the **Session Generation** announces.
+//! re-made session is asked again. A long session is asked again on the
+//! run's own clock, under the Server Pace's gate. The leg never dials: it
+//! rides the session the **Session Generation** announces.
 
 use std::future::Future;
 use std::pin::Pin;
 
 use rmule_primitives::{SourceLookupTarget, SourceSighting};
 use tokio::sync::watch;
+use tokio::time::Instant;
 
 use super::RunnerContext;
 use crate::adapters::SourceLookupService;
+use crate::server_pace::{SourceCount, TcpReask};
 
 /// One ask in flight, kept across the fleet loop's turns so another arm
 /// firing never drops it half-way.
@@ -29,6 +32,10 @@ pub(in crate::download) struct ServerLeg<'a> {
     /// session, the first lookup's own login counting as that session
     /// (ADR-0097, "The Source Ask Budget").
     asked: u64,
+    /// The run's periodic re-ask (ADR-0097, "The periodic re-ask").
+    reask: TcpReask,
+    /// The run's source count, published by the fleet loop.
+    sources: SourceCount,
 }
 
 impl<'a> ServerLeg<'a> {
@@ -44,13 +51,21 @@ impl<'a> ServerLeg<'a> {
             asking: None,
             target,
             asked: 0,
+            reask: TcpReask::default(),
+            sources: SourceCount::default(),
         }
     }
 
+    /// The count the run publishes and this leg's gate reads.
+    pub(in crate::download) fn source_count(&self) -> SourceCount {
+        self.sources.clone()
+    }
+
     /// The run asked the session of `generation` for the file: that session
-    /// is not asked again.
+    /// is not asked again until the re-ask.
     pub(in crate::download) fn rode(&mut self, generation: u64) {
         self.asked = self.asked.max(generation);
+        self.reask.asked(Instant::now());
     }
 
     /// Ask the live session now, if one is up, rather than wait for the next
@@ -68,8 +83,8 @@ impl<'a> ServerLeg<'a> {
         }
     }
 
-    /// The sources the next session answered — empty when it said nothing
-    /// inside the lookup bound or ended first. Cancel-safe: an ask in flight
+    /// The sources the next ask brought — empty when the server said nothing
+    /// inside the lookup bound or the session ended first. Cancel-safe: an ask in flight
     /// survives this future being dropped.
     pub(in crate::download) async fn next_answer<S, P>(
         &mut self,
@@ -86,13 +101,31 @@ impl<'a> ServerLeg<'a> {
                 self.rode(generation);
                 return sources;
             }
-            if self.sessions.changed().await.is_err() {
-                return std::future::pending().await;
+            let next_look = self.reask.next_look();
+            let looked = async move {
+                match next_look {
+                    Some(look) => tokio::time::sleep_until(look).await,
+                    None => std::future::pending().await,
+                }
+            };
+            tokio::select! {
+                changed = self.sessions.changed() => {
+                    if changed.is_err() {
+                        return std::future::pending().await;
+                    }
+                    if *self.sessions.borrow_and_update() <= self.asked {
+                        continue;
+                    }
+                    tracing::info!("a server session came up: asking it for sources");
+                }
+                () = looked => {
+                    let session_up = runner.rt.reach.session().is_some();
+                    if !self.reask.look(Instant::now(), session_up, &self.sources) {
+                        continue;
+                    }
+                    tracing::info!("the file is due another ask of its server");
+                }
             }
-            if *self.sessions.borrow_and_update() <= self.asked {
-                continue;
-            }
-            tracing::info!("a server session came up: asking it for sources");
             self.asking = Some(Box::pin(ask(runner, self.target)));
         }
     }

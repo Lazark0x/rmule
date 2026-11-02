@@ -4,8 +4,10 @@
 
 mod callback_walk;
 mod cells;
-pub(crate) use callback_walk::{CallbackWalkAsk, CallbackWalkReply, request_kad_callback_walk};
-pub use cells::KadCells;
+pub(crate) use callback_walk::{
+    CallbackReply, CallbackWalkAsk, HeldSender, request_kad_callback_walk,
+};
+pub use cells::{KadCells, KadPumpStandIn};
 mod handoff;
 mod node;
 mod presence;
@@ -180,8 +182,16 @@ pub trait KadSourceChannel: Send + Sync + 'static {
     /// sources (the **Kad Requester** role).
     fn search_sources(&self, target: SourceLookupTarget) -> impl Future<Output = ()> + Send;
 
+    /// Whether the node has heard anyone (aMule's `IsConnected`): before that a
+    /// search reaches nobody, so no ask is spent on one. Default: a channel
+    /// with no node behind it has nothing to wait for.
+    fn joined(&self) -> bool {
+        true
+    }
+
     /// Register `target` for publication (the **Kad Publisher** role): the
-    /// node publishes immediately and republishes on its own 5-hour cadence.
+    /// node starts it at its own pace (ADR-0064) and republishes on its own
+    /// 5-hour cadence.
     fn publish_source(&self, target: SourceLookupTarget) -> impl Future<Output = ()> + Send;
 
     /// Withdraw `target` from publication (the **Kad Publisher** role): the
@@ -232,6 +242,10 @@ pub trait KadSourceChannel: Send + Sync + 'static {
 impl<C: KadSourceChannel> KadSourceChannel for Arc<C> {
     fn search_sources(&self, target: SourceLookupTarget) -> impl Future<Output = ()> + Send {
         (**self).search_sources(target)
+    }
+
+    fn joined(&self) -> bool {
+        (**self).joined()
     }
 
     fn publish_source(&self, target: SourceLookupTarget) -> impl Future<Output = ()> + Send {
@@ -372,7 +386,7 @@ type KadShutdownParts = (oneshot::Receiver<()>, oneshot::Sender<()>);
 /// `EnableKad`; `KadShutdownSlot::take` hands the pump task its half at
 /// start, [`KadShutdownHandle::request_and_wait`] is the caller's half.
 #[derive(Clone, Default)]
-pub struct KadShutdownSlot(Arc<std::sync::Mutex<Option<KadShutdownParts>>>);
+pub struct KadShutdownSlot(Arc<parking_lot::Mutex<Option<KadShutdownParts>>>);
 
 impl std::fmt::Debug for KadShutdownSlot {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -389,7 +403,9 @@ impl KadShutdownSlot {
         let (stop_tx, stop_rx) = oneshot::channel();
         let (stopped_tx, stopped_rx) = oneshot::channel();
         (
-            Self(Arc::new(std::sync::Mutex::new(Some((stop_rx, stopped_tx))))),
+            Self(Arc::new(parking_lot::Mutex::new(Some((
+                stop_rx, stopped_tx,
+            ))))),
             KadShutdownHandle {
                 stop: Some(stop_tx),
                 stopped: Some(stopped_rx),
@@ -403,7 +419,7 @@ impl KadShutdownSlot {
     /// `start` never called, or one a node already took — finds it empty and
     /// runs with no external lever, same as `None`.
     pub(crate) fn take(&self) -> Option<KadShutdownParts> {
-        self.0.lock().ok()?.take()
+        self.0.lock().take()
     }
 }
 
@@ -447,7 +463,7 @@ impl KadNodeIdentity {
     /// verify keys `(seed, own public IP)` always, and datagram obfuscation
     /// while a policy is set.
     ///
-    /// One policy, not a Kad knob (ADR-0046 "Policy surface": a separate
+    /// One policy, not a Kad knob (ADR-0046: a separate
     /// datagram policy was rejected because aMule exposes one crypt setting):
     /// aMule obfuscates a Kad datagram only while
     /// `IsClientCryptLayerSupported()` (`MuleUDPSocket.cpp:282-284`), which is
@@ -620,7 +636,7 @@ pub(crate) enum KadPumpCommand {
 }
 
 /// What a `0x52 KADEMLIA_CALLBACK_REQ` names, as the core actor resolved it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub(crate) struct BuddyCallbackAsk {
     /// The buddy's Kad UDP endpoint, from the source row.
     pub(crate) buddy_udp: Ipv4Endpoint,
@@ -630,6 +646,21 @@ pub(crate) struct BuddyCallbackAsk {
     pub(crate) file_hash: rmule_primitives::FileHash,
     /// Where the target must dial us — our advertised TCP port.
     pub(crate) tcp_port: u16,
+    /// Where the **Callback Pace**'s verdict on this `0x52` goes.
+    pub(crate) reply: CallbackReply,
+}
+
+impl BuddyCallbackAsk {
+    /// The command a running node is handed for this ask: the `0x52` to the
+    /// buddy.
+    pub(crate) fn node_command(&self) -> rmule_kad::KadCommand {
+        rmule_kad::KadCommand::RequestBuddyCallback {
+            buddy: rmule_kad::KadNodeEndpoint::new(self.buddy_udp.ip, self.buddy_udp.port),
+            buddy_id: self.buddy_id,
+            file_hash: self.file_hash,
+            tcp_port: self.tcp_port,
+        }
+    }
 }
 
 /// Hand one buddy callback to the running node, reporting whether a node was
@@ -647,11 +678,17 @@ pub(crate) fn request_kad_buddy_callback(sink: &SharedKadPump, ask: BuddyCallbac
 pub struct RuntimeKadChannel {
     commands: mpsc::Sender<KadPumpCommand>,
     sources: Mutex<mpsc::Receiver<(FileHash, crate::kad_sources::KadAnswer)>>,
+    /// Read for the join latch alone.
+    verdicts: crate::reachability::SharedKadVerdicts,
 }
 
 impl KadSourceChannel for RuntimeKadChannel {
     async fn search_sources(&self, target: SourceLookupTarget) {
         let _ = self.commands.send(KadPumpCommand::Search(target)).await;
+    }
+
+    fn joined(&self) -> bool {
+        self.verdicts.get().joined
     }
 
     async fn publish_source(&self, target: SourceLookupTarget) {
@@ -701,6 +738,10 @@ impl KadSourceChannel for RuntimeKadChannel {
 /// `m_sourceCount` (`Search.cpp:1033` → `SearchList.cpp`'s `FT_SOURCES` tag →
 /// `SearchFile.cpp:79`), and the app-facing meaning is the consumer's. The
 /// `> 65500` clamp is aMule's rogue-publisher guard from the same site.
+///
+/// The row's AICH roots become the result's Kad root only when they make a
+/// **Qualified Kad Root** (ADR-0038); the storer's version gate ran in the
+/// Kad node.
 pub(crate) fn project_keyword_result(
     row: &rmule_kad::KadKeywordResult,
 ) -> Result<SearchResult, SearchResultSkipReason> {
@@ -723,6 +764,10 @@ pub(crate) fn project_keyword_result(
         _ => SearchResultSkipReason::MissingFileName,
     })?
     .with_origin(SearchResultOrigin::Kad);
+    let result = match crate::download::qualified_kad_root(&row.aich_roots, row.publishers()) {
+        Some(root) => result.with_kad_aich_root(root),
+        None => result,
+    };
     let result = match row.complete_sources {
         Some(availability) if availability <= KAD_MAX_PLAUSIBLE_AVAILABILITY => {
             result.with_reported_availability(availability)

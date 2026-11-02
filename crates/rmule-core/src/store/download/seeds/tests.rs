@@ -2,18 +2,13 @@
 //! download's end, and the climb from a version-12 store.
 
 use std::net::Ipv4Addr;
-use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
 use rmule_primitives::{CryptStance, Ipv4Endpoint, PeerEndpoint, UserHash};
-use rmule_store::Ladder;
 
 use super::*;
 use crate::storage::DownloadRepository;
-use crate::store::{
-    DURABLE_STORE_FILE, DurableStore, durable_schema_v12, open_durable_store,
-    open_durable_store_in_memory,
-};
+use crate::store::open_durable_store_in_memory;
 use crate::{DownloadLifecycle, DownloadPaths};
 
 fn seed(last: u8, rank: SeedRank) -> SourceSeed {
@@ -31,7 +26,9 @@ fn seed(last: u8, rank: SeedRank) -> SourceSeed {
 fn create(repo: &DurableDownloadRepository, dir: &std::path::Path, name: &str) -> DownloadId {
     let file = rmule_testkit::file_link(name, name.as_bytes());
     let paths = DownloadPaths::from_final_path(dir.join(name));
-    repo.create_download(&file, None, &paths).unwrap().id()
+    repo.create_download(&file, None, &paths, None)
+        .unwrap()
+        .id()
 }
 
 fn hours_ago(hours: u64) -> SystemTime {
@@ -91,6 +88,10 @@ fn completion_cancel_and_clear_each_leave_no_seeds_and_refuse_later_writes() {
         repo.set_lifecycle(id, DownloadLifecycle::Active).unwrap();
         repo.write_source_seeds(id, &[seed(3, SeedRank::Known)], SystemTime::now())
             .unwrap();
+        if end == DownloadLifecycle::Completed {
+            repo.set_lifecycle(id, DownloadLifecycle::Completing)
+                .unwrap();
+        }
         repo.set_lifecycle(id, end).unwrap();
         assert!(repo.source_seeds(id).unwrap().is_empty(), "{end:?}");
         assert!(
@@ -112,31 +113,14 @@ fn completion_cancel_and_clear_each_leave_no_seeds_and_refuse_later_writes() {
 }
 
 #[test]
-fn upgrade_from_a_version_twelve_store_gives_no_seeds_and_keeps_every_download() {
-    let dir = tempfile::tempdir().unwrap();
-    let id = {
-        let v12 = Arc::new(
-            DurableStore::open(
-                dir.path().join(DURABLE_STORE_FILE),
-                &durable_schema_v12(),
-                &Ladder::new(12, &[]),
-            )
-            .unwrap(),
-        );
-        create(
-            &DurableDownloadRepository::new(v12),
-            dir.path(),
-            "carried.bin",
-        )
+fn a_seed_row_keeps_its_bytes() {
+    let row = super::SourceSeedRow {
+        ip: "192.0.2.1".parse().unwrap(),
+        port: 4662,
+        user_hash: None,
+        crypt: Some(3),
+        rank: SeedRank::Ranked,
+        written_at: 300,
     };
-    let repo = DurableDownloadRepository::new(open_durable_store(dir.path()).unwrap());
-    assert_eq!(
-        repo.load_download(id).unwrap().lifecycle(),
-        DownloadLifecycle::Queued
-    );
-    assert!(repo.source_seeds(id).unwrap().is_empty());
-    assert!(
-        repo.write_source_seeds(id, &[seed(6, SeedRank::Received)], SystemTime::now())
-            .unwrap()
-    );
+    crate::store::assert_pinned(&row, "00c0000201b62400010301ac02");
 }

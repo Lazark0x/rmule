@@ -4,7 +4,7 @@
 //! stays greyed *with the reason* while any of them is genuinely absent,
 //! rather than offering a link that would be wrong.
 
-use rmule_primitives::{Ed2kFileLink, Ed2kLink, Ed2kText, FileHash};
+use rmule_primitives::{Ed2kText, FileHash};
 
 use crate::state::DownloadRow;
 
@@ -29,26 +29,16 @@ pub(super) fn copy_link_reason(row: Option<&DownloadRow>) -> Option<&'static str
         return None;
     }
     match row.and_then(|r| r.metadata.as_ref()) {
-        Some(_) => Some("file name unknown"),
-        None => Some("no metadata yet"),
+        Some(_) => Some(crate::words::transfers::FILE_NAME_UNKNOWN),
+        None => Some(crate::words::transfers::NO_METADATA),
     }
 }
 
-/// Build the canonical eD2k link for `Copy eD2k link` through
-/// [`Ed2kLink`]'s `Display`, the same percent-escaping idiom the Searches
-/// view's link-copy uses, so names with spaces or `|` come out escaped.
+/// Build the canonical eD2k link for `Copy eD2k link`, through the one builder
+/// every row menu uses.
 pub(super) fn copy_link_for(row: Option<&DownloadRow>) -> Option<String> {
     let (name, size, file_hash) = copy_link_facts(row)?;
-    let link = Ed2kFileLink {
-        name: name.clone(),
-        size,
-        file_hash,
-        part_hash_set: None,
-        aich_root: None,
-        ipv6_sources: Vec::new(),
-        sources: Default::default(),
-    };
-    Some(Ed2kLink::File(link).to_string())
+    crate::views::ed2k_file_link(name, size, file_hash)
 }
 
 #[cfg(test)]
@@ -68,34 +58,26 @@ mod tests {
         let state = three_downloads();
         // download_id(2): no `DownloadQueued`/`DownloadRecovered` edge has landed.
         assert_eq!(
-            menu_items(
-                DownloadStatus::Paused,
-                state.downloads.get(&download_id(2)),
-                &state
-            )
-            .iter()
-            .find(|item| item.label == "Copy eD2k link")
-            .and_then(|item| item.reason),
+            menu_items(DownloadStatus::Paused, download_id(2), &state)
+                .iter()
+                .find(|item| item.label == "Copy eD2k link")
+                .and_then(|item| item.reason.as_deref()),
             Some("no metadata yet"),
         );
         // download_id(3): metadata landed, but its name is empty (Unknown-origin
         // backfill) — a different, more specific reason.
         assert_eq!(
-            menu_items(
-                DownloadStatus::Completed,
-                state.downloads.get(&download_id(3)),
-                &state
-            )
-            .iter()
-            .find(|item| item.label == "Copy eD2k link")
-            .and_then(|item| item.reason),
+            menu_items(DownloadStatus::Completed, download_id(3), &state)
+                .iter()
+                .find(|item| item.label == "Copy eD2k link")
+                .and_then(|item| item.reason.as_deref()),
             Some("file name unknown"),
         );
     }
 
     #[test]
     fn copy_link_is_enabled_once_metadata_names_the_file_and_emits_the_canonical_link() {
-        let mut view = TransfersView::new();
+        let mut view = TransfersView::by_name();
         let state = three_downloads(); // download_id(1): "bunny.mp4", 92_000_000, hash 0x07.
         view.select_row(&state, 0);
         view.handle_key(press(KeyCode::Char('m')), &state); // open (cursor 0 = Pause)

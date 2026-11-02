@@ -5,6 +5,7 @@
 use rmule_primitives::{AichRootHash, Ed2kText, FileHash, PartHash, SourceSighting};
 
 use crate::compress::InflateFailed;
+use crate::session::AskedRanges;
 use crate::source_exchange::AnswerSourcesSkip;
 
 use super::{FileProbeStatus, SlotReleaseReason};
@@ -38,6 +39,20 @@ pub enum RequesterEvent {
         /// every block that follows.
         part_hashes: Vec<PartHash>,
     },
+    /// The peer's `OP_HASHSETANSWER` was not the file's own set, and the link
+    /// closes on it. It names the file a close does not, so that the download
+    /// asking convicts its sender and another sharing the link does not.
+    HashSetRefused {
+        /// The file the refused set claimed to be.
+        file_hash: FileHash,
+    },
+    /// Our `OP_STARTUPLOADREQ` for the file left: the uploader queues us, as
+    /// aMule sets `DS_ONQUEUE` when it sends one (stock 2.3.3
+    /// `DownloadClient.cpp:163-169`), whether or not a rank follows.
+    SlotAsked {
+        /// The file the upload was asked for.
+        file_hash: FileHash,
+    },
     /// Initial queue rank observation for a file. Subsequent improvements
     /// emit `QueueProgress` instead.
     QueueRanked {
@@ -55,16 +70,29 @@ pub enum RequesterEvent {
         /// The rank now — always nearer 0.
         new_rank: u16,
     },
-    /// Peer refused the slot via `OP_OUTOFPARTREQS` (TCP) or
-    /// equivalent terminal signal. Slot context clears.
-    QueueRejected {
-        /// The file the queue was for.
+    /// The uploader ended our granted slot with `OP_OUTOFPARTREQS` and put us
+    /// back on its queue (ADR-0025): the flow is queued again on the same
+    /// link, the blocks we asked for are dropped, and the `OP_QUEUERANKING`
+    /// that follows ranks it afresh. Not terminal: a later
+    /// `OP_ACCEPTUPLOADREQ` grants it again.
+    Requeued {
+        /// The file whose transfer ended.
         file_hash: FileHash,
     },
+    /// The peer sent `OP_ACCEPTUPLOADREQ` on a link where no slot was asked:
+    /// an uploader promoting us by dial-back, or on a link it held, from its
+    /// queue (ADR-0057). It names no file; the link's owner hands it to the
+    /// download it is for, or gives it back with `DeclineSlot`.
+    SlotOffered,
     /// Peer granted an upload slot via `OP_ACCEPTUPLOADREQ`.
     SlotGranted {
         /// The file the slot is for.
         file_hash: FileHash,
+        /// The link's **Asked Ranges**: what the uploader still holds as
+        /// asked of this client, whatever file each was for — kept across a
+        /// silent release to another file (ADR-0107). A block request
+        /// repeating one is dropped, so the requester asks around them.
+        asked: AskedRanges,
     },
     /// One frame of a part arrived. Application accumulates bytes,
     /// verifies against `HashSetReceived.part_hashes` per ADR-0026.
@@ -77,8 +105,9 @@ pub enum RequesterEvent {
         bytes: Vec<u8>,
     },
     /// A compressed part block could not be inflated (corrupt zlib stream or
-    /// over the size ceiling). Non-terminal: the session stays open and core
-    /// re-requests the block, mirroring rmule-ed2k's `CompressedFrameSkipped`.
+    /// over the size ceiling). Non-terminal, mirroring rmule-ed2k's
+    /// `CompressedFrameSkipped`: the session stays open, and the requester
+    /// takes the block as lost and gives its slot back (ADR-0029).
     CompressedPartSkipped {
         /// The file the block was for.
         file_hash: FileHash,
@@ -131,12 +160,21 @@ pub enum RequesterEvent {
         /// root it already trusts rather than the one quoted here.
         recovery_data: Vec<u8>,
     },
+    /// A peer refused our `OP_AICHREQUEST`: it has no recovery data for the
+    /// ask, so the part goes to its refetch (ADR-0038).
+    AichRefused {
+        /// The file the ask was about; `None` for an answer too short to say,
+        /// which refuses whatever ask is out on the link.
+        file_hash: Option<FileHash>,
+    },
     /// A peer answered our `OP_AICHFILEHASHREQ` with its AICH master `root` for
-    /// the requested file (ADR-0038). The runner counts it as a trusted-set root
-    /// proposal from this peer. The wire carries no file hash (the file is the
-    /// connection's requested file), so the worker tags it with its download.
+    /// `file_hash` (ADR-0038). The runner of that file counts it as a
+    /// trusted-set root proposal from this peer. It can land long after the
+    /// ask, once the peer's tree is built, so another file's run ignores it.
     AichFileHashReceived {
-        /// The master hash the peer proposes for this connection's file.
+        /// The file the wire names.
+        file_hash: FileHash,
+        /// The peer's master hash, a proposal rather than a fact.
         root: AichRootHash,
     },
     /// Surface-as-event (ADR-0068): an inbound file rating/comment

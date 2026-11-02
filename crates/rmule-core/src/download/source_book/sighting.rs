@@ -1,14 +1,17 @@
 //! The **Source Book**'s one entry: every channel's **Source Sighting** is
-//! checked against the blocks, merged into the record that already holds the
-//! source, or pooled as a new record — never a second copy (ADR-0090
-//! invariants 2–4). Two held records become one only on wire proof: a
+//! checked against the blocks — a spent name of the source among them — merged
+//! into the record that already holds the source, or pooled as a new record —
+//! never a second copy (ADR-0090 invariants 2–4). Two held records become one only on wire proof: a
 //! dual-stack pairing, a Low-ID candidate's IPv6 half, an adopted callback's
 //! inbound endpoint.
 
 use std::cmp::Reverse;
 
-use rmule_primitives::{Ipv4Endpoint, Ipv6Endpoint, PeerEndpoint, SourceSighting, UserHash};
+use rmule_primitives::{
+    Informant, Ipv4Endpoint, Ipv6Endpoint, PeerEndpoint, SourceSighting, UserHash,
+};
 
+use super::asks::{AskName, low_id_name};
 use super::record::{Lane, Record, RecordId, Stage};
 use super::{Blocked, Gate, MergeEnd, Sighted, SourceBook};
 use crate::dialable::{DialOrder, resolve_family};
@@ -26,16 +29,16 @@ impl SourceBook {
         source_server: Option<Ipv4Endpoint>,
         gate: &Gate<'_>,
     ) -> Sighted {
-        let sighting = match gate.judge(sighting) {
+        let sighting = match gate.judge(sighting, source_server) {
             Ok(judged) => judged,
             Err(why) => return Sighted::Blocked(why),
         };
         if let Some(order) = resolve_family(sighting, gate.dial) {
             let crypt = sighting.peer_crypt();
             for half in order.halves() {
-                self.run.note_crypt(half, crypt);
+                self.note_crypt(half, crypt);
             }
-            return self.sight_dialable(order, sighting.user_hash());
+            return self.sight_dialable(order, sighting.user_hash(), sighting.informant());
         }
         match LowIdCandidate::from_sighting(sighting, source_server) {
             Some(candidate) => self.sight_candidate(candidate),
@@ -47,10 +50,20 @@ impl SourceBook {
     /// takes the sighting: a half it lacks joins it as the same peer's other
     /// family, and a half another record holds proves the two one peer. Else
     /// its first unspent half is pooled last in the High-ID lane, the other
-    /// kept beside it; a source both of whose halves are spent is not pooled.
-    fn sight_dialable(&mut self, order: DialOrder, user_hash: Option<UserHash>) -> Sighted {
+    /// kept beside it; a source both of whose halves are spent is not pooled,
+    /// nor one a third party names where the book already holds the Source
+    /// Quota's share (ADR-0116).
+    fn sight_dialable(
+        &mut self,
+        order: DialOrder,
+        user_hash: Option<UserHash>,
+        informant: Informant,
+    ) -> Sighted {
         if self.blocks.distrusts(user_hash) {
             return Sighted::Blocked(Blocked::Distrusted);
+        }
+        if user_hash.is_some_and(|hash| self.blocks.is_spent(AskName::User(hash))) {
+            return Sighted::Blocked(Blocked::Spent);
         }
         if let Some((held, id)) = order
             .halves()
@@ -78,6 +91,9 @@ impl SourceBook {
         let Some(first) = unspent.next() else {
             return Sighted::Blocked(Blocked::Spent);
         };
+        if informant.is_third_party_to(first.ip()) && self.aliases.holds_share_of(first) {
+            return Sighted::Blocked(Blocked::OverQuota);
+        }
         let mut record = Record::new(Stage::Pooled(Lane::HighId));
         record.endpoints.push(first);
         record.endpoints.extend(unspent.next());
@@ -98,20 +114,30 @@ impl SourceBook {
                     live.road == super::record::DialRoad::HighId
                 }
                 Stage::RemoteQueued(_) => true,
-                Stage::CallbackPending(_) => false,
+                Stage::CallbackPending(_) | Stage::RoadHeld => false,
             })
     }
 
     /// A Low-ID candidate, merged into the record its key names rather than
-    /// held twice (ADR-0039 / ADR-0051). A candidate naming its buddy by ID
-    /// alone takes the endpoint the source's own hello named earlier this run.
-    /// One whose IPv6 half another record answers to is that record's peer:
-    /// the candidate joins it. A candidate naming a distrusted User Hash is not
-    /// pooled. Reached only through [`Self::sight`], once the gate judged the
-    /// sighting it came from.
+    /// held twice (ADR-0039 / ADR-0051), or replacing that record's candidate
+    /// whole when it names another owner of the key (ADR-0090). A candidate
+    /// naming its buddy by ID alone takes the endpoint the source's own hello
+    /// named earlier this run. One whose IPv6 half another record answers to
+    /// is that record's peer: the candidate joins it. A candidate naming a
+    /// distrusted User Hash is not pooled. Reached only through
+    /// [`Self::sight`], once the gate judged the sighting it came from.
     fn sight_candidate(&mut self, mut candidate: LowIdCandidate) -> Sighted {
         if self.blocks.distrusts(candidate.user_hash) {
             return Sighted::Blocked(Blocked::Distrusted);
+        }
+        let spent_hash = candidate
+            .user_hash
+            .is_some_and(|hash| self.blocks.is_spent(AskName::User(hash)));
+        if spent_hash
+            || low_id_name(&candidate).is_some_and(|name| self.blocks.is_spent(name))
+            || self.blocks.is_spent(AskName::LowId(candidate.key()))
+        {
+            return Sighted::Blocked(Blocked::Spent);
         }
         if let (Some(hash), Some(buddy)) = (candidate.user_hash, candidate.buddy)
             && buddy.buddy_udp.is_none()
@@ -128,7 +154,11 @@ impl SourceBook {
                 return Sighted::Merged(None);
             };
             let before = held.ipv6;
-            held.merge(candidate);
+            if held.names_another_owner(&candidate) {
+                *held = candidate;
+            } else {
+                held.merge(candidate);
+            }
             return Sighted::Merged(self.sync_half(id, before));
         }
         if let Some(holder) = candidate
@@ -188,7 +218,8 @@ impl SourceBook {
     /// higher stage keeps the record — Worker > Dialing > CallbackPending >
     /// RemoteQueued > Pooled, a High-ID lane ahead of a Low-ID one, else the
     /// older — and the other's aliases and attachments join it. The record that
-    /// gave way ends whatever it had in flight. Two records that cannot be one
+    /// gave way ends whatever it had in flight; its Advertised Parts join the
+    /// keeper only when the keeper has none, as a standing does. Two records that cannot be one
     /// — three endpoints between them, or two Low-ID candidates — stay apart.
     pub(super) fn merge(&mut self, a: RecordId, b: RecordId) -> Option<MergeEnd> {
         let (left, right) = (self.records.get(&a)?, self.records.get(&b)?);
@@ -217,7 +248,7 @@ impl SourceBook {
                 .candidate
                 .as_ref()
                 .map(|candidate| MergeEnd::Callback(candidate.key())),
-            Stage::Pooled(_) | Stage::RemoteQueued(_) => None,
+            Stage::Pooled(_) | Stage::RemoteQueued(_) | Stage::RoadHeld => None,
         };
         for &endpoint in &folded.endpoints {
             self.add_endpoint(keep, endpoint);
@@ -228,6 +259,15 @@ impl SourceBook {
             self.aliases.bind_key(candidate.key(), keep);
         }
         keeper.standing = keeper.standing.or(folded.standing);
+        keeper.last_ask = keeper.last_ask.max(folded.last_ask);
+        // The folded record's parts left the count with it; the keeper takes
+        // them only when it advertised none.
+        if keeper.advertised.is_none()
+            && let Some(parts) = folded.advertised
+        {
+            self.frequency.add(&parts);
+            keeper.advertised = Some(parts);
+        }
         keeper.seed = keeper.seed.or(folded.seed);
         keeper.asks = keeper.asks.merge(folded.asks);
         ended

@@ -37,20 +37,19 @@
 //!    node dialed the fetched seeds off the ADR-0067 dial list and a
 //!    counterparty datagram came back.
 
-use std::net::{SocketAddr, SocketAddrV4};
+use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use clap::Args;
-use rmule_bootstrap::{BootstrapConfig, NodesDatInstall, ReqwestFetcher, fetch_nodes_dat};
+use rmule_bootstrap::{BootstrapConfig, ReqwestFetcher, fetch_nodes_dat};
 use rmule_core::run_log::Level;
 use rmule_core::{
-    Core, CoreCommand, CoreConfig, CoreEvent, DurableAppConfig, FirstRunFetch, JoinConfig,
-    KadEnableConfig, KadId, open_durable_store_in_memory, run_join_sequence,
+    AutoUpdateOutcome, Core, CoreCommand, CoreConfig, CoreEvent, DurableAppConfig, FirstRunFetch,
+    JoinConfig, KadEnableConfig, KadId, open_durable_store_in_memory, run_join_sequence,
 };
 use rmule_ed2k::Ed2kEvent;
-use rmule_kad::BootstrapDialList;
 use rmule_net::ed2k::{ConnectOptions, Connection};
 use rmule_primitives::{ClientIdentity, Ed2kText, ServerEndpoint, UserHash};
 
@@ -136,17 +135,14 @@ pub(crate) async fn run(args: BootstrapFetchArgs) -> Result<()> {
 
     // Stage 1: nodes.dat fetch. The parsed contacts/candidates become the
     // front-end-supplied Kad bootstrap seeds.
-    let mut dial_list = BootstrapDialList::new();
-    let nodes_install = fetch_nodes_dat(
+    let seeds = fetch_nodes_dat(
         &fetcher,
         &args.nodes_dat_url,
         config.max_nodes_dat_bytes,
         kad_id,
-        &mut dial_list,
     )
     .await
     .with_context(|| format!("fetch nodes.dat from {}", args.nodes_dat_url))?;
-    let seeds = kad_seeds(&nodes_install);
     if seeds.is_empty() {
         bail!(
             "fetched nodes.dat yielded no dialable Kad contact — flow H needs the golden to carry \
@@ -154,9 +150,8 @@ pub(crate) async fn run(args: BootstrapFetchArgs) -> Result<()> {
         );
     }
     println!(
-        "bootstrap-fetch nodes_dat url={} kind={} dialable={}",
+        "bootstrap-fetch nodes_dat url={} dialable={}",
         args.nodes_dat_url,
-        nodes_install_kind(&nodes_install),
         seeds.len()
     );
 
@@ -200,11 +195,16 @@ pub(crate) async fn run(args: BootstrapFetchArgs) -> Result<()> {
         FirstRunFetch::Skipped => "skipped".to_owned(),
         FirstRunFetch::Failed(error) => format!("failed error={error}"),
     };
+    let (auto_update, walked) = auto_update_report(&outcome.auto_update);
     println!(
-        "bootstrap-fetch join_sequence first_run={first_run} servers={} kad_seed={:?}",
+        "bootstrap-fetch join_sequence first_run={first_run} auto_update={auto_update} \
+         servers={} kad_seed={:?}",
         outcome.servers.len(),
         outcome.kad_seed
     );
+    for line in walked {
+        println!("bootstrap-fetch auto_update {line}");
+    }
 
     // Stage 3: eD2k verification — the acquired server accepts our login.
     let identity = ClientIdentity::new(
@@ -261,32 +261,6 @@ pub(crate) async fn run(args: BootstrapFetchArgs) -> Result<()> {
     }
 }
 
-/// The fetched nodes.dat as ADR-0067 bootstrap-dial seeds: a normal-reader
-/// (v1/v2) file's contacts, or a v3 file's bootstrap-dial candidates — both
-/// enter the node's one Bootstrap Dial List through
-/// [`KadEnableConfig::bootstrap`], exactly where a file-loaded candidate would.
-fn kad_seeds(install: &NodesDatInstall) -> Vec<SocketAddrV4> {
-    let endpoints: Vec<_> = match install {
-        NodesDatInstall::Contacts(contacts) => {
-            contacts.iter().map(|contact| contact.endpoint()).collect()
-        }
-        NodesDatInstall::BootstrapCandidates(candidates) => {
-            candidates.iter().map(|node| node.endpoint()).collect()
-        }
-    };
-    endpoints
-        .into_iter()
-        .map(|endpoint| SocketAddrV4::new(endpoint.ip(), endpoint.udp_port()))
-        .collect()
-}
-
-const fn nodes_install_kind(install: &NodesDatInstall) -> &'static str {
-    match install {
-        NodesDatInstall::Contacts(_) => "contacts",
-        NodesDatInstall::BootstrapCandidates(_) => "v3-bootstrap-candidates",
-    }
-}
-
 /// Dial the acquired server and drive its session until `LoginAccepted`.
 async fn connect_and_login(
     args: &BootstrapFetchArgs,
@@ -301,6 +275,7 @@ async fn connect_and_login(
         obfuscated_port: None,
         advertised_ipv6: None,
         udp_ports: None,
+        offer_pace: false,
     };
     let mut server_conn =
         Connection::connect_with_options(server.clone(), identity.clone(), options)
@@ -367,5 +342,80 @@ async fn wait_for_kad_contact(core: &mut Core, window: Duration) -> Result<bool>
             () = tokio::time::sleep_until(deadline) => return Ok(false),
             () = tokio::time::sleep(CONTACT_POLL) => {}
         }
+    }
+}
+
+/// The Join Sequence's auto-update walk as this runner reports it: a code
+/// for the join line — `skipped`, or `walked` — and, for a walk, one line
+/// per URL in the words the Networks log gives it, or the one saying no URL
+/// is set.
+fn auto_update_report(outcome: &AutoUpdateOutcome) -> (&'static str, Vec<String>) {
+    match outcome {
+        AutoUpdateOutcome::Skipped => ("skipped", Vec::new()),
+        AutoUpdateOutcome::Walked { fetched } if fetched.is_empty() => (
+            "walked",
+            vec![rmule_words::server::auto_update_started(0).to_string()],
+        ),
+        AutoUpdateOutcome::Walked { fetched } => (
+            "walked",
+            fetched
+                .iter()
+                .map(|(url, fetch)| {
+                    rmule_words::server::auto_update_fetched(url, *fetch).to_string()
+                })
+                .collect(),
+        ),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use rmule_core::{AutoUpdateFetch, AutoUpdateOutcome, ServerListUpdateFailure};
+
+    use super::auto_update_report;
+
+    /// The join line names whether the auto-update walk ran; each URL it
+    /// walked gets its own line in the same words the Networks log uses.
+    #[test]
+    fn the_auto_update_result_is_reported_in_words() {
+        assert_eq!(
+            auto_update_report(&AutoUpdateOutcome::Skipped),
+            ("skipped", Vec::<String>::new())
+        );
+        let walked = AutoUpdateOutcome::Walked {
+            fetched: vec![
+                (
+                    "http://one.example/server.met".to_owned(),
+                    AutoUpdateFetch::Merged {
+                        added: 2,
+                        updated: 1,
+                    },
+                ),
+                (
+                    "http://two.example/server.met".to_owned(),
+                    AutoUpdateFetch::Failed(ServerListUpdateFailure::TimedOut),
+                ),
+            ],
+        };
+        assert_eq!(
+            auto_update_report(&walked),
+            (
+                "walked",
+                vec![
+                    "server list from http://one.example/server.met: 2 new, 1 refreshed".to_owned(),
+                    "server list from http://two.example/server.met gave no list: the address \
+                     did not answer in time"
+                        .to_owned(),
+                ]
+            )
+        );
+        let (code, lines) = auto_update_report(&AutoUpdateOutcome::Walked {
+            fetched: Vec::new(),
+        });
+        assert_eq!(code, "walked");
+        assert_eq!(
+            lines,
+            ["server list auto-update: no address is set — add one in Settings, Servers"]
+        );
     }
 }

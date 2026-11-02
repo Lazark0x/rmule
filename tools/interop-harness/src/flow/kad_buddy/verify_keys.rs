@@ -18,6 +18,7 @@ use crate::flow::evidence::{
 };
 use crate::flow::identity::ipv4_string;
 use crate::flow::kad_buddy::firewalled::{KAD_FW_AMULE_KAD_ID, KAD_FW_RMULE_KAD_ID};
+use crate::verdict::Verdict;
 
 /// The **Kad UDP Key** every crypt-armed rmule body a verdict decodes runs
 /// under: the harness chooses it and passes it in (`kad join-node
@@ -143,7 +144,7 @@ pub(crate) fn assert_kad_verify_keys(
              ack_marker_masked = {}\n\
              ack_marker_literal = \"0x{marker:02X}\"\n\
              ack_self_id_matches_amule = {id_matches}\n\
-             ack_tag_count = {tag_count:?}\n\
+             {}\
              ack_receiver_verify_key = \"{:?}\"\n\
              ack_sender_verify_key = \"{:?}\"\n\
              rmule_key_handed_to_amule = {our_key_for_amule}\n",
@@ -153,20 +154,21 @@ pub(crate) fn assert_kad_verify_keys(
                 .join(" "),
             raw.len(),
             marker & 0x03,
+            ack_tag_row(tag_count),
             facts.receiver_verify_key,
             facts.sender_verify_key,
         );
     }
 
     let verdict = if amule_ack.is_some() {
-        "PASS"
+        Verdict::Pass
     } else if !inbound_opcodes.is_empty() {
         // The counterparty reached rmule but never emitted the ACK. That is a
         // real finding, not a harness failure — the opcode columns below say
         // which half of the emit condition stayed shut. Recorded, never forced.
-        "OBSERVED"
+        Verdict::Observed
     } else {
-        "FAIL"
+        Verdict::Fail
     };
 
     let verdict_toml = format!(
@@ -203,19 +205,40 @@ pub(crate) fn assert_kad_verify_keys(
             .collect::<Vec<_>>(),
     );
     let verdict_path = layout.kad_dir().join("kad-verify-keys-verdict.toml");
-    fs::write(&verdict_path, &verdict_toml)
-        .with_context(|| format!("write {}", verdict_path.display()))?;
+    crate::verdict::write(&verdict_path, &verdict_toml)?;
     println!(
         "kad-verify-keys verdict={verdict} amule_0x22_in={} rmule_0x22_out={rmule_acks_out} \
          hello_req_in={hellos_in} hello_res_out={hello_res_out}",
         usize::from(amule_ack.is_some())
     );
 
-    if verdict == "FAIL" {
+    if verdict == Verdict::Fail {
         bail!(
             "verify-key leg saw no counterparty datagram at all from {amule_remote}: the \
              topology never came up (rmule must be a routing-zone contact of the aMule)"
         );
     }
     Ok(())
+}
+
+/// The ACK's tag count as a TOML row, `-1` when the datagram held none.
+fn ack_tag_row(tag_count: Option<u8>) -> String {
+    format!("ack_tag_count = {}\n", tag_count.map_or(-1, i32::from))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ack_tag_row;
+
+    /// The row lands in the verdict file, so it has to be TOML: a Rust `Some`
+    /// made the file unreadable to anything but a person.
+    #[test]
+    fn the_ack_tag_count_is_a_toml_number() {
+        let read = |count| {
+            let table: toml::Table = ack_tag_row(count).parse().expect("a TOML row");
+            table["ack_tag_count"].as_integer()
+        };
+        assert_eq!(read(Some(0)), Some(0));
+        assert_eq!(read(None), Some(-1));
+    }
 }

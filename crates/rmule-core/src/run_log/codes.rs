@@ -6,19 +6,22 @@
 use crate::port_mapping::{
     MappingError, MappingProtocol, MappingRefusal, MappingStatus, MappingTransportFault,
 };
+use crate::{BlockAskFault, DeadDialSign};
 use crate::{
-    ConfidenceTier, CoreCommandRejectReason, DialEnd, DialFailure, DownloadFailure,
-    DownloadLifecycle, IgnoredReaskReply, KadStopReason, KadUnavailableReason, LegNotSent,
-    NatTraversalUnavailableReason, PairRole, PartFileChange, PartReleaseReason, PartsLost,
-    PeerReachDropReason, PeerRetirementReason, PeerStreamRole, QuitStep, ReconnectEnd,
-    RelatedSearchRefusal, SearchFailure, SearchLegState, SearchResultSkipReason, ServeStartFailure,
-    ServeStopReason, ServerConnectFailure, ServerListUpdateFailure, ShareRejectReason,
-    SharesWithheld, SocketRole, SourcePurgeReason, SourceWait, TunnelTransport,
-    VerificationAuthority, WaiterLeaveCause, WatchFault, WithheldReason,
+    ConfidenceTier, CoreCommandRejectReason, DialBackEnd, DialEnd, DialFailure, DownloadFailure,
+    DownloadLifecycle, GrantRoad, IgnoredReaskReply, KadStopReason, KadUnavailableReason,
+    LegNotSent, LongTask, NatTraversalUnavailableReason, PairRole, PartFileChange,
+    PartReleaseReason, PartsLost, PeerReachDropReason, PeerRetirementReason, PeerStreamRole,
+    QuitStep, ReconnectEnd, RelatedSearchRefusal, SearchFailure, SearchLegState,
+    SearchResultSkipReason, ServeStartFailure, ServeStopReason, ServerConnectFailure,
+    ServerListUpdateFailure, ShareRefusal, ShareRejectReason, SharesWithheld, SocketRole,
+    SourcePurgeReason, SourceWait, TunnelTransport, VerificationAuthority, VolumeStop,
+    WaiterLeaveCause, WatchFault, WithheldReason,
 };
 use rmule_primitives::AddressFamily;
 
 use super::record::Record;
+use crate::LinkTurn;
 
 /// An address family's code.
 #[must_use]
@@ -51,6 +54,18 @@ pub(super) const fn source_wait(reason: SourceWait) -> &'static str {
         SourceWait::Asking => "asking",
         SourceWait::KadAlone => "kad_alone",
         SourceWait::NoSession => "no_session",
+        SourceWait::OnStanding => "on_standing",
+    }
+}
+
+pub(super) const fn completion_step(step: crate::CompletionStep) -> &'static str {
+    use crate::CompletionStep as Step;
+    match step {
+        Step::Moving => "moving",
+        Step::QueuedForCopy => "queued_for_copy",
+        Step::Copying => "copying",
+        Step::WaitingForRelease => "waiting_for_release",
+        Step::WaitingForStore => "waiting_for_store",
     }
 }
 
@@ -62,6 +77,7 @@ pub(super) const fn lifecycle(state: DownloadLifecycle) -> &'static str {
         DownloadLifecycle::Failed => "failed",
         DownloadLifecycle::Completed => "completed",
         DownloadLifecycle::Cancelled => "cancelled",
+        DownloadLifecycle::Completing => "completing",
     }
 }
 
@@ -80,8 +96,16 @@ pub(super) fn failure(record: Record, failure: &DownloadFailure) -> Record {
         DownloadFailure::PartVerificationFailed => "part_verification_failed",
         DownloadFailure::FinalPathTaken => "final_path_taken",
         DownloadFailure::StoreFailed => "store_failed",
+        DownloadFailure::TaskPanicked => "task_panicked",
         DownloadFailure::CompletedFileNotMoved { os_code } => {
             let record = record.code("failure", "completed_file_not_moved");
+            return match os_code {
+                Some(number) => record.count("os_code", *number),
+                None => record.code("os_code", "none"),
+            };
+        }
+        DownloadFailure::CompletionCopyFailed { os_code } => {
+            let record = record.code("failure", "completion_copy_failed");
             return match os_code {
                 Some(number) => record.count("os_code", *number),
                 None => record.code("os_code", "none"),
@@ -150,6 +174,22 @@ pub(super) fn part_file_change(record: Record, change: PartFileChange) -> Record
     }
 }
 
+/// Why the volume stopped a run.
+pub(super) fn volume_stop(record: Record, stop: VolumeStop) -> Record {
+    match stop {
+        VolumeStop::OutOfSpace { free_bytes } => record
+            .code("stop", "out_of_space")
+            .count("free_bytes", free_bytes),
+        VolumeStop::WriteRefused { os_code } => match os_code {
+            Some(code) => record
+                .code("stop", "write_refused")
+                .count("os_code", i64::from(code)),
+            None => record.code("stop", "write_refused"),
+        },
+        VolumeStop::PartFileOutOfReach => record.code("stop", "part_file_out_of_reach"),
+    }
+}
+
 /// What a changed part file cost: the parts and bytes the store dropped, or
 /// that it could not say.
 pub(super) fn parts_lost(record: Record, lost: PartsLost) -> Record {
@@ -173,13 +213,19 @@ pub(super) const fn authority(authority: VerificationAuthority) -> &'static str 
 pub(super) const fn retirement(reason: PeerRetirementReason) -> &'static str {
     match reason {
         PeerRetirementReason::PeerDisconnected => "peer_disconnected",
-        PeerRetirementReason::SlotRejected => "slot_rejected",
         PeerRetirementReason::SlotTimeout => "slot_timeout",
         PeerRetirementReason::PartVerificationFailed => "part_verification_failed",
         PeerRetirementReason::VerificationAuthorityMismatch => "verification_authority_mismatch",
         PeerRetirementReason::CryptIncompatible => "crypt_incompatible",
         PeerRetirementReason::Distrusted => "distrusted",
         PeerRetirementReason::SameSource => "same_source",
+        PeerRetirementReason::OurOwnNode => "our_own_node",
+        PeerRetirementReason::NoNeededParts => "no_needed_parts",
+        PeerRetirementReason::NoFreePart => "no_free_part",
+        PeerRetirementReason::Queued => "queued",
+        PeerRetirementReason::FileNotFound => "file_not_found",
+        PeerRetirementReason::LinkEnded => "link_ended",
+        PeerRetirementReason::OnPeersClock => "on_peers_clock",
     }
 }
 
@@ -190,6 +236,7 @@ pub(super) fn part_release(record: Record, reason: PartReleaseReason) -> Record 
             .code("retired", retirement(why)),
         PartReleaseReason::Paused => record.code("reason", "paused"),
         PartReleaseReason::Cancelled => record.code("reason", "cancelled"),
+        PartReleaseReason::BackOnQueue => record.code("reason", "back_on_queue"),
     }
 }
 
@@ -202,6 +249,15 @@ pub(super) fn withheld(record: Record, reason: WithheldReason) -> Record {
             record.code("reason", "unreadable").os_error(kind, None)
         }
         WithheldReason::Refused => record.code("reason", "refused"),
+        WithheldReason::PastSizeLimit => record.code("reason", "past_size_limit"),
+    }
+}
+
+pub(super) fn share_refusal(record: Record, refusal: ShareRefusal) -> Record {
+    match refusal {
+        ShareRefusal::PastSizeLimit { file_size } => record
+            .code("reason", "past_size_limit")
+            .file_size("size", file_size),
     }
 }
 
@@ -236,10 +292,56 @@ pub(super) const fn serve_stop(reason: ServeStopReason) -> &'static str {
     }
 }
 
+pub(super) const fn partial_end(cause: crate::PartialEnd) -> &'static str {
+    match cause {
+        crate::PartialEnd::Completed => "completed",
+        crate::PartialEnd::Ended => "ended",
+        crate::PartialEnd::HeldBack => "held_back",
+        crate::PartialEnd::Changed => "changed",
+        crate::PartialEnd::Unreadable => "unreadable",
+    }
+}
+
+pub(super) const fn block_ask_fault(fault: BlockAskFault) -> &'static str {
+    match fault {
+        BlockAskFault::PastEnd => "past_end",
+        BlockAskFault::TooLong => "too_long",
+        BlockAskFault::Unverified => "unverified",
+    }
+}
+
+pub(super) const fn dead_dial_sign(sign: DeadDialSign) -> &'static str {
+    match sign {
+        DeadDialSign::Ended => "ended",
+        DeadDialSign::Silent => "silent",
+    }
+}
+
 pub(super) const fn waiter_left(cause: WaiterLeaveCause) -> &'static str {
     match cause {
         WaiterLeaveCause::Purged => "purged",
         WaiterLeaveCause::Cancelled => "cancelled",
+        WaiterLeaveCause::UserHashClash => "user_hash_clash",
+        WaiterLeaveCause::Banned => "banned",
+    }
+}
+
+pub(super) const fn grant_road(road: GrantRoad) -> &'static str {
+    match road {
+        GrantRoad::Linked => "linked",
+        GrantRoad::DialedBack => "dialed_back",
+        GrantRoad::CameBack => "came_back",
+        GrantRoad::NextConnection => "next_connection",
+    }
+}
+
+/// Why a dial-back grant ended unsent: its own code, or — for a dial that
+/// ended before the hello — `dial` with the dial's cause beside it.
+pub(super) fn dial_back_end(record: Record, end: DialBackEnd) -> Record {
+    match end {
+        DialBackEnd::Dial(cause) => dial_end(record.code("end", "dial"), cause),
+        DialBackEnd::AnotherClient => record.code("end", "another_client"),
+        DialBackEnd::Lapsed => record.code("end", "lapsed"),
     }
 }
 
@@ -269,12 +371,16 @@ fn directory_refusal_as(
         R::NotADirectory => record.code(name, "not_a_directory"),
         R::Unreachable(kind) => record.code(name, "unreachable").os_error(*kind, None),
         R::NotUtf8 => record.code(name, "not_utf8"),
+        R::NotAbsolute => record.code(name, "not_absolute"),
         R::HomeDirectory => record.code(name, "home_directory"),
         R::FilesystemRoot => record.code(name, "filesystem_root"),
         R::DataDirectory => record.code(name, "data_directory"),
         R::HoldsDataDirectory => record.code(name, "holds_data_directory"),
         R::AlreadyShared => record.code(name, "already_shared"),
         R::InsideShared { parent } => record.code(name, "inside_shared").path("parent", parent),
+        R::HoldsShared { child } => record.code(name, "holds_shared").path("child", child),
+        R::HoldsTempDirectory => record.code(name, "holds_temp_directory"),
+        R::InsideTempDirectory => record.code(name, "inside_temp_directory"),
         R::DownloadDirectory => record.code(name, "download_directory"),
         R::NotShared => record.code(name, "not_shared"),
         R::StoreFailed => record.code(name, "store_failed"),
@@ -296,6 +402,9 @@ pub(super) fn setting_refusal(record: Record, refusal: &crate::SettingRefusal) -
             "guard",
             guard,
         ),
+        R::TempDirRefused(guard) => {
+            directory_refusal_as(record.code("reason", "temp_dir_refused"), "guard", guard)
+        }
         R::NicknameUnfit => record.code("reason", "nickname_unfit"),
         R::UrlBlank => record.code("reason", "url_blank"),
         R::CoreKey => record.code("reason", "core_key"),
@@ -313,6 +422,7 @@ pub(super) fn list_update_failure(record: Record, reason: ServerListUpdateFailur
             record.code("reason", "too_large").count("cap", cap)
         }
         ServerListUpdateFailure::NotServerMet => record.code("reason", "not_server_met"),
+        ServerListUpdateFailure::OddList => record.code("reason", "odd_list"),
         ServerListUpdateFailure::StoreFailed => record.code("reason", "store_failed"),
     }
 }
@@ -404,8 +514,11 @@ pub(super) fn client_family(family: crate::diagnostics::ClientFamily) -> String 
 pub(super) fn command_rejected(record: Record, reason: &CoreCommandRejectReason) -> Record {
     let code = match reason {
         CoreCommandRejectReason::DownloadAlreadyActive => "download_already_active",
+        CoreCommandRejectReason::DownloadCompleting => "download_completing",
         CoreCommandRejectReason::DuplicateDownload => "duplicate_download",
         CoreCommandRejectReason::DownloadPathConflict => "download_path_conflict",
+        CoreCommandRejectReason::PartFileMoved => "part_file_moved",
+        CoreCommandRejectReason::FileTooLargeForVolume => "file_too_large_for_volume",
         CoreCommandRejectReason::NoDownloadDir => "no_download_dir",
         CoreCommandRejectReason::DownloadDirRefused(guard) => {
             return directory_refusal_as(
@@ -423,6 +536,7 @@ pub(super) fn command_rejected(record: Record, reason: &CoreCommandRejectReason)
             return kad_unavailable(record.code("reason", "kad_unavailable"), why);
         }
         CoreCommandRejectReason::UnknownServer => "unknown_server",
+        CoreCommandRejectReason::ServerAddressReserved => "server_address_reserved",
         CoreCommandRejectReason::ServerListStoreFailed => "server_list_store_failed",
         CoreCommandRejectReason::ServerListFetchUnavailable => "server_list_fetch_unavailable",
         CoreCommandRejectReason::ServerListUpdateInFlight => "server_list_update_in_flight",
@@ -488,6 +602,17 @@ pub(super) const fn kad_stop(reason: KadStopReason) -> &'static str {
     }
 }
 
+pub(super) const fn long_task(task: LongTask) -> &'static str {
+    match task {
+        LongTask::Core => "core",
+        LongTask::ClientUdpFront => "client_udp_front",
+        LongTask::ClientUdpSends => "client_udp_sends",
+        LongTask::ReaskRouter => "reask_router",
+        LongTask::FirewalledFront => "firewalled_front",
+        LongTask::NattFront => "natt_front",
+    }
+}
+
 pub(super) const fn quit_step(step: QuitStep) -> &'static str {
     match step {
         QuitStep::DirectoryScan => "directory_scan",
@@ -495,6 +620,7 @@ pub(super) const fn quit_step(step: QuitStep) -> &'static str {
         QuitStep::Download => "download",
         QuitStep::Serve => "serve",
         QuitStep::Kad => "kad",
+        QuitStep::ServerSession => "server_session",
         QuitStep::PortMapping => "port_mapping",
         QuitStep::CreditCheckpoint => "credit_checkpoint",
     }
@@ -534,6 +660,7 @@ pub(super) const fn search_skip(reason: SearchResultSkipReason) -> &'static str 
         SearchResultSkipReason::TagDecodeFailed => "tag_decode_failed",
         SearchResultSkipReason::FileSizeAboveLimit => "file_size_above_limit",
         SearchResultSkipReason::FileSizeZero => "file_size_zero",
+        SearchResultSkipReason::RowCap => "row_cap",
     }
 }
 
@@ -669,6 +796,14 @@ pub(super) const fn ignored_reask_reply(reason: IgnoredReaskReply) -> &'static s
     }
 }
 
+/// Where a download stands on a peer's link (ADR-0107).
+pub(super) const fn link_turn(turn: LinkTurn) -> &'static str {
+    match turn {
+        LinkTurn::Waiting => "waiting",
+        LinkTurn::Riding => "riding",
+    }
+}
+
 /// Why a dial ended before the peer's hello; an OS error carries its kind.
 pub(super) fn dial_end(record: Record, cause: DialEnd) -> Record {
     let code = match cause {
@@ -680,11 +815,16 @@ pub(super) fn dial_end(record: Record, cause: DialEnd) -> Record {
         DialEnd::Banned => "banned",
         DialEnd::ConnectionRefused => "connection_refused",
         DialEnd::TimedOut => "timed_out",
+        DialEnd::CryptUnanswered => "crypt_unanswered",
         DialEnd::Reset => "reset",
         DialEnd::Os { kind } => return record.code("cause", "os").os_error(kind, None),
         DialEnd::ClosedBeforeHello => "closed_before_hello",
         DialEnd::NoHelloInTime => "no_hello_in_time",
-        DialEnd::ProtocolViolation => "protocol_violation",
+        DialEnd::ProtocolViolation(violation) => {
+            return record
+                .code("cause", "protocol_violation")
+                .code("violation", violation.code());
+        }
         DialEnd::ClosedLocally => "closed_locally",
     };
     record.code("cause", code)

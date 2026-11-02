@@ -7,8 +7,8 @@
 //! ADR-0052/0080) and the description pair (`0xA2` auto-trigger + gated
 //! `0xA3` consume, ADR-0068) are consumed in-engine.
 
+use parking_lot::Mutex;
 use std::collections::HashMap;
-use std::sync::Mutex;
 
 use rmule_ed2k::{GlobServStatRes, Opcode, ServerDescReq, ServerDescRes};
 use rmule_primitives::{
@@ -325,7 +325,7 @@ impl<T: ServerUdpTransport> ServerUdpEngine<T> {
         {
             // A re-ping refreshes the status fields; the `0xA3` display
             // strings ride along untouched (ADR-0068: one record, merged).
-            let mut store = self.capabilities.lock().expect("server capabilities store");
+            let mut store = self.capabilities.lock();
             let display = store
                 .remove(&server)
                 .map(|prior| prior.display)
@@ -336,7 +336,7 @@ impl<T: ServerUdpTransport> ServerUdpEngine<T> {
             );
         }
         let request = {
-            let mut desc = self.desc.lock().expect("server description store");
+            let mut desc = self.desc.lock();
             let state = desc.entry(server).or_default();
             state.pinged_count += 1;
             if state.pinged_count < 2 {
@@ -374,7 +374,7 @@ impl<T: ServerUdpTransport> ServerUdpEngine<T> {
         match reply {
             ServerDescRes::Tagged { challenge, tags } => {
                 let matched = {
-                    let mut desc = self.desc.lock().expect("server description store");
+                    let mut desc = self.desc.lock();
                     match desc.get_mut(&server) {
                         Some(state) if state.outstanding == Some(challenge) => {
                             state.outstanding = None;
@@ -397,17 +397,12 @@ impl<T: ServerUdpTransport> ServerUdpEngine<T> {
                 {
                     self.facts.described(&endpoint, version);
                 }
-                if let Some(record) = self
-                    .capabilities
-                    .lock()
-                    .expect("server capabilities store")
-                    .get_mut(&server)
-                {
+                if let Some(record) = self.capabilities.lock().get_mut(&server) {
                     record.apply_desc_tags(tags);
                 }
             }
             ServerDescRes::Legacy { description, name } => {
-                let mut store = self.capabilities.lock().expect("server capabilities store");
+                let mut store = self.capabilities.lock();
                 let Some(record) = store.get_mut(&server) else {
                     tracing::trace!(
                         ?server,

@@ -15,17 +15,24 @@ async fn a_granted_upload_marks_the_peer_roster_known_and_its_release_forgets_it
     let peer = PeerEndpoint::V4(Ipv4Endpoint::new(Ipv4Addr::new(203, 0, 113, 9), 4662));
     let store = rmule_testkit::memory_store();
     let credit: SharedCreditStore = Arc::new(DurableCreditStore::new(store));
-    let (evt_tx, mut evt_rx) = mpsc::channel::<CoreEvent>(8);
+    let (evt_tx, mut evt_rx) = crate::service::outbox(Default::default());
     let client_udp_tx: Option<mpsc::Sender<ClientUdpSend>> = None;
     let diagnostics = crate::diagnostics::DiagnosticsState::new();
     let peer_roster = crate::peer_roster::SharedPeerRoster::default();
     let sinks = super::super::ServeSinks {
+        bans: &Default::default(),
         credit: &credit,
         evt_tx: &evt_tx,
         client_udp_tx: &client_udp_tx,
         diagnostics: &diagnostics,
         peer_roster: &peer_roster,
         read_failed_tx: None,
+        served: &Default::default(),
+        dial_backs: &mpsc::channel(1).0,
+        reader: &crate::serve::block_reader::BlockReader::new(
+            mpsc::channel(1).0,
+            Default::default(),
+        ),
     };
     let (_accept_tx, accept_rx) = mpsc::channel::<ServeConnection>(1);
     let mut serve_runtime = FakeServeRuntime {
@@ -41,6 +48,7 @@ async fn a_granted_upload_marks_the_peer_roster_known_and_its_release_forgets_it
                 peer,
                 file_hash: file,
                 software: None,
+                road: crate::GrantRoad::Linked,
             },
         )]);
     super::super::enact(
@@ -48,6 +56,7 @@ async fn a_granted_upload_marks_the_peer_roster_known_and_its_release_forgets_it
         &mut state,
         &conns,
         &mut serve_runtime,
+        &mut no_builds(),
         sinks,
     )
     .await;
@@ -69,6 +78,7 @@ async fn a_granted_upload_marks_the_peer_roster_known_and_its_release_forgets_it
         &mut state,
         &conns,
         &mut serve_runtime,
+        &mut no_builds(),
         sinks,
     )
     .await;
@@ -102,17 +112,24 @@ async fn a_waiter_leaving_forgets_the_peer_roster_mark(cause: crate::WaiterLeave
     let waiter = PeerEndpoint::V4(Ipv4Endpoint::new(Ipv4Addr::new(203, 0, 113, 10), 4662));
     let store = rmule_testkit::memory_store();
     let credit: SharedCreditStore = Arc::new(DurableCreditStore::new(store));
-    let (evt_tx, _evt_rx) = mpsc::channel::<CoreEvent>(8);
+    let (evt_tx, _evt_rx) = crate::service::outbox(Default::default());
     let client_udp_tx: Option<mpsc::Sender<ClientUdpSend>> = None;
     let diagnostics = crate::diagnostics::DiagnosticsState::new();
     let peer_roster = crate::peer_roster::SharedPeerRoster::default();
     let sinks = super::super::ServeSinks {
+        bans: &Default::default(),
         credit: &credit,
         evt_tx: &evt_tx,
         client_udp_tx: &client_udp_tx,
         diagnostics: &diagnostics,
         peer_roster: &peer_roster,
         read_failed_tx: None,
+        served: &Default::default(),
+        dial_backs: &mpsc::channel(1).0,
+        reader: &crate::serve::block_reader::BlockReader::new(
+            mpsc::channel(1).0,
+            Default::default(),
+        ),
     };
     let (_accept_tx, accept_rx) = mpsc::channel::<ServeConnection>(1);
     let mut serve_runtime = FakeServeRuntime {
@@ -153,6 +170,7 @@ async fn a_waiter_leaving_forgets_the_peer_roster_mark(cause: crate::WaiterLeave
         &mut state,
         &conns,
         &mut serve_runtime,
+        &mut no_builds(),
         sinks,
     )
     .await;
@@ -169,6 +187,7 @@ async fn a_waiter_leaving_forgets_the_peer_roster_mark(cause: crate::WaiterLeave
         &mut state,
         &conns,
         &mut serve_runtime,
+        &mut no_builds(),
         sinks,
     )
     .await;
@@ -190,6 +209,9 @@ async fn a_waiter_leaving_forgets_the_peer_roster_mark(cause: crate::WaiterLeave
             ServeInput::Server(ServerEvent::TransferCancelled { file_hash: file }),
             &no_modifiers,
         ),
+        crate::WaiterLeaveCause::UserHashClash | crate::WaiterLeaveCause::Banned => {
+            unreachable!("driven by the purge or a cancel")
+        }
     }
     .into();
     super::super::enact(
@@ -197,6 +219,7 @@ async fn a_waiter_leaving_forgets_the_peer_roster_mark(cause: crate::WaiterLeave
         &mut state,
         &conns,
         &mut serve_runtime,
+        &mut no_builds(),
         sinks,
     )
     .await;
@@ -228,13 +251,14 @@ async fn a_stopped_serve_forgets_its_holder_and_its_waiter() {
         })
         .unwrap();
     let (accept_tx, accept_rx) = mpsc::channel::<ServeConnection>(4);
-    let (evt_tx, mut evt_rx) = mpsc::channel::<CoreEvent>(64);
+    let (evt_tx, mut evt_rx) = crate::service::outbox(Default::default());
     let (stop_tx, stop_rx) = watch::channel(false);
     let (_share_changed_tx, share_changed_rx) = mpsc::channel::<()>(1);
     let peer_roster = crate::peer_roster::SharedPeerRoster::default();
 
     let serve = tokio::spawn(
         ServeTask {
+            bans: Default::default(),
             registry: Arc::new(registry),
             serve_runtime: FakeServeRuntime {
                 bound: SocketAddrV4::new(Ipv4Addr::LOCALHOST, 4662),
@@ -247,6 +271,7 @@ async fn a_stopped_serve_forgets_its_holder_and_its_waiter() {
             share_changed_rx,
             dialed_serve_rx: None,
             credit: Arc::new(DurableCreditStore::new(store)),
+            held_places: crate::held_places::SharedHeldPlaces::default(),
             rerank_interval: Duration::from_secs(3600),
             reask_rx: None,
             client_udp_tx: None,
@@ -256,6 +281,7 @@ async fn a_stopped_serve_forgets_its_holder_and_its_waiter() {
             peer_roster: peer_roster.clone(),
             withheld: crate::registry_check::WithheldRows::default(),
             read_failed_tx: None,
+            served: Default::default(),
         }
         .run(),
     );
@@ -306,4 +332,9 @@ async fn a_stopped_serve_forgets_its_holder_and_its_waiter() {
         !peer_roster.knows(Ipv4Addr::from(waiter)),
         "the waiter's relation ended with the activity"
     );
+}
+
+/// A builder whose builds nothing here starts.
+fn no_builds() -> crate::serve::aich_builder::AichBuilder {
+    crate::serve::aich_builder::AichBuilder::new(mpsc::channel(1).0)
 }

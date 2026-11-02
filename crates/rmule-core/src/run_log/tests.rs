@@ -23,8 +23,10 @@ fn written(level: Level, run: impl FnOnce(&LevelHandle)) -> String {
     let dir = tempfile::tempdir().expect("tempdir");
     let log = RunLog::open(dir.path(), level).expect("open");
     let handle = log.level();
+    let file = log.file.clone();
     let subscriber = sink::subscriber(log.file, EnvFilter::new("info"), handle.clone(), None);
     tracing::subscriber::with_default(subscriber, || run(&handle));
+    file.drain();
     read(&dir.path().join(FILE_NAME))
 }
 
@@ -33,6 +35,20 @@ fn write_each(events: impl IntoIterator<Item = CoreEvent>, handle: &LevelHandle)
     for event in events {
         write(&event.record(), handle.get());
     }
+}
+
+/// The Outbox writes every event as it is sent, so the log does not depend on
+/// a reader, or on anything a reader is doing.
+#[test]
+fn an_event_no_reader_takes_is_in_the_log() {
+    let log = written(Level::Lean, |handle| {
+        let (outbox, stream) = crate::service::outbox(handle.clone());
+        drop(stream);
+        outbox.send(CoreEvent::Quitting {
+            step: crate::QuitStep::Search,
+        });
+    });
+    assert!(log.contains("step=search"), "{log}");
 }
 
 /// A peer at a full address, for lines that print one.
@@ -47,7 +63,7 @@ fn file_hash(byte: u8) -> rmule_primitives::FileHash {
 
 /// aMule 2.3.3, as its captured hellos name it.
 fn amule_233() -> rmule_peer::ClientSoftware {
-    crate::diagnostics::client_software(0x0304_0D80, None)
+    rmule_testkit::client_software(0x0304_0D80, None)
 }
 
 /// A search id far above any the process mints.
@@ -89,6 +105,7 @@ fn session_events() -> Vec<CoreEvent> {
                 size: 734_003_200,
                 origin: crate::DownloadMetadataOrigin::Link,
             },
+            file_path: std::path::PathBuf::from("/home/ann/films/secret holiday film.avi.part"),
         }),
         CoreEvent::Download(DownloadEvent::PeerSelected {
             download_id: DownloadId::from_u64(3),
@@ -98,6 +115,7 @@ fn session_events() -> Vec<CoreEvent> {
             peer,
             file_hash: hash,
             software: Some(amule_233()),
+            road: crate::GrantRoad::Linked,
         }),
         CoreEvent::Scan(ScanEvent::Declined {
             dir: "/home/ann/private-share".into(),
@@ -106,7 +124,7 @@ fn session_events() -> Vec<CoreEvent> {
             user_hash: UserHash::from_bytes([0xCD; 16]),
         },
         CoreEvent::PeerReachRouted {
-            peer,
+            peer: peer.into(),
             route: crate::PeerReachRoute::Direct { endpoint: peer },
         },
         CoreEvent::Search(SearchEvent::SearchResultsReceived {
@@ -215,6 +233,7 @@ fn the_full_log_holds_the_same_events_with_what_lean_withholds() {
         "file_hash=ABABABABABABABABABABABABABABABAB",
         "user_hash=CDCDCDCDCDCDCDCDCDCDCDCDCDCDCDCD",
         "dir=\"/home/ann/private-share\"",
+        "file_path=\"/home/ann/films/secret holiday film.avi.part\"",
         "software=\"amule\" software_version=\"2.3.3\"",
         "free-form line naming peer 198.51.100.9",
         "server.connected server=203.0.113.7:4661",
@@ -326,7 +345,7 @@ fn login_events() -> Vec<CoreEvent> {
             },
         },
         CoreEvent::PeerReachRouted {
-            peer: peer_at(198, 51, 100, 9, 4662),
+            peer: peer_at(198, 51, 100, 9, 4662).into(),
             route: crate::PeerReachRoute::Direct {
                 endpoint: peer_at(198, 51, 100, 9, 4662),
             },
@@ -367,7 +386,7 @@ fn the_lean_log_holds_the_login_steps_with_our_address_and_ports_and_no_peer() {
          closed_by=peer",
         "server.login server=203.0.113.7:4661 step=answered client_id=83915211 \
          public_ip=203.0.113.5 compression=yes new_tags=no unicode=no related_search=no \
-         type_tag_integer=no large_files=yes tcp_obfuscation=no ipv6=no",
+         type_tag_integer=no large_files=yes tcp_obfuscation=no ipv6=no ipv6_update=no lowid_holepunch=no",
         "server.login server=203.0.113.7:4661 step=port_test_window_closed arrived=yes",
         "server.login server=203.0.113.7:4661 step=port_test_late late_by_ms=1250 \
          admission=refused",
@@ -421,11 +440,11 @@ fn a_level_changed_mid_run_governs_the_next_line() {
 
 /// What a mirror writes into a buffer the test reads.
 #[derive(Clone, Default)]
-struct Mirrored(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+struct Mirrored(std::sync::Arc<parking_lot::Mutex<Vec<u8>>>);
 
 impl std::io::Write for Mirrored {
     fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-        self.0.lock().expect("mirror").extend_from_slice(bytes);
+        self.0.lock().extend_from_slice(bytes);
         Ok(bytes.len())
     }
 
@@ -453,6 +472,7 @@ fn the_mirror_holds_the_free_form_lines_the_lean_file_leaves_out() {
         writer: tracing_subscriber::fmt::writer::BoxMakeWriter::new(move || writer.clone()),
         filter: EnvFilter::new("info"),
     };
+    let file = log.file.clone();
     let subscriber = sink::subscriber(log.file, EnvFilter::new("info"), log.level, Some(mirror));
     let peer = CoreEvent::Download(DownloadEvent::PeerSelected {
         download_id: DownloadId::from_u64(1),
@@ -462,8 +482,9 @@ fn the_mirror_holds_the_free_form_lines_the_lean_file_leaves_out() {
         write(&peer.record(), Level::Lean);
         tracing::info!("a free-form line");
     });
+    file.drain();
     let file = read(&dir.path().join(FILE_NAME));
-    let mirror = String::from_utf8(mirrored.0.lock().expect("mirror").clone()).expect("utf-8");
+    let mirror = String::from_utf8(mirrored.0.lock().clone()).expect("utf-8");
     assert_eq!(untimed(&file).len(), 1, "{file}");
     assert!(!file.contains("a free-form line"), "{file}");
     assert_eq!(untimed(&mirror).len(), 2, "{mirror}");
@@ -480,5 +501,39 @@ fn a_run_starts_with_its_build_and_says_unknown_for_what_the_build_lacks() {
     assert_eq!(
         run_start("0.1.0", "", "", false).render(Level::Lean),
         "run_start version=0.1.0 commit=unknown dirty=no committed=unknown"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn the_log_and_its_rotated_twin_are_kept_to_this_user() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tempfile::tempdir().unwrap();
+    let (tell, _failures) = std::sync::mpsc::channel();
+    let mut log = sink::LogFile::open(dir.path(), 8, tell).unwrap();
+    std::io::Write::write_all(&mut log, b"one line of log\n").unwrap();
+    std::io::Write::write_all(&mut log, b"another line\n").unwrap();
+    log.drain();
+    let mode = |name: &str| {
+        std::fs::metadata(dir.path().join(name))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777
+    };
+    assert_eq!(mode(FILE_NAME), 0o600);
+    assert_eq!(mode(PREDECESSOR_NAME), 0o600);
+}
+
+/// A panic's message holds whatever it was formatted from, so a lean log
+/// keeps the place and thread and leaves the values out (ADR-0118).
+#[test]
+fn a_panic_names_its_place_at_lean_and_its_values_at_full_alone() {
+    let (lean, full) = super::panic::lines("peer 192.0.2.1 sent \"x\"");
+    assert_eq!(lean, "panic thread=tokio-runtime-worker at=src/x.rs:7");
+    assert_eq!(
+        full,
+        "panic thread=tokio-runtime-worker at=src/x.rs:7 message=\"peer 192.0.2.1 sent \\\"x\\\"\""
     );
 }

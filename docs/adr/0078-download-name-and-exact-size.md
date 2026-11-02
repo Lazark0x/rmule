@@ -49,11 +49,11 @@ pub struct DownloadMetadata {
 - **Edge.** `DownloadEvent::DownloadQueued` and `DownloadEvent::DownloadRecovered` both
   carry `metadata`, and `DownloadRecovered` also carries `file_hash`. A consumer folding
   events learns the file's identity in the message that creates its row, with no
-  snapshot join. This matters most on recovery: a recovered download has no live task
-  and so no diagnostics row until it resumes.
+  snapshot join. A recovered download's resting diagnostics row (ADR-0094) carries it
+  too, but the edge is the message that creates a consumer's row.
 - **Level.** `DownloadDiagnostics::metadata` (ADR-0028) carries the same value for
-  every download with a live task. The row opens from the stored record at start and at
-  resume, so the snapshot and the event stream cannot disagree.
+  every download Transfers lists, running or at rest (ADR-0094). The row opens from the
+  stored record at attach, at start and at resume, so the snapshot and the event stream cannot disagree.
 - Both surfaces read the metadata back from the durable record, not from the command's
   copy of the link: what a consumer sees is what a restart replays.
 

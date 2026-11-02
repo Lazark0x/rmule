@@ -137,15 +137,8 @@ impl Hello {
 
     /// Read an opening hello, requiring the legacy hash-size prefix.
     pub fn decode_packet(packet: &Packet) -> Result<Self, PeerHelloDecodeError> {
-        if packet.protocol() != PacketProtocol::Edonkey {
-            return Err(PeerHelloDecodeError::UnsupportedProtocol);
-        }
-        if packet.opcode() != PeerOpcode::Hello.as_u8() {
-            return Err(PeerHelloDecodeError::WrongOpcode {
-                opcode: packet.opcode(),
-            });
-        }
-        let mut reader = WireReader::new(packet.payload());
+        let payload = packet.body_of(PacketProtocol::Edonkey, PeerOpcode::Hello.as_u8())?;
+        let mut reader = WireReader::new(payload);
         let hash_size = reader.read_u8("hash size")?;
         // aMule refuses any other size (`BaseClient.cpp:386-394`): the answer
         // has no size field to echo one with.
@@ -210,15 +203,8 @@ impl HelloAnswer {
 
     /// Read an answer, which carries no hash-size prefix.
     pub fn decode_packet(packet: &Packet) -> Result<Self, PeerHelloDecodeError> {
-        if packet.protocol() != PacketProtocol::Edonkey {
-            return Err(PeerHelloDecodeError::UnsupportedProtocol);
-        }
-        if packet.opcode() != PeerOpcode::HelloAnswer.as_u8() {
-            return Err(PeerHelloDecodeError::WrongOpcode {
-                opcode: packet.opcode(),
-            });
-        }
-        let (body, trailer) = decode_body(packet.payload())?;
+        let payload = packet.body_of(PacketProtocol::Edonkey, PeerOpcode::HelloAnswer.as_u8())?;
+        let (body, trailer) = decode_body(payload)?;
         Ok(Self { body, trailer })
     }
 
@@ -296,25 +282,17 @@ fn decode_body(payload: &[u8]) -> Result<(PeerHelloBody, HelloTrailer), PeerHell
 
 /// Read `count` tags off the front of `bytes`, returning them and the bytes
 /// they took. A tag the value model cannot hold — a type both references read
-/// but rmule never uses (`FLOAT32`, `BOOL`, `BOOLARRAY`, `BLOB`, `BSOB`,
-/// `STR17`–`STR22`), or a name that is not UTF-8 — is stepped over by its width,
-/// as the references read and ignore it.
+/// but rmule never uses, or a name that is not UTF-8 — is stepped over by its
+/// width, as the references read and ignore it
+/// ([`Tag::decode_or_step_prefix`], the rule every tag list shares).
 pub(crate) fn decode_tags(bytes: &[u8], count: usize) -> Result<(Vec<Tag>, usize), PrimitiveError> {
     // The frame, not the peer's word, bounds what is reserved.
     let mut tags = Vec::with_capacity(Tag::block_capacity(count, bytes));
     let mut reader = WireReader::new(bytes);
     for _ in 0..count {
-        let rest = reader.remaining_bytes();
-        match Tag::decode_prefix(rest) {
-            Ok((tag, used)) => {
-                tags.push(tag);
-                reader.advance_clamped(used);
-            }
-            Err(PrimitiveError::UnsupportedTagType { .. } | PrimitiveError::InvalidTag { .. }) => {
-                reader.advance_clamped(Tag::skip_prefix(rest)?);
-            }
-            Err(other) => return Err(other),
-        }
+        let (tag, used) = Tag::decode_or_step_prefix(reader.remaining_bytes())?;
+        reader.advance_clamped(used);
+        tags.extend(tag);
     }
     Ok((tags, reader.position()))
 }

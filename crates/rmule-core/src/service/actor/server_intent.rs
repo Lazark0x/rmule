@@ -1,5 +1,5 @@
-//! The operator's intent to stay connected (ADR-0093, "A lost session is
-//! re-made"). A `ConnectToServer` says *stay connected to this server*;
+//! The operator's intent to stay connected (ADR-0096, "A lost session is re-made"). A
+//! `ConnectToServer` says *stay connected to this server*;
 //! the intent outlives one TCP link and ends when the operator disconnects,
 //! connects elsewhere, or quits. While it stands, a lost session is re-made
 //! through the one establishment — listener, mapping wait, login — after a
@@ -179,10 +179,24 @@ where
                 .await;
         }
         self.end_waiting_server_legs();
+        self.wiring.shared_server_session.cancel_dial();
         let live = self.wiring.shared_server_session.slot().lock().await.take();
         if let Some(live) = live {
             // Its own task says `Disconnected` once it is down.
             tokio::spawn(async move { live.disconnect().await });
+        }
+    }
+
+    /// The machine slept (ADR-0095, "A dead link"): a mapping may have
+    /// expired at the gateway and the link is on no one's word, so the mapper
+    /// races again and the session is re-made. Its end is the intent's, which
+    /// dials as after any lost session; with no session nothing is dialed.
+    pub(super) async fn on_clock_jump(&mut self) {
+        tracing::info!("the clock jumped; probing the mapping and the session");
+        self.notify_port_mapping(crate::adapters::PortMappingControl::Reprobe);
+        let session = self.wiring.shared_server_session.session_now().await;
+        if let Some(session) = session {
+            tokio::spawn(async move { session.disconnect().await });
         }
     }
 
@@ -306,7 +320,7 @@ where
             record = %event.record().render(Level::Full),
             "the operator's session was lost; reconnecting"
         );
-        send_event(&self.evt_tx, CoreEvent::ServerConnection(event)).await;
+        send_event(&self.evt_tx, CoreEvent::ServerConnection(event));
     }
 
     async fn end_reconnect(&mut self, server: ServerEndpoint, reason: ReconnectEnd) {
@@ -315,7 +329,7 @@ where
             record = %event.record().render(Level::Full),
             "no more reconnects"
         );
-        send_event(&self.evt_tx, CoreEvent::ServerConnection(event)).await;
+        send_event(&self.evt_tx, CoreEvent::ServerConnection(event));
     }
 }
 

@@ -2,6 +2,8 @@
 //! and read back from it, so a wrapper scores a run by the same spelling the
 //! run wrote — including the runs already archived.
 
+use crate::verdict::Verdict;
+
 /// What rmule prints once both self-checks read open.
 pub(super) const BOTH_OPEN: &str = "rmule-kad-verdicts tcp=open udp=open";
 /// What rmule prints once its TCP self-check reads open, whatever UDP reads.
@@ -39,12 +41,12 @@ impl RequiredCheckVerdict {
 
     /// The label the verdict file holds; archived runs hold the same four.
     #[must_use]
-    pub const fn label(self) -> &'static str {
+    pub const fn label(self) -> Verdict {
         match self {
-            Self::Pass => "PASS",
-            Self::TcpOpen => "TCP_OPEN",
-            Self::Observed => "OBSERVED",
-            Self::Fail => "FAIL",
+            Self::Pass => Verdict::Pass,
+            Self::TcpOpen => Verdict::TcpOpen,
+            Self::Observed => Verdict::Observed,
+            Self::Fail => Verdict::Fail,
         }
     }
 
@@ -57,7 +59,7 @@ impl RequiredCheckVerdict {
             .strip_suffix('"')?;
         [Self::Pass, Self::TcpOpen, Self::Observed, Self::Fail]
             .into_iter()
-            .find(|verdict| verdict.label() == label)
+            .find(|verdict| verdict.label().word() == label)
     }
 
     /// Whether rmule's TCP self-check read open: the gate of flow R.

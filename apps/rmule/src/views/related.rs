@@ -12,26 +12,18 @@ use rmule_primitives::{Ed2kText, FileHash, RelatedFilesQuery};
 use crate::action::Action;
 use crate::state::{UiState, refusal_text};
 
-/// The item's label, the same in every menu.
-pub(crate) const LABEL: &str = "Search related";
-
 /// Why the item is dimmed now, or `None` when the connected server grants the
 /// search. With no core there is nothing to send it through, whatever the level
 /// last said.
 pub(crate) fn unavailable(state: &UiState) -> Option<&'static str> {
-    if state.ui_only.is_some() {
-        return Some(NO_CORE);
-    }
     if !state.core_alive {
         return Some(CORE_STOPPED);
     }
     state.diagnostics.related_search_refusal().map(refusal_text)
 }
 
-/// The dimmed item's reason on a UI-only run.
-const NO_CORE: &str = "no core attached";
 /// The dimmed item's reason once the core has stopped.
-const CORE_STOPPED: &str = "the core has stopped";
+const CORE_STOPPED: &str = crate::words::search::ENGINE_STOPPED;
 
 /// The action for the file with `file_hash`, known as `file_name` when a name
 /// is known — or `None` while the item is dimmed, so nothing is sent.

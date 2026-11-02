@@ -6,7 +6,9 @@ use anyhow::Result;
 use clap::Args;
 use std::path::PathBuf;
 
-use rmule_interop_harness::flow::{AskBudgetOptions, rescore_ask_budget, run_ask_budget};
+use rmule_interop_harness::flow::{
+    ASK_BUDGET_DOWNLOADS, AskBudgetOptions, RoundsView, rescore_ask_budget, run_ask_budget,
+};
 use serde::Serialize;
 
 use crate::cli::bench::{BenchArgs, CaptureArgs, DEFAULT_TIMEOUT_SECS, EserverArgs};
@@ -31,6 +33,20 @@ pub(crate) struct AskBudgetArgs {
     /// Per-step readiness budget in seconds.
     #[arg(long, default_value_t = DEFAULT_TIMEOUT_SECS)]
     pub(crate) timeout: u64,
+    /// Downloads rmule starts. Past 35 the tap draws the UDP round's cap
+    /// per server; the TCP verdict is written for sixteen.
+    #[arg(long, default_value_t = ASK_BUDGET_DOWNLOADS)]
+    pub(crate) downloads: u8,
+    /// List ed2k-server beside the login, tapped on UDP: a round passes the
+    /// connected server over.
+    #[arg(long)]
+    pub(crate) also_ed2ksrv: bool,
+    /// The ed2k-server image `--also-ed2ksrv` runs.
+    #[arg(long, default_value = crate::cli::nat::DEFAULT_ED2KSRV_IMAGE)]
+    pub(crate) ed2ksrv_image: String,
+    /// The ed2k-server bench config `--also-ed2ksrv` renders.
+    #[arg(long, default_value = crate::cli::nat::DEFAULT_ED2KSRV_CONFIG)]
+    pub(crate) ed2ksrv_config: PathBuf,
     /// Score this retained run dir's tap again instead of driving the flow.
     #[arg(long)]
     pub(crate) rescore: Option<PathBuf>,
@@ -46,11 +62,17 @@ struct AskBudgetResolvedConfig {
     capture_image: String,
     container_runtime: String,
     timeout_secs: u64,
+    downloads: u8,
 }
 
 pub(crate) fn ask_budget(args: AskBudgetArgs) -> Result<()> {
     if let Some(run_dir) = &args.rescore {
-        return rescore_ask_budget(run_dir);
+        let view = if args.also_ed2ksrv {
+            RoundsView::Listed
+        } else {
+            RoundsView::Login
+        };
+        return rescore_ask_budget(run_dir, args.downloads, view);
     }
     args.bench
         .prepare(&[args.eserver.build_context(), args.capture.build_context()])?;
@@ -65,6 +87,7 @@ pub(crate) fn ask_budget(args: AskBudgetArgs) -> Result<()> {
             capture_image: args.capture.capture_image.clone(),
             container_runtime: args.bench.container_runtime.clone(),
             timeout_secs: args.timeout,
+            downloads: args.downloads,
         },
     )?;
     println!("run_dir={}", run_dir.display());
@@ -78,5 +101,9 @@ pub(crate) fn ask_budget(args: AskBudgetArgs) -> Result<()> {
         rmule_tools_image: &args.rmule_tools_image,
         probe_image: &args.probe_image,
         capture_image: &args.capture.capture_image,
+        downloads: args.downloads,
+        also_ed2ksrv: args
+            .also_ed2ksrv
+            .then_some((args.ed2ksrv_image.as_str(), args.ed2ksrv_config.as_path())),
     })
 }

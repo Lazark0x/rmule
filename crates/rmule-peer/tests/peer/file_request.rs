@@ -11,7 +11,8 @@
 //! `data->ReadString(...)` whose default `lenBytes = 2`
 //! (SafeFile.h:155). u16 is the truth.
 
-use rmule_peer::file::PartBitmap;
+use rmule_peer::WireStatus;
+
 use rmule_peer::{PeerPacket, RequestFileName};
 use rmule_primitives::{FileHash, Packet, PacketProtocol};
 
@@ -111,7 +112,7 @@ fn op_filestatus_round_trips_with_bitmap() {
     match PeerPacket::decode(&packet).expect("file status") {
         PeerPacket::FileStatus(fs) => {
             assert_eq!(fs.file_hash, hash());
-            assert_eq!(fs.bitmap.part_count(), part_count as u32);
+            assert_eq!(fs.bitmap.count(), part_count);
             assert_eq!(fs.bitmap.encode(), bitmap_bytes.to_vec());
             assert_eq!(fs.encode_packet().payload(), payload.as_slice());
         }
@@ -122,28 +123,18 @@ fn op_filestatus_round_trips_with_bitmap() {
 #[test]
 fn op_filestatus_complete_file_signal_is_zero_part_count_no_bitmap() {
     // aMule's wire convention: part_count = 0 means "peer has complete file".
-    // PartBitmap decodes literally (empty bitmap); session layer interprets.
+    // WireStatus decodes literally (empty bitmap); session layer interprets.
     let mut payload = hash().as_bytes().to_vec();
     payload.extend_from_slice(&0u16.to_le_bytes());
 
     let packet = Packet::new(PacketProtocol::Edonkey, 0x50, payload.clone());
     match PeerPacket::decode(&packet).expect("file status complete") {
         PeerPacket::FileStatus(fs) => {
-            assert_eq!(fs.bitmap.part_count(), 0);
-            assert_eq!(fs.bitmap.iter_present().count(), 0);
+            assert_eq!(fs.bitmap.count(), 0);
             assert_eq!(fs.encode_packet().payload(), payload.as_slice());
         }
         other => panic!("expected FileStatus, got {other:?}"),
     }
-}
-
-#[test]
-fn op_filestatus_rejects_bitmap_length_mismatch() {
-    let mut payload = hash().as_bytes().to_vec();
-    payload.extend_from_slice(&10u16.to_le_bytes());
-    payload.push(0xFF); // declared 10 parts → expects 2 bytes, given 1
-    let packet = Packet::new(PacketProtocol::Edonkey, 0x50, payload);
-    assert!(PeerPacket::decode(&packet).is_err());
 }
 
 #[test]
@@ -179,7 +170,7 @@ fn a_name_ask_carries_the_askers_part_status_when_the_level_asks_for_it() {
         Ok(bare)
     );
 
-    let status = PartBitmap::decode(10, &[0b1010_0101, 0b10]).unwrap();
+    let status = WireStatus::decode(10, &[0b1010_0101, 0b10]).unwrap();
     let with_status = RequestFileName::new(hash(), Some(&status));
     let mut wire = hash().as_bytes().to_vec();
     wire.extend_from_slice(&[0x0A, 0x00, 0b1010_0101, 0b10]);

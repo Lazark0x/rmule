@@ -114,6 +114,24 @@ impl<K: OwnedKey, T: Record> Indexed<K, T> {
         self.range(txn, ..)
     }
 
+    /// Every `(key, record)`, ascending by key, each record decoded on its
+    /// own: one that will not decode costs that row, not the table. What a
+    /// reader that must go on past a damaged row takes; an engine failure
+    /// still fails the read.
+    ///
+    /// # Errors
+    /// An engine error.
+    #[allow(clippy::type_complexity)]
+    pub fn rows(&self, txn: &impl Readable) -> Result<Vec<(K, Result<T, StoreError>)>, StoreError> {
+        let table = txn.table(self.primary)?;
+        let mut rows = Vec::new();
+        for entry in table.range::<K>(..)? {
+            let (key, value) = entry?;
+            rows.push((key.value(), value.value().unpack()));
+        }
+        Ok(rows)
+    }
+
     /// How many records the table holds.
     ///
     /// # Errors

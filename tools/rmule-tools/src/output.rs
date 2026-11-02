@@ -54,6 +54,7 @@ pub(crate) fn start(
         source_hint,
         name: cleaned,
         if_taken: NameTaken::Refuse,
+        kad_aich_root: None,
     }))
 }
 

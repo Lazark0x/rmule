@@ -1,0 +1,92 @@
+# Fuzz targets on what a stranger can put in front of rmule. A package of its
+# own, outside the workspace, because cargo-fuzz builds with a nightly and its
+# own sanitizer flags. From the repository root, one bounded pass of a target:
+#   cargo +nightly fuzz run <target> -- -max_total_time=60
+# CI runs every target for a time box (`.github/workflows/fuzz.yml`, through
+# `scripts/fuzz-pass.sh`).
+[package]
+name = "rmule-fuzz"
+version = "0.0.0"
+edition = "2024"
+license = "GPL-3.0-or-later"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+rmule-ed2k = { path = "../crates/rmule-ed2k" }
+rmule-kad = { path = "../crates/rmule-kad" }
+rmule-peer = { path = "../crates/rmule-peer" }
+rmule-primitives = { path = "../crates/rmule-primitives" }
+rmule-testkit = { path = "../crates/rmule-testkit", default-features = false }
+
+[workspace]
+
+[profile.release]
+debug = 1
+overflow-checks = true
+
+[[bin]]
+name = "packet"
+path = "fuzz_targets/packet.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "peer_packet"
+path = "fuzz_targets/peer_packet.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "peer_session"
+path = "fuzz_targets/peer_session.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "server_packet"
+path = "fuzz_targets/server_packet.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "kad_envelope"
+path = "fuzz_targets/kad_envelope.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "client_udp"
+path = "fuzz_targets/client_udp.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "tag"
+path = "fuzz_targets/tag.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "met"
+path = "fuzz_targets/met.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "link"
+path = "fuzz_targets/link.rs"
+test = false
+doc = false
+bench = false

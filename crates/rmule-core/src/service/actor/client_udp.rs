@@ -15,11 +15,12 @@ use tokio::sync::mpsc;
 use crate::adapters::RuntimeClientUdpTransport;
 use crate::buddy_link::SharedBuddySlot;
 use crate::client_udp::{
-    ClientUdpDatagram, ClientUdpEngine, ClientUdpSend, PeerUdpCrypt, encrypt_client_udp_send,
-    os_datagram_nonce,
+    ClientUdpDatagram, ClientUdpEngine, ClientUdpSend, PeerUdpCrypt, drain_client_udp_sends,
 };
 use crate::own_identity::SharedOwnIdentity;
-use crate::service::{CoreConfig, CoreEvent, SharedReaskReplySink};
+use crate::service::LongTask;
+use crate::service::{CoreConfig, SharedReaskReplySink};
+use crate::supervisor::spawn_told;
 
 /// Bring up the client-UDP front on the one bound socket: the demuxing engine,
 /// the send drain, the routing of downloader-consumed reask replies
@@ -43,8 +44,9 @@ pub(super) fn spawn_client_udp_front(
     // dual-path while armed, and send is gated per datagram at the drain
     // below.
     let policy = &natt.hello_adverts.obfuscation;
+    let events = Some(natt.events.clone());
     let peer_udp_crypt = PeerUdpCrypt::new(own_identity.clone(), policy.clone());
-    let (reply_tx, mut reply_rx) = mpsc::channel::<ClientUdpSend>(32);
+    let (reply_tx, reply_rx) = mpsc::channel::<ClientUdpSend>(32);
     let (engine, inboxes) = ClientUdpEngine::new(
         RuntimeClientUdpTransport::new(Arc::clone(&socket)),
         peer_udp_crypt,
@@ -65,28 +67,22 @@ pub(super) fn spawn_client_udp_front(
         // Where a running Kad node installs its inbound half (ADR-0057):
         // empty until `EnableKad`, empty again once the node stops.
         sinks.kad_inlet,
+        // Every datagram of a banned IP stops at the front (ADR-0064).
+        sinks.bans,
     );
-    tokio::spawn(engine.run());
+    spawn_told(LongTask::ClientUdpFront, events.clone(), engine.run());
     // The send drain: each serve/download `SendClientUdp` datagram (an
-    // uploader reply or a downloader `0x90` reask ping) rides the one bound
-    // socket back to the peer's UDP endpoint. This is where aMule obfuscates
-    // too (`CMuleUDPSocket::SendControlData`), so the crypt gate and its OS
-    // entropy live here rather than at the sans-I/O sites that framed the
-    // plaintext.
-    let send_crypt = PeerUdpCrypt::new(own_identity.clone(), policy.clone());
-    let drain_socket = Arc::clone(&socket);
-    tokio::spawn(async move {
-        while let Some(send) = reply_rx.recv().await {
-            let (to, datagram) = encrypt_client_udp_send(&send_crypt, send, os_datagram_nonce);
-            // The Family Pair picks the socket the destination's family
-            // needs (ADR-0085): a reask reply leaves by the half its ping
-            // arrived on, so the peer sees the source address it keyed its
-            // own crypt on.
-            if let Err(error) = drain_socket.send_to_peer(to, &datagram).await {
-                tracing::debug!(%error, %to, "transient client-UDP reply send error");
-            }
-        }
-    });
+    // uploader reply or a downloader `0x90` reask ping), and each NAT-T punch,
+    // meets the crypt gate on its way to the one bound socket.
+    spawn_told(
+        LongTask::ClientUdpSends,
+        events.clone(),
+        drain_client_udp_sends(
+            reply_rx,
+            Arc::clone(&socket),
+            PeerUdpCrypt::new(own_identity.clone(), policy.clone()),
+        ),
+    );
     // The quartet names no file, so a reply goes to the one download whose
     // `0x90` to that endpoint is in flight (ADR-0107) — aMule's one requested
     // file per client — and a reply nothing asked for drops. A pool that has
@@ -95,11 +91,10 @@ pub(super) fn spawn_client_udp_front(
     let routes = Arc::clone(sinks.reask_reply);
     let mut reask_reply_rx = inboxes.reask_reply;
     let reply_diagnostics = diagnostics.clone();
-    tokio::spawn(async move {
+    spawn_told(LongTask::ReaskRouter, events, async move {
         while let Some(datagram) = reask_reply_rx.recv().await {
             let sink = routes
                 .lock()
-                .expect("reask reply sink mutex")
                 .route_reply(datagram.0, std::time::Instant::now());
             match sink {
                 Some(tx) => {
@@ -156,6 +151,7 @@ pub(super) struct ClientUdpSinks<'a> {
     pub(super) buddy_slot: &'a SharedBuddySlot,
     pub(super) reask_reply: &'a SharedReaskReplySink,
     pub(super) kad_inlet: crate::client_udp::SharedKadInlet,
+    pub(super) bans: crate::ban_store::SharedBanStore,
 }
 
 /// The cells the **NAT-T Front** reaches that the client-UDP front does not
@@ -175,7 +171,9 @@ pub(super) struct NattFrontWiring<'a> {
     /// reaches the download that was waiting on it.
     pub(super) claims: crate::adapters::AwaitedInbound,
     pub(super) peer_pin: crate::adapters::SharedPeerPin,
-    pub(super) events: mpsc::WeakSender<CoreEvent>,
+    /// The **Peer Roster**: an IP it knows may open a Tunnel unannounced.
+    pub(super) roster: crate::peer_roster::SharedPeerRoster,
+    pub(super) events: crate::service::WeakOutbox,
     /// The **firewalled front**'s two cells (ADR-0061) — its slot
     /// rides the one Hello Adverts read its buddy dial states.
     /// It is spawned beside the NAT-T front because it is the same bind's
@@ -236,6 +234,7 @@ fn spawn_natt_front(
         admit: natt.admit,
         claims: natt.claims,
         peer_pin: natt.peer_pin,
+        roster: natt.roster,
         diagnostics: diagnostics.clone(),
         // Off is `None`: no Own Mapping is read and no socket is ever
         // consulted for a route, so the knob off is today's behaviour exactly.

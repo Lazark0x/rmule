@@ -6,7 +6,9 @@ use std::net::SocketAddrV4;
 use std::path::PathBuf;
 
 use rmule_ed2k::ServerPriority;
-use rmule_primitives::{Ed2kFileLink, FileHash, SafeFileName, SearchQuery, ServerEndpoint};
+use rmule_primitives::{
+    AichRootHash, Ed2kFileLink, FileHash, SafeFileName, SearchQuery, ServerEndpoint,
+};
 
 use crate::adapters::KadEnableConfig;
 use crate::server_list::ManagedServer;
@@ -16,6 +18,11 @@ use super::{DownloadId, PeerReach, SearchId};
 /// The download activity's command vocabulary. Wrapped by
 /// [`CoreCommand::Download`]; `ServeCommand` is its serve-side sibling.
 #[derive(Clone, Debug)]
+// One message per operator action over a low-frequency channel: the link and
+// the root `StartDownload` carries outweigh the id-only variants, and boxing
+// them would put an indirection in every front end's start for no
+// measurable gain.
+#[allow(clippy::large_enum_variant)]
 pub enum DownloadCommand {
     /// Queue a new download. Answered off the actor with
     /// [`DownloadEvent::DownloadQueued`](crate::DownloadEvent::DownloadQueued),
@@ -36,6 +43,11 @@ pub enum DownloadCommand {
         name: SafeFileName,
         /// What the start does when `name` is taken there.
         if_taken: NameTaken,
+        /// The Qualified Kad Root of the search result the download is started
+        /// from (`SearchResult::kad_aich_root`): trusted from the start, below
+        /// the link's own `h=` and open to the peers' vote (ADR-0038). `None`
+        /// for a pasted link or a result with no qualified root.
+        kad_aich_root: Option<AichRootHash>,
     },
     /// Stop the run but keep the verified parts and the store row, so a resume
     /// picks up where it left off.
@@ -61,16 +73,22 @@ pub enum DownloadCommand {
         /// The download to abandon.
         download_id: DownloadId,
     },
-    /// Forget one completed download (ADR-0093, "Clearing a completed
-    /// download"): its record and its row leave; the file, its **Shared File
+    /// Forget one completed download (ADR-0094, "Clearing a completed download"): its record and
+    /// its row leave; the file, its **Shared File
     /// Registry** entry and its share totals stay. Refused with
     /// [`CoreCommandRejectReason::DownloadNotCompleted`] for any other.
     ClearDownload {
         /// The completed download to forget.
         download_id: DownloadId,
     },
-    /// Forget every completed download at once — aMule's "Clear completed".
-    ClearCompletedDownloads,
+    /// Forget these completed downloads with one command, however many: the
+    /// ones the operator's "Clear completed" counted, never one that completed
+    /// since. One that is not completed, or that is still being shared, is
+    /// skipped without a refusal.
+    ClearDownloads {
+        /// The completed downloads to forget.
+        download_ids: Vec<DownloadId>,
+    },
 }
 
 /// What a [`DownloadCommand::StartDownload`] does when the name it gives is
@@ -247,8 +265,8 @@ pub enum CoreCommand {
         /// The listed server to make the session's server.
         server: ServerEndpoint,
     },
-    /// End the operator's intent to stay connected (ADR-0093, "A lost
-    /// session is re-made"): the live session is hung up, a pending
+    /// End the operator's intent to stay connected (ADR-0096, "A lost session is re-made"): the
+    /// live session is hung up, a pending
     /// reconnect is dropped (`ReconnectEnded { OperatorDisconnected }`), and
     /// nothing is dialed until the operator connects again. A no-op with
     /// neither.
@@ -371,6 +389,25 @@ pub enum ServerListCommand {
         /// The server.met URL to fetch and merge.
         url: String,
     },
+    /// Walk `urls` in order, fetching and merging each — the server.met
+    /// auto-update (ADR-0065, aMule's `AutoUpdate` over `addresses.dat`), for
+    /// a front end whose actor owns the list and so does not run the Join
+    /// Sequence whole.
+    ///
+    /// Answered with
+    /// [`ServerListEvent::ServerListAutoUpdateStarted`](crate::ServerListEvent::ServerListAutoUpdateStarted);
+    /// the walk runs off the actor, one URL failing not stopping it, and lands
+    /// as one
+    /// [`ServerListEvent::ServerListAutoUpdateFetched`](crate::ServerListEvent::ServerListAutoUpdateFetched)
+    /// per URL, then the install's
+    /// [`ServerListEvent::ServerListUpdated`](crate::ServerListEvent::ServerListUpdated).
+    /// An empty list is answered and fetches nothing. Rejected as
+    /// [`UpdateServerList`](Self::UpdateServerList) is: no fetch capability,
+    /// or an update already running.
+    AutoUpdateServerList {
+        /// The server.met URLs, in walk order.
+        urls: Vec<String>,
+    },
 }
 /// Why the actor refused a [`CoreCommand`] outright, reported as
 /// [`CoreEvent::CommandRejected`](crate::CoreEvent::CommandRejected)(crate::CoreEvent::CommandRejected). A refusal
@@ -380,14 +417,26 @@ pub enum CoreCommandRejectReason {
     /// A resume named a download that already has a live run in the
     /// **Download Set**.
     DownloadAlreadyActive,
+    /// A Pause or a Cancel named a download whose finished file is already
+    /// in place: its completion move ends on its own (ADR-0115).
+    DownloadCompleting,
     /// A start named a file (hash and size) a live download already holds.
     /// One file is one download: its source discovery, file-known entry and
     /// `.part` are keyed by the file, so a second copy is refused rather
     /// than raced.
     DuplicateDownload,
     /// A start named a file that already exists in the download directory,
-    /// or whose `.part` another download already writes there.
+    /// a `.part` that stands in the part file's directory, or a name a live
+    /// row holds, compared as the strictest volume folds (ADR-0115).
     DownloadPathConflict,
+    /// A Restart found its part file gone from the path its row names while a
+    /// file of that name stands in the current Temp Directory (ADR-0094):
+    /// starting over would throw away a file that was only moved.
+    PartFileMoved,
+    /// A start named a file past `OLD_MAX_FILE_SIZE` and the Temp Directory
+    /// or the download directory lies on FAT, whose files end below 4 GiB
+    /// (`DownloadQueue.cpp:242-251`, ADR-0115).
+    FileTooLargeForVolume,
     /// A start found no download directory in the Core Settings: there is
     /// nowhere to put the file.
     NoDownloadDir,
@@ -421,6 +470,11 @@ pub enum CoreCommandRejectReason {
     /// A server-list command named an endpoint the list does not hold
     /// (ADR-0080).
     UnknownServer,
+    /// An added server's address lies in a Reserved Range no server can be
+    /// at (ADR-0085): a broadcast, multicast, link-local or "this network"
+    /// address. The operator's own word stands on loopback, so a single-host
+    /// lab's server is listed.
+    ServerAddressReserved,
     /// The server-list store refused the write; the list is unchanged. The
     /// store's own reason is traced at `warn` — it is a storage fault, not a
     /// caller mistake, so it is not modelled as a command vocabulary.

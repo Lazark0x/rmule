@@ -53,16 +53,46 @@ weak key rather than strengthening it.
 - **Credit binding.** The first successful SUI binds the peer's ledger row to its public
   key (a Secured Identity) through the store's atomic `bind_public_key`, which answers
   `Adopted`, `AlreadyBound` or `Mismatch`. A later peer presenting the same User Hash with
-  a different key is denied the secured credit and never overwrites it (eMule's
-  `IS_IDFAILED`). Peers without SUI still accrue unsecured credit and are never gated out;
-  unsecured credit is first-come and spoofable by design, which is the reason SUI exists.
+  a different key never overwrites it (eMule's `IS_IDFAILED`). A first key adopted over a
+  row with bytes received resets both totals to one, because the prover has not shown it
+  earned them (`ClientCredits.cpp:235-241`). Peers without SUI still accrue unsecured credit
+  and are never gated out; unsecured credit is first-come and spoofable by design, which is
+  the reason SUI exists.
+- **Credit needs the proof the row asks for.** A row holding a key pays out, and accrues,
+  only at the address its key was proved from this run; everywhere else its modifier is 1,
+  and a client at another address of that family, once the key is proved, ranks at 0 as
+  stock's bad guy (`ClientCredits.cpp:68-131`, `:258-268`, `UploadClient.cpp:97`). The
+  proof sits in the ledger's memory, one address a family (ADR-0107), so the serve task and
+  the download runner read one gate and the link only reports. It rides out a link's end
+  and a serve restart, and a process restart owes it again. A row with no key is
+  `IS_NOTAVAILABLE`: open to all, a failed signature included, since whoever fails can as
+  well not sign.
+- **One verification per link, bound by the link.** The exchange runs once per link,
+  whoever dialed it: an accepted link, one a download dialed, one the serve side dialed
+  back, or an adopted callback. aMule keeps one identification state per client, on the
+  client's credit record, which its upload and download sides both read
+  (`BaseClient.cpp:2576-2578`); a verification sets it there, for the address it was
+  proven on (`ClientCreditsList.cpp:433-437`, `ClientCredits.cpp:189-204`). So the link
+  binds its verification itself, to the client's identity where the credit ledger keeps
+  it, the moment its session reports it, and reports a mismatch once. No half carries the
+  verification, so none can drop it: a serve side that lets the link go at that moment —
+  its own let-go, or the serve activity stopping — and a download that leaves it lose
+  nothing, and the binding happens exactly once whoever holds the link. The serve side then
+  reads the binding as a fact of the link while it serves it, since it keys the identified
+  client on the link — the slot ask that drops an unidentified duplicate waiter and answers
+  an unidentified asker nothing (`UploadQueue.cpp:432-458`) and the hash-thief ban
+  (`ClientList.cpp:384-392`), both read on live links; a serve side that has let the link
+  go keys nothing on it. The download keys nothing on it.
 - **Credit ranks the queue.** The upload queue's score is wait time weighted by the
   credit modifier, aMule's `GetScoreRatio` (ADR-0031), so a verified peer with upload
   history earns real priority. Per-file upload priority is fixed.
 - **Durability.** The credit ring lives in the typed store (ADR-0083). When a
   `clients.met` directory is configured, the ring is seeded from aMule's `clients.met` at
   start (only peers the store has never met) and written back to it at shutdown, in
-  aMule's byte format.
+  aMule's byte format. A row keeps when it last accrued or proved its key and leaves the
+  ring at the first open 150 days after, written file or not (`ClientCreditsList.cpp:142`,
+  `:169`). A hello alone does not stamp it: a row aged out that way holds nothing earned
+  since.
 
 ## Consequences
 

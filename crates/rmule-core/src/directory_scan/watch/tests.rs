@@ -3,12 +3,13 @@
 //! rename, skipped names, lost events, and the watch's lifetime inside the
 //! scan. Every open and every look at a path is counted at the seam.
 
+use parking_lot::Mutex;
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use rmule_primitives::{FileHash, FileHashSummary};
@@ -22,7 +23,7 @@ use super::{
     DirectoryWatch, WatchBatch, WatchEnd, WatchFault, WatchSeams, WatchSignal, WatchStarter,
     watch_loop,
 };
-use crate::registry::SharedFileEntry;
+use crate::registry::SharedRow;
 
 type Step = scripted::Step<Vec<WatchSignal>>;
 
@@ -54,7 +55,7 @@ impl Drop for ScriptedWatch {
 
 struct Harness {
     world: World,
-    rows: RefCell<Vec<SharedFileEntry>>,
+    rows: RefCell<Vec<SharedRow>>,
     stop: Arc<AtomicBool>,
     elapsed: Arc<AtomicU64>,
     dropped: Arc<AtomicBool>,
@@ -78,7 +79,7 @@ struct Harness {
 }
 
 impl Harness {
-    fn new(world: World, rows: Vec<SharedFileEntry>) -> Self {
+    fn new(world: World, rows: Vec<SharedRow>) -> Self {
         Self {
             world,
             rows: RefCell::new(rows),
@@ -136,7 +137,7 @@ impl Harness {
             ScanReport::Share(entry) => {
                 let mut rows = self.rows.borrow_mut();
                 rows.retain(|r| r.file_hash != entry.file_hash);
-                rows.push(entry.clone());
+                rows.push(entry.into());
             }
             ScanReport::Unshare(hash) => {
                 self.rows.borrow_mut().retain(|r| r.file_hash != *hash);
@@ -185,6 +186,7 @@ impl Harness {
             ScanReport::Held { .. }
             | ScanReport::Unreadable { .. }
             | ScanReport::NotHashed { .. }
+            | ScanReport::Refused { .. }
             | ScanReport::LeftoverParts(_)
             | ScanReport::WatchInterrupted(_)
             | ScanReport::WatchRestored
@@ -217,12 +219,12 @@ impl Harness {
         )
     }
 
-    fn shares(&self) -> Vec<(Duration, SharedFileEntry)> {
+    fn shares(&self) -> Vec<(Duration, SharedRow)> {
         self.reports
             .borrow()
             .iter()
             .filter_map(|(at, report)| match report {
-                ScanReport::Share(entry) => Some((*at, entry.clone())),
+                ScanReport::Share(entry) => Some((*at, entry.into())),
                 _ => None,
             })
             .collect()
@@ -346,7 +348,7 @@ fn a_file_that_never_holds_still_is_never_hashed_and_shows_as_settling() {
     harness.run(script, ms(21_000));
     assert!(harness.shares().is_empty());
     assert_eq!(harness.world.opens(), 0);
-    let progress = harness.progress.lock().unwrap().clone().unwrap();
+    let progress = harness.progress.lock().clone().unwrap();
     assert_eq!(progress.phase, ScanPhase::Watching { settling: 1 });
 }
 
@@ -520,7 +522,6 @@ fn scan(
     consent: Consent,
     starts: impl FnMut() -> Result<Box<dyn DirectoryWatch>, WatchFault>,
 ) -> ScanEnd {
-    let rows = harness.known();
     run_scan(
         ScanSeams {
             source: &harness.world,
@@ -531,7 +532,6 @@ fn scan(
             missing_look: crate::CoreConfig::default().missing_directory_look,
         },
         Path::new(ROOT),
-        &rows,
         consent,
         &harness.stop,
         &harness.progress,
@@ -589,7 +589,7 @@ fn the_first_pass_is_reported_before_the_watch_starts() {
             .borrow()
             .iter()
             .any(|(_, report)| matches!(report, ScanReport::Finished(s) if s.hashed == 1));
-        let phase = harness.progress.lock().unwrap().clone().unwrap().phase;
+        let phase = harness.progress.lock().clone().unwrap().phase;
         seen_at_start = Some((finished, phase));
         Err(WatchFault::Backend)
     });
@@ -610,7 +610,7 @@ fn a_watch_that_cannot_start_leaves_the_pass_standing_and_says_why() {
     assert_eq!(end, ScanEnd::Unwatched(WatchFault::Limit));
     assert_eq!(harness.shares().len(), 1, "the first pass holds");
     assert_eq!(
-        harness.progress.lock().unwrap().clone().unwrap().phase,
+        harness.progress.lock().clone().unwrap().phase,
         ScanPhase::Unwatched {
             reason: WatchFault::Limit
         }

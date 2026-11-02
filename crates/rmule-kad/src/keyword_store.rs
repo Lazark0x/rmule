@@ -72,12 +72,14 @@
 //!   only observable for a trust value beyond any single test's reach (tens
 //!   of distinct sole-publishing `/24` subnets on one entry).
 
+mod aich;
 mod entry;
 mod query;
 mod result;
 mod store;
 mod wire;
 
+pub use self::aich::KadAichRootReport;
 pub use self::entry::{KeywordFileOutcome, KeywordPublishFile, KeywordPublishOutcome};
 pub use self::query::UnknownSearchOperator;
 pub use self::result::{KadKeywordResult, KeywordResultRow};
@@ -109,6 +111,14 @@ const TAG_FILEFORMAT: u8 = 0x04;
 /// Documentation-backed byte, `[pending]` capture recipe 1.
 const TAG_SOURCES: u8 = 0x15;
 const TAG_PUBLISHINFO: u8 = 0x33;
+/// `TAG_KADAICHHASHRESULT` — the `BSOB` of AICH roots a storer at Kad v9 or
+/// later writes into a keyword answer (ADR-0038).
+const TAG_KADAICHHASHRESULT: u8 = 0x37;
+
+/// `KADEMLIA_VERSION9_50a`: the first Kad version that handles AICH roots on
+/// keyword storage, and the oldest storer whose `TAG_KADAICHHASHRESULT` a
+/// searcher keeps (eMule 0.70b `Search.cpp:1128`).
+const KADEMLIA_VERSION9_50A: u8 = 9;
 
 // ---------------------------------------------------------------------------
 // aMule constants (`Constants.h`)
@@ -136,6 +146,22 @@ pub const KEYWORD_PER_KEYWORD_CAP: usize = 50_000;
 /// the only thing you index").
 pub const KEYWORD_DUPLICATE_GUARD_THRESHOLD: usize = KEYWORD_PER_KEYWORD_CAP - 5_000;
 
+/// The bytes of publishers' names and verbatim tags the index holds. Past it a
+/// publish is refused as a full index. An honest row is a few hundred bytes, so
+/// this sits above the row cap's honest fill; a row can be a whole 64 KiB datagram,
+/// so the row cap alone is gigabytes. **Divergence (documented):** aMule has only the row
+/// caps. aMule is the wire's truth here, not the bar for what a stranger may cost.
+pub const KEYWORD_BYTE_BUDGET: usize = 64 * 1024 * 1024;
+
+/// Most bytes of one published filename the index keeps, cut on a character:
+/// a thousand-character name, past any file system's, is still whole.
+pub const KEYWORD_NAME_CAP: usize = 1024;
+
+/// Most distinct filenames one entry keeps. A republish under a further name
+/// renews the entry and adds no name, so a flood costs no lowercasing past this.
+/// `TAG_PUBLISHINFO`'s one-byte name count reads the same up to here.
+pub const KEYWORD_NAMES_PER_ENTRY: usize = 64;
+
 /// How long an indexed keyword entry lives (aMule's `KADEMLIAREPUBLISHTIMEK`,
 /// 24 h — distinct from the 5 h source-publish lifetime).
 pub const KEYWORD_ENTRY_LIFETIME: Duration = Duration::from_secs(24 * 60 * 60);
@@ -156,6 +182,14 @@ pub const KEYWORD_MAX_TRACKED_PUBLISHERS: usize = 100;
 /// to any compliant publisher, and a declared count above it is rejected
 /// outright rather than partially processed.
 pub const KEYWORD_PUBLISH_BATCH_CAP: usize = 50;
+
+/// Most verbatim tags a keyword entry keeps: a served row's one-byte tag count
+/// also carries FILENAME, FILESIZE and `TAG_PUBLISHINFO`, and a publish's own
+/// count leaves room for 253 beside the first two. Tags past this are dropped
+/// from the tail. **Divergence (documented):** aMule stores them all ("TODO:
+/// Filter tags", `KademliaUDPListener.cpp:1051`) and its count wraps past 255
+/// (`Entry.cpp:146-147`, a debug-only assert), serving a row no reader can walk.
+pub const KEYWORD_VERBATIM_TAG_CAP: usize = 252;
 
 /// Rows per `0x3B` datagram when serving a keyword search (same batching as
 /// source search results).

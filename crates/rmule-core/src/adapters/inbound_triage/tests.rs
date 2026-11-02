@@ -112,7 +112,7 @@ async fn dial_a_buddy(
     let (evt_tx, mut evt_rx) = mpsc::channel(16);
     tokio::spawn(triage_inbound_connection(
         conn,
-        None,
+        crate::adapters::InboundOrigin::Socket,
         cmd_rx,
         evt_tx,
         AwaitedInbound::default(),
@@ -128,6 +128,8 @@ async fn dial_a_buddy(
             file_known: crate::known_files::SharedFileKnown::default(),
             tunnel_admit: crate::adapters::SharedTunnelAdmit::default(),
             hello_refusals: crate::hello_refusals::SharedHelloRefusals::default(),
+            peer_links: crate::adapters::SharedPeerLinks::default(),
+            secured_identities: crate::secured_identity::SharedSecuredIdentities::default(),
         },
     ));
     loop {
@@ -226,11 +228,11 @@ async fn buddy_relays_and_pong_ride_the_held_inbound_link_not_a_fresh_dial() {
 
 /// The buddy relay accepts the served buddy's ID in either
 /// `TAG_BUDDYHASH` spelling — the requester's `0x52` names it word-swapped,
-/// the eMule 0.70b / eMuleAI reading — and relays it **unchanged**, exactly
-/// as aMule does, over the real held link; counted apart from the ordinary
-/// correct-spelling relay (`buddy_relays_swapped_spelling_total`).
+/// the eMule 0.70b / eMuleAI reading — and relays it under the registered
+/// ID every source's check takes (ADR-0061), over the real held link; counted
+/// apart from the ordinary relay (`buddy_relays_swapped_spelling_total`).
 #[tokio::test]
-async fn a_swapped_spelling_0x52_relays_unchanged_and_is_counted_apart() {
+async fn a_swapped_spelling_0x52_relays_the_registered_id_and_is_counted_apart() {
     let buddy_id = rmule_kad::KadId::from_bytes([
         0x10, 0x32, 0x54, 0x76, 0x98, 0xBA, 0xDC, 0xFE, 0x01, 0x23, 0x45, 0x67, 0x89, 0xAB, 0xCD,
         0xEF,
@@ -262,8 +264,7 @@ async fn a_swapped_spelling_0x52_relays_unchanged_and_is_counted_apart() {
 
     // The requester's 0x52 names the served buddy's ID word-swapped: still
     // relayed — rmule's own check accepts the swapped spelling of the buddy
-    // it serves — and relayed **verbatim**, in the spelling the requester
-    // claimed, never corrected.
+    // it serves — and relayed as the ID the buddy registered.
     assert_eq!(
         slot.relay_kad_callback(buddy_id.word_swapped(), requester, file_hash),
         RelayDisposition::Sent
@@ -273,8 +274,8 @@ async fn a_swapped_spelling_0x52_relays_unchanged_and_is_counted_apart() {
         .expect("the swapped-spelling 0x99 arrived within 2s");
     assert_eq!(
         &payload[..16],
-        buddy_id.word_swapped().as_bytes(),
-        "relayed unchanged, in the spelling the requester claimed"
+        buddy_id.as_bytes(),
+        "relayed under the registered ID"
     );
     assert_eq!(
         diagnostics
@@ -308,7 +309,7 @@ async fn a_dialer_whose_hello_is_not_the_recruits_is_served_not_attached() {
             Ipv4Endpoint::new(Ipv4Addr::new(203, 0, 113, 5), 4662),
             FileHash::from_bytes([0xCD; FileHash::BYTE_LEN]),
         ),
-        RelayDisposition::NoHeldLink,
+        RelayDisposition::Rejected(crate::buddy::RelayReject::NoBuddy),
         "a mismatched hello attaches nothing"
     );
 
@@ -414,7 +415,7 @@ async fn the_adopted_buddy_links_close_frees_the_buddy_slot() {
     // `None`) and client id `0x2000_0002`, so that pair is the key.
     let awaited = AwaitedInbound::default();
     let (adopt_tx, mut adopt_rx) = mpsc::channel(1);
-    let key = CallbackKey {
+    let key = CallbackKey::Server {
         server: None,
         low_id: ClientId::from_u32(0x2000_0002),
     };
@@ -422,17 +423,14 @@ async fn the_adopted_buddy_links_close_frees_the_buddy_slot() {
     registration.await_callback(
         key,
         AdoptionBrief {
-            own_status: rmule_peer::PartBitmap::downloader_empty(0),
+            own_status: rmule_peer::WireStatus::downloader_empty(0),
             want_sources: true,
-            file: Ed2kFileLink {
-                name: Ed2kText::from_utf8("adopted"),
-                size: 4096,
-                file_hash: FileHash::from_bytes([0xCD; FileHash::BYTE_LEN]),
-                part_hash_set: None,
-                aich_root: None,
-                ipv6_sources: Vec::new(),
-                sources: Default::default(),
-            },
+            file: Ed2kFileLink::new(
+                Ed2kText::from_utf8("adopted"),
+                4096,
+                FileHash::from_bytes([0xCD; FileHash::BYTE_LEN]),
+            )
+            .expect("a size eD2k addresses"),
         },
     );
 
@@ -453,7 +451,7 @@ async fn the_adopted_buddy_links_close_frees_the_buddy_slot() {
     let (evt_tx, _evt_rx) = mpsc::channel(16);
     tokio::spawn(triage_inbound_connection(
         conn,
-        None,
+        crate::adapters::InboundOrigin::Socket,
         cmd_rx,
         evt_tx,
         awaited.clone(),
@@ -469,6 +467,8 @@ async fn the_adopted_buddy_links_close_frees_the_buddy_slot() {
             file_known: crate::known_files::SharedFileKnown::default(),
             tunnel_admit: crate::adapters::SharedTunnelAdmit::default(),
             hello_refusals: crate::hello_refusals::SharedHelloRefusals::default(),
+            peer_links: crate::adapters::SharedPeerLinks::default(),
+            secured_identities: crate::secured_identity::SharedSecuredIdentities::default(),
         },
     ));
     let (_key, mut worker) = timeout(Duration::from_secs(2), adopt_rx.recv())
@@ -516,4 +516,39 @@ async fn the_adopted_buddy_links_close_frees_the_buddy_slot() {
     drop(registration);
 }
 
+mod adopted_serve;
 mod verdicts;
+
+/// `ProcessFirewallCheckUDPRequest` returns while Kad is off and reads its
+/// three fields once it runs (`BaseClient.cpp:2947-2962`), so a body short of
+/// them costs the link only then.
+#[test]
+fn a_firewall_request_short_of_its_fields_costs_the_link_only_while_kad_runs() {
+    let presence = crate::adapters::KadPresenceView::default();
+    let deps = InboundPeerDeps {
+        slot_wait_timeout: Duration::from_secs(5),
+        dialed_serve_sink: SharedDialedServeSink::default(),
+        kad_bootstrap: SharedKadBootstrap::default(),
+        kad_pump: crate::adapters::SharedKadPump::default(),
+        buddy_slot: Default::default(),
+        addresses: crate::address_learning::SharedAddressLearning::new(),
+        peer_roster: crate::peer_roster::SharedPeerRoster::default(),
+        kad_presence: presence.clone(),
+        file_known: crate::known_files::SharedFileKnown::default(),
+        tunnel_admit: crate::adapters::SharedTunnelAdmit::default(),
+        hello_refusals: crate::hello_refusals::SharedHelloRefusals::default(),
+        peer_links: crate::adapters::SharedPeerLinks::default(),
+        secured_identities: crate::secured_identity::SharedSecuredIdentities::default(),
+    };
+    let remote = PeerEndpoint::V4(Ipv4Endpoint::new(std::net::Ipv4Addr::new(1, 2, 3, 4), 4662));
+    let request = |len| SideEvent::KadUdpFirewallCheckRequested {
+        request: vec![1; len],
+    };
+    assert!(super::serve_side(&deps, remote, request(7)).is_none());
+    let _running = presence.lease(rmule_kad::KadId::from_bytes([1; 16]));
+    assert!(matches!(
+        super::serve_side(&deps, remote, request(7)),
+        Some(rmule_peer::ConnectionCommand::Disconnect)
+    ));
+    assert!(super::serve_side(&deps, remote, request(8)).is_none());
+}

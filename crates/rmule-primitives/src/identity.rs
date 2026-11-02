@@ -2,9 +2,9 @@
 //! Low), the host-and-port a server is reached at, and the identity a client
 //! logs in with. The bare address+port wire values live in `endpoint`.
 
-use std::net::IpAddr;
+use std::net::{IpAddr, Ipv4Addr};
 
-use crate::{Ed2kText, PrimitiveError, Result, Tag, UserHash};
+use crate::{Ed2kIp, Ed2kText, PrimitiveError, Result, Tag, UserHash};
 
 /// The id a server hands a client at login — the network's verdict on whether
 /// that client is directly reachable.
@@ -31,6 +31,19 @@ impl ClientId {
     #[must_use]
     pub const fn as_u32(self) -> u32 {
         self.0
+    }
+
+    /// The id a client reached at `ip` holds: its address in eD2k's word.
+    #[must_use]
+    pub const fn from_ipv4(ip: Ipv4Addr) -> Self {
+        Self(Ed2kIp::new(ip).wire())
+    }
+
+    /// The address a High ID is. A Low ID names none, and this reads it as the
+    /// `x.y.z.0` no client holds: a caller asks [`Self::is_high_id`] first.
+    #[must_use]
+    pub const fn to_ipv4(self) -> Ipv4Addr {
+        Ed2kIp::from_wire(self.0).ip()
     }
 
     /// Whether this client is unreachable from outside — every peer contact

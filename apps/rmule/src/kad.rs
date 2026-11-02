@@ -22,8 +22,8 @@
 //! hands-on run asked for, hung on the *login* rather than on the keystroke —
 //! and again each time the operator presses `K` in Networks while Kad reads
 //! off. Kad has its own switch because the two networks are separate: in aMule
-//! each connects and disconnects on its own (ADR-0093, "Kad after a
-//! disconnect"), so leaving the server leaves Kad running, and an operator can
+//! each connects and disconnects on its own (ADR-0096, "Disconnect, and Kad's own switch"), so
+//! leaving the server leaves Kad running, and an operator can
 //! run Kad without ever connecting to a server.
 //!
 //! - **Nothing unattended reaches Kad.** The app is the single
@@ -107,35 +107,33 @@ pub fn enable_config(data_dir: &std::path::Path) -> KadEnableConfig {
 /// # Errors
 /// [`CoreClientError::CoreStopped`] if the core is gone; the bus carries its
 /// own `CoreClosed` in that case, so a caller has nothing to add.
-pub async fn join<C, F>(
+pub async fn join<C>(
     client: &C,
     mut config: KadEnableConfig,
     own_id: KadId,
     bootstrap: &BootstrapConfig,
-    fetcher: &F,
+    fetcher: &dyn Fetcher,
 ) -> Result<KadSeedOutcome, CoreClientError>
 where
     C: CoreClient,
-    F: Fetcher + Sync,
 {
     let outcome = acquire_kad_seeds(&mut config, own_id, bootstrap, fetcher).await;
-    client.send(CoreCommand::EnableKad(config)).await?;
+    client.send(CoreCommand::EnableKad(config))?;
     Ok(outcome)
 }
 
 /// Wait for the next start request, then [`join`] with a fresh copy of
 /// `config`. `None` once the app has dropped its [`KadStarter`].
-pub async fn join_on_next_start<C, F>(
+pub async fn join_on_next_start<C>(
     starts: &mut KadStarts,
     client: &C,
     config: &KadEnableConfig,
     own_id: KadId,
     bootstrap: &BootstrapConfig,
-    fetcher: &F,
+    fetcher: &dyn Fetcher,
 ) -> Option<Result<KadSeedOutcome, CoreClientError>>
 where
     C: CoreClient,
-    F: Fetcher + Sync,
 {
     starts.recv().await?;
     Some(join(client, config.clone(), own_id, bootstrap, fetcher).await)
@@ -143,8 +141,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use std::future::Future;
-    use std::sync::Mutex;
+    use parking_lot::Mutex;
 
     use rmule_bootstrap::FetchError;
 
@@ -158,18 +155,15 @@ mod tests {
     }
 
     impl CoreClient for RecordingClient {
-        fn send(
-            &self,
-            command: CoreCommand,
-        ) -> impl Future<Output = Result<(), CoreClientError>> + Send {
-            self.sent.lock().unwrap().push(command);
-            async { Ok(()) }
+        fn send(&self, command: CoreCommand) -> Result<(), CoreClientError> {
+            self.sent.lock().push(command);
+            Ok(())
         }
     }
 
     impl RecordingClient {
         fn kad_join(&self) -> KadEnableConfig {
-            let sent = self.sent.lock().unwrap();
+            let sent = self.sent.lock();
             match sent.iter().find_map(|c| match c {
                 CoreCommand::EnableKad(config) => Some(config.clone()),
                 _ => None,
@@ -186,14 +180,10 @@ mod tests {
     }
 
     impl Fetcher for FakeFetcher {
-        fn get(
-            &self,
-            _url: &str,
-            _max_bytes: usize,
-        ) -> impl Future<Output = Result<Vec<u8>, FetchError>> + Send {
-            *self.calls.lock().unwrap() += 1;
+        fn get<'a>(&'a self, _url: &'a str, _max_bytes: usize) -> rmule_bootstrap::FetchFuture<'a> {
+            *self.calls.lock() += 1;
             let result = self.result.clone();
-            async move { result }
+            Box::pin(async move { result })
         }
     }
 
@@ -253,7 +243,7 @@ mod tests {
                 candidates: 0
             }
         );
-        assert_eq!(*fetcher.calls.lock().unwrap(), 0);
+        assert_eq!(*fetcher.calls.lock(), 0);
         assert_eq!(client.kad_join().contacts.len(), 4);
     }
 
@@ -324,11 +314,7 @@ mod tests {
                 .is_some_and(|joined| joined.is_ok())
             );
         }
-        assert_eq!(
-            client.sent.lock().unwrap().len(),
-            2,
-            "one EnableKad per start"
-        );
+        assert_eq!(client.sent.lock().len(), 2, "one EnableKad per start");
 
         drop(start); // the app quit
         assert!(
@@ -344,7 +330,7 @@ mod tests {
             .is_none(),
             "no start, no join"
         );
-        assert_eq!(*fetcher.calls.lock().unwrap(), 0);
-        assert_eq!(client.sent.lock().unwrap().len(), 2);
+        assert_eq!(*fetcher.calls.lock(), 0);
+        assert_eq!(client.sent.lock().len(), 2);
     }
 }

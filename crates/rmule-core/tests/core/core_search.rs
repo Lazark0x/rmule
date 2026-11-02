@@ -284,6 +284,7 @@ async fn default_core_search_and_source_lookup_share_server_session() {
         source_hint: Some(server.endpoint.clone()),
         name: rmule_testkit::file_name("shared-session.bin"),
         if_taken: rmule_core::NameTaken::Refuse,
+        kad_aich_root: None,
     }))
     .await
     .unwrap();

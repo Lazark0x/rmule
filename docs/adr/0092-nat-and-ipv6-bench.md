@@ -27,11 +27,18 @@ Facts the bench has to respect:
   the 180 s UDP timeout.
 - aMule accepts one Kad contact per IP (`MAX_CONTACTS_IP 1`), and aMule and emule-qt both
   accept only `45.55.200.0/24` among the fake-public prefixes tried.
-- A stock aMule 2.3.3 reading a sentinel-bearing `OP_FOUNDSOURCES` dials the records either
-  side of the sentinel and keeps its session; the same shape inside a packed
-  `OP_GLOBFOUNDSOURCES` datagram costs the next packed body (aMule logs "Server sources reply
-  got additional bogus bytes"). So a sentinel-bearing `0x9B` body must be the last in its
-  datagram (ADR-0087).
+- A stock aMule 2.3.3 reading the inline layout (ADR-0096) walks six bytes a record: it
+  dials the records before a sentinel, reads the sentinel's id as an address and drops it,
+  takes the first six inline address bytes for the next record and dials the endpoint they
+  spell, and never reaches the records after it. Its count runs out, the rest of the frame
+  is ignored, and the session survives. Handed `[.50:5001][sentinel 3fff:abcd:1::2]
+  [.60:5003]`, it sent ten SYNs at `63.255.171.205:256` and none at `.60:5003` (run
+  `1793353467`). So a server must send sentinel-bearing lists to capable sessions only.
+  rmule's reader takes the same list whole, and from a list that does not measure it keeps
+  the records before the first sentinel. The same shape inside a packed
+  `OP_GLOBFOUNDSOURCES` datagram costs the next packed body (aMule logs "Server sources
+  reply got additional bogus bytes"), so a sentinel-bearing `0x9B` body must be the last in
+  its datagram (ADR-0087).
 
 ## Decision
 
@@ -91,7 +98,7 @@ Facts the bench has to respect:
 | stock aMule 2.3.3 | `amule` | Ubuntu 24.04 package | legacy oracle: ignores every new tag and opcode |
 | kno's aMule | `amule-kno` (the fork's Debian Dockerfile, ffprobe stage stripped, a `--quic` variant) | Fork Pin `kno/amule` `integration/network-parity` `ab483654` | IPv6 client↔client, Kad tags, uTP, rendezvous target, the QUIC gate |
 | emule-qt 0.4.2 | `emuleqt` | `73fff714` | reference body for the IPv6 and port-mapping rows; a Kad body in `kad-node` mode; stimulus elsewhere |
-| ed2k-server | `ed2ksrv` | `4da4774fa8f61f5c1e40ac5054494502c5d75e6d` (`v0.9.75`) | the server punch coordinator |
+| ed2k-server | `ed2ksrv` | `97f97ff9f6961b06435fe306bf27d70b5e5be7f7` (`v0.9.87`) | the server punch coordinator, and the IPv6 server surface on `config-ipv6.toml` |
 
 Plus `natgw`, `natprobe` and a `miniupnpd` gateway (`--ipv6 --igd2`, `enable_pcp_pmp=yes`).
 The ed2ksrv pin is verified at build time: `images/ed2ksrv/pin.env` names the commit,
@@ -118,8 +125,18 @@ fired against what left the gateway.
 
 ### Verdicts and claims
 
-- Verdicts are `PASS`, `OBSERVED`, `SMOKE` and documented absence. `SMOKE` is defined and not
-  implemented: no flow touches the public network.
+- A verdict is one typed word, written by one writer into one `<flow>-verdict.toml`:
+  `PASS`, `OBSERVED`, `FAIL`, `SKIPPED`, `NOT-RUN`, `NOT-DRAWN`, `BLOCKED`, `TCP_OPEN` or
+  `SMOKE`. `SMOKE` is defined and not implemented: no flow touches the public network. A
+  word outside that list, or a file that is not TOML, stops the writer.
+- **`PASS` means every claim the run owes held, and a claim that was not drawn is not one
+  that held.** A run with nothing judged, or a run that left a required leg undriven, reads
+  `OBSERVED`. Bytes the scorer could not read are `FAIL` where an absence claim would
+  otherwise read them as silence.
+- **The run's `outcome` comes from its verdict words.** Any `FAIL` is `fail`, even when the
+  flow also returned an error; an error with no `FAIL` is `error`; no verdict is `unknown`;
+  all `SKIPPED` is `skip`; `PASS` throughout is `pass`; anything else is `observed`. The harness exits non-zero on `fail` and `error`, on a re-score as well, so
+  exit status and `outcome` never disagree with the file a person would open.
 - **A documented absence holds only on its own measured zero.** A claim takes the measured
   count of what it names: held on `0`, absent on a positive count or on `-1` (never measured).
   A sum with one unmeasured operand is `-1`. A counter a missed snapshot never filled is `-1`,
@@ -140,7 +157,7 @@ its NAT Type Proof; every `-symmetric` variant runs the reflector probe in the s
 |---|---|---|---|
 | `natgw-selfproof` | natgw × 4 types, natprobe | probed behaviour equals the claimed type on all three axes | fast |
 | `ipv6-net-accept` | amule-kno, emuleqt | each logs its `3fff` address as global | fast |
-| `sentinel-sources-legacy` | rmule (stimulus), stock aMule | aMule reads a sentinel-bearing list without desync; the packed UDP form costs the next body | fast |
+| `sentinel-sources-legacy` | rmule (stimulus), stock aMule | aMule's six-byte stride takes the inline address for a record and loses what follows, and keeps its session; the packed UDP form costs the next body | fast |
 | `portmap-highid` | miniupnpd gateway, rmule, two stock-aMule Kad helpers | mapping in the gateway table, exact port, a renewal, the Kad verdict flips open | slow |
 | `portmap-mismatch` | miniupnpd gateway with a pre-claimed port | `Degraded`, never advertised | fast |
 | `portmap-ipv6-pinhole` | miniupnpd gateway (PCP v6) | pinhole granted for the Known IPv6 | fast |
@@ -149,7 +166,7 @@ its NAT Type Proof; every `-symmetric` variant runs the reflector probe in the s
 | `ipv6-extsx` | emuleqt and a queued rmule | the ExtSX record carries the IPv6; unknown tags skipped | fast |
 | `ipv6-direct-dial-lowid` | amule-kno (Low ID on IPv4, IPv6 reachable) | rung 0 dials IPv6 directly | slow |
 | `ipv6-kad-tags` | amule-kno, emuleqt, rmule storers | `ip6` and `bi6` published, stored, re-served and parsed; a byte-equal transfer off emule-qt's row over IPv6 | slow |
-| `ipv6-server-sentinel` | ed2ksrv | a sentinel emitted to a capable session and dialed (a documented absence while the pin has no IPv6) | slow |
+| `ed2ksrv-server-surface` | ed2ksrv | a sentinel emitted to a Low-ID session with the tag, the classic record without it, a crypt-pong under a learned key, and no `0x26` or `OP_SERVERLIST` v6 block | slow |
 | `ipv6-udp-key` | emuleqt | the 35-byte key decrypts an IPv6 datagram | fast |
 | `natt-caps-utp` | amule-kno | CAPS / CAPS-ACK, KEY frame, uTP SYN answered | fast |
 | `natt-buddy-rendezvous-{cone,restricted,symmetric}` | rmule mesh, natgw | the punch succeeds behind cone and restricted, fails honestly behind symmetric with proof | slow |

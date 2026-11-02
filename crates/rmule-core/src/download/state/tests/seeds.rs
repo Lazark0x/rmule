@@ -2,6 +2,8 @@
 //! merely held; a peer whose dial failed and that earned nothing is no seed;
 //! and the one report of how many seed dials answered.
 
+use rmule_peer::PartIndex;
+
 use super::*;
 use crate::download::source_seeds::SeedRank;
 
@@ -16,14 +18,14 @@ fn the_ranking_puts_bytes_before_a_rank_before_held_and_drops_a_failed_dial() {
     assert_eq!(spawned(&state.start(t0())), [peer(1), peer(2)]);
     // Peer 1 never starts: spent, and the refill dials peer 3.
     assert_eq!(spawned(&state.on_spawn_failed(t0(), peer(1))), [peer(3)]);
-    state.on_worker_event(t0(), peer(2), PeerWorkerEvent::Connected);
+    connect(&mut state, t0(), peer(2));
     state.on_worker_event(t0(), peer(2), PeerWorkerEvent::Queued { rank: 7 });
-    state.on_worker_event(t0(), peer(3), PeerWorkerEvent::Connected);
+    connect(&mut state, t0(), peer(3));
     state.on_worker_event(
         t0(),
         peer(3),
         PeerWorkerEvent::BlockReceived {
-            part_index: 0,
+            part_index: PartIndex::new(0),
             offset: 0,
             bytes: vec![0x5A; 16],
         },
@@ -60,7 +62,7 @@ fn a_pause_before_the_seeds_settle_reports_them_ahead_of_the_end() {
         Vec::new(),
     );
     let _ = state.start(t0());
-    let _ = state.on_worker_event(t0(), peer(1), PeerWorkerEvent::Connected);
+    let _ = connect(&mut state, t0(), peer(1));
     let identified =
         state.on_worker_event(t0(), peer(1), identified(UserHash::from_bytes([0x5A; 16])));
     assert!(

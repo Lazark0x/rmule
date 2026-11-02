@@ -48,7 +48,6 @@ fn asks_for_a_callback(decisions: &[Decision]) -> bool {
         matches!(
             d,
             Decision::RequestCallback { .. }
-                | Decision::RequestGlobalCallback { .. }
                 | Decision::RequestBuddyCallback { .. }
                 | Decision::RequestDirectUdpCallback { .. }
         )
@@ -157,14 +156,20 @@ fn high_id_on(server: Ipv4Endpoint) -> CallbackCapability {
 }
 
 /// A low id means something only beside the server that assigned it (aMule
-/// `IsLocalServer`, stock 2.3.3 `BaseClient.cpp:1530`): after a move from A to
-/// B, the low id 7 A named is relayed by A, and the low id 7 B names is
-/// another source, which B's own session calls back.
+/// `IsLocalServer`, stock 2.3.3 `BaseClient.cpp:1533`): after a move from A to
+/// B, the low id 7 A named has no road, as no client asks a server it is not
+/// logged into, and the low id 7 B names is another source, which B's own
+/// session calls back.
 #[test]
-fn after_a_server_move_a_low_id_is_called_back_by_the_server_that_assigned_it() {
+fn after_a_server_move_a_low_id_has_no_road_but_the_new_servers_is_called_back() {
     let server_a = Ipv4Endpoint::new(Ipv4Addr::new(45, 55, 201, 1), 4661);
     let server_b = Ipv4Endpoint::new(Ipv4Addr::new(45, 55, 201, 2), 4661);
-    let low_7 = || SourceSighting::plain(rmule_primitives::PeerSource::new(low(7), 4662));
+    let low_7 = || {
+        SourceSighting::plain(
+            rmule_primitives::PeerSource::new(low(7), 4662),
+            rmule_primitives::Informant::Own,
+        )
+    };
     let mut state = state_from(
         file_hash_only_content(ONE_PART),
         SourcingPosture {
@@ -179,14 +184,7 @@ fn after_a_server_move_a_low_id_is_called_back_by_the_server_that_assigned_it() 
     );
 
     let moved = state.on_callback_capability(t0(), high_id_on(server_b));
-    assert!(
-        moved.iter().any(|d| matches!(
-            d,
-            Decision::RequestGlobalCallback { low_id, source_server, .. }
-                if *low_id == low(7) && *source_server == server_a
-        )),
-        "A's low id is relayed by A: {moved:?}"
-    );
+    assert!(!asks_for_a_callback(&moved), "A's low id: {moved:?}");
 
     let taken = take(&mut state, Channel::Server, [low_7()]);
     assert_eq!(taken.tally.fresh, 1, "B's low id 7 is not A's");

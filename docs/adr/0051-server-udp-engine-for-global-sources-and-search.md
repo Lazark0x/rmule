@@ -18,17 +18,26 @@ Wire facts that shape it:
 - A server datagram is `[protocol][opcode][payload]` with no length prefix (aMule
   `CMuleUDPSocket`'s 2-byte header), unlike the TCP frame. One datagram may hold several
   packets, each delimited by its own body.
-- A Low-ID source can be called back only through the server that assigned its ID. For
-  a global source that is some other server, reached by `OP_GLOBCALLBACKREQUEST`
-  (`0x9C`), whose body `[ip 4][port 2 LE][client_id 4 LE]` self-reports the requester's
-  contact (aMule `UDP.h`; `docs/reference/notes/server-udp.md`), because that server has
-  no TCP session to learn it from.
+- A Low-ID source can be called back only through the server that assigned its ID, and
+  only the connected server takes that ask. A remote server's Low-ID source with no
+  buddy has no road: stock removes it (`BaseClient.cpp:1533`, `:1546-1553`).
+  `OP_GLOBCALLBACKREQ` (`0x9C`) is declared in every header and sent by no tree: aMule
+  2.3.3, 3.1.0, amule-kno, emule-qt and eMuleAI, with no handler in ed2k-server.
 - aMule and eMule send the next global source datagram only while connected to a server
   (aMule `DownloadQueue.cpp:870`, eMule `DownloadQueue.cpp:759-761`): reading the
-  answers depends on session facts (our own client ID, whether we are firewalled), and
-  the callback request carries our public contact, learned from the session.
-- ed2k-server bans a client for 24 hours after a burst of `0x98` faster than about 200 a
-  minute.
+  answers depends on session facts (our own client ID, whether we are firewalled).
+- aMule walks one round at a time (`DownloadQueue.cpp:868-958`): one datagram per ten
+  passes of `Process` (1 s at the GUI timer, `amule.h:107`; eMule `UDPSEARCHSPEED` 1 s),
+  at most 35 files to one server (`MAX_REQUESTS_PER_SERVER`, `:73`, `:1285-1292`), the
+  file walk carrying over from server to server, and 1300 s between the end of a round
+  and the next (`UDPSERVERREASKTIME`, `Constants.h:37`, `:527`, `:974`). A file at 100
+  sources or more is skipped (`:914`, `Preferences.h:274`).
+- ed2k-server sanctions one address (a /64 for IPv6) for 24 hours, by rate over at least 10 s
+  across UDP searches and source requests: over 600 datagrams a minute is a ban, over 200 at
+  uniform timing a throttle. By file over an hour, TCP and UDP together: 2 000 files with 1 000
+  different, each asked at most three times, read as a scanner, and 3 000 asks at five a minute
+  per file as a hammer (`bot_detector.rs`, v0.9.85). One datagram a second clears the
+  first two, and one round in 1300 s clears the last two.
 
 ## Decision
 
@@ -54,23 +63,34 @@ snapshots it when it starts; a server added mid-sweep joins the next one.
 
 **Global source discovery** is one Core-owned batched channel, not a per-download lookup:
 
-- `GlobalDiscoveryChannel` holds the file hashes of all active downloads and, every
-  `CoreConfig::global_source_interval`, sends each swept server one `OP_GLOBGETSOURCES`
-  carrying up to 31 hashes (eMule's `MAX_FILES_PER_UDP_PACKET`), then routes each
-  answer to its download.
-- It asks nobody while no server session is up. The sweep still runs and answers in
-  flight are still routed; the first sweep after a login asks.
+- The **Server Pace** owns the rounds: one sans-I/O owner, driven with explicit time. It
+  starts a round once `CoreConfig::global_source_interval` (1300 s) has passed since the
+  last ended, snapshots the swept list, and puts one datagram on the wire per
+  `CoreConfig::global_source_tick` (1 s): up to 31 hashes to a server that advertises
+  `ExtGetSources`, one to any other, at most 35 files to one server. The file walk
+  carries over from server to server and wraps when every file was asked, so a long
+  queue reaches each server in turn, as aMule's does. A server with no status answer yet
+  is read from the flags the Managed Server List holds for it, and with none as a legacy
+  server: one hash, `0x9A`, no large file. Answers are routed to the download as they arrive.
+- It asks nobody while no server session is up. A round in progress waits where it stood
+  and goes on after the next login; the pace starts no round meanwhile, and answers in
+  flight are still routed.
+- **Source gates.** One count, the Source Book's held records, is published by each run
+  and read by every road: a file at 100 is left out of a UDP round, at 50 out of a Kad
+  ask, at 270 out of a TCP re-ask (ADR-0097). These are aMule's values at its default
+  `MaxSourcesPerFile` of 300 (`DownloadQueue.cpp:914`, `PartFile.cpp:1512`, `:1547`).
+- **What the round clock survives.** The clock is the Core's: one per process, as aMule's
+  `m_lastudpsearchtime`. Pause, Resume, Cancel, a re-add of one hash, a run restart and a
+  server change leave it standing, and a process restart zeroes it. A file that starts
+  between rounds has its TCP ask and joins the next round; one that starts during a round
+  joins at the next wrap of the file walk.
 - Sources enter through `DownloadState::on_sightings` (`Channel::Global`), not the peer-exchange path.
-  High-ID sources go straight into the candidate pool (ADR-0030). While rmule can be
-  called back, Low-ID sources go into the Source Book's global Low-ID lane as Low-ID Candidate records
-  tagged with their source server (`source_server: Some(..)`), apart from the connected
-  server's pool, so a callback is never asked of the wrong server; otherwise they are
-  dropped.
-- `fill()` emits `Decision::RequestGlobalCallback { low_id, source_server }`; the runner
-  registers a Pending Callback in the **Awaited Inbound** registry, sends `OP_GLOBCALLBACKREQUEST` with rmule's own
-  public IP and advertised TCP port, and arms a per-server deadline. The peer that dials
-  in is driven as an Adopted Inbound Worker (ADR-0039). Such a record is bare (no User
-  Hash, buddy or NAT-T bit), so it arms no other route and waits out its slot deadline.
+  High-ID sources go straight into the candidate pool (ADR-0030). Low-ID sources go into
+  the Source Book's global Low-ID lane as Low-ID Candidate records tagged with their
+  source server (`source_server: Some(..)`), apart from the connected server's pool, so a
+  callback is never asked of the wrong server. Such a record waits in its lane until a road
+  opens: we log into its server, or it names a buddy or a NAT-T bit. No server but our own
+  is asked to relay a callback.
 - A download is **armed** whenever the swept list is non-empty. An armed download with
   no usable source waits (`DownloadEvent::WaitingForSources`) instead of failing with
   `NoUsableSources`, indefinitely and cancellably, as eMule does. The event carries a
@@ -98,18 +118,18 @@ snapshots it when it starts; a server added mid-sweep joins the next one.
 
 ## Consequences
 
-- Deterministic tier: codec fixtures (byte-exact `0x9C`), engine tests over a fake
+- Deterministic tier: the Server Pace driven with explicit time, engine tests over a fake
   transport with distinct UDP and TCP ports, variant selection, the `0x99` multi-packet
-  walk against golden vectors, the pure-UDP rescue loopback (no connected-server source,
-  then a UDP-discovered source, then a verified part) and the per-server callback
-  loopback `crates/rmule-core/tests/core/global_callback_loopback.rs`.
+  walk against golden vectors and the pure-UDP rescue loopback (no connected-server
+  source, then a UDP-discovered source, then a verified part).
 - Real server-UDP stays in the Compatibility Tier. Lugdunum answers status and
   description but not UDP global search, so the `0x99` capture runs against other server
   bodies.
 - A join with eD2k switched off skips only the fetch and hand-over; a core whose store
   lists servers still sweeps them.
-- Re-advertisement of an already-adopted Low-ID global is bounded by the concurrency cap
-  and the per-callback timeout rather than skipped by endpoint.
+- A Low-ID road that ends silent spends the source's name for one to two `FILEREASKTIME`
+  periods (ADR-0090), so a re-sighting does not call it again before aMule's per-source
+  1300 s would.
 
 ## Considered options
 

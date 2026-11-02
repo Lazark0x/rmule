@@ -31,6 +31,9 @@ honestly and the row is corrected at that moment, not at the next start.**
   | nothing, and no folder either | folder missing | withheld, with no time bound |
   | an error other than "not found", or a file that cannot be opened | unreadable | withheld, never Had |
 
+  A row past eD2k's size limit (ADR-0102) gets no look at its path: it is withheld, whatever
+  the path holds, until the operator unshares it.
+
 - **Who rules.** A row under a live, watched scan's directory is the scan's: *gone* and *changed*
   only withhold it, and the scan rules (a move, a rehash, a leave). Every other row is the Registry
   Check's. A row the start look finds gone or changed is withheld at once and ruled on at the first
@@ -50,7 +53,8 @@ honestly and the row is corrected at that moment, not at the next start.**
   the offer at once: the file leaves the serve snapshot, and every peer queued or holding a slot for
   it is told `OP_FILEREQANSNOFIL` and released, waiters first, so the freed slot never goes to another
   asker of the same file. Then the row is looked at and ruled on. aMule drops the client and leaves the
-  file shared on a read error (`UploadDiskIOThread.cpp:318-364`, `UploadQueue.cpp:280-282`).
+  file shared on a read error (`UploadDiskIOThread.cpp:318-364`, `UploadQueue.cpp:280-282`). A
+  Partial Share (ADR-0113) is no row: a failed read ends its offer and is not looked at here.
 - **What is announced is what is offered.** The serve snapshot (the `OP_OFFERFILES` announce and every
   file request) and the Kad publisher read the offered rows. A row withheld is re-announced without
   it and its Kad republish withdrawn; Kad has no unpublish, so a storer keeps the entry up to its

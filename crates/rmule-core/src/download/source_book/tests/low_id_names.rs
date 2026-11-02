@@ -17,6 +17,7 @@ fn sight_on(book: &mut SourceBook, id: u32, server: Option<Ipv4Endpoint>) -> Sig
         &Gate {
             filter: &filter,
             dial: ours(),
+            own: Default::default(),
         },
     )
 }
@@ -28,7 +29,15 @@ fn answered_after_callback(
     inbound: PeerEndpoint,
     now: Instant,
 ) -> CallbackKey {
-    let Some(NextDial::Callback { candidate, .. }) = dial(book) else {
+    let on_a = CallbackCapability::of(
+        true,
+        Some(crate::own_identity::ConnectedSession {
+            server: Some(SERVER_A),
+            client_id: ClientId::from_u32(0x0A00_0001),
+        }),
+        false,
+    );
+    let Some(NextDial::Callback { candidate, .. }) = book.next_dial(&on_a, ours()) else {
         panic!("a callable downloader calls the Low ID back");
     };
     let key = candidate.key();
@@ -61,7 +70,7 @@ fn one_low_id_on_two_servers_is_two_peers_with_their_own_ask_facts() {
         Sighted::Pooled(None),
         "B's low id 7 is not A's"
     );
-    let on_b = CallbackKey {
+    let on_b = CallbackKey::Server {
         server: Some(SERVER_B),
         low_id: ClientId::from_u32(7),
     };
@@ -86,9 +95,13 @@ fn a_low_id_with_no_server_known_keeps_no_facts_past_its_record() {
     assert!(matches!(dial(&mut book), Some(NextDial::Callback { .. })));
     assert_eq!(book.end_callback(key, ours()), Some(Release::Gone));
 
-    assert_eq!(sight_on(&mut book, 7, None), Sighted::Pooled(None));
+    assert_eq!(
+        sight_on(&mut book, 7, None),
+        Sighted::Blocked(Blocked::Spent),
+        "a lapsed callback is dead for its 45 minutes, its server known or not"
+    );
     assert!(
         book.wants_sources_for(key, now),
-        "nothing kept under a low id whose server is unknown"
+        "no ask clock kept under a low id whose server is unknown"
     );
 }

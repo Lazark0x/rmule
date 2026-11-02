@@ -11,23 +11,38 @@ use tokio::sync::{Mutex, mpsc};
 use crate::callback::DownloadReach;
 use crate::client_udp::ClientUdpSend;
 use crate::credit::SharedCreditStore;
-use crate::global_sources::{GlobalCallbackSender, GlobalSourceRegistry};
+use crate::global_sources::GlobalSourceRegistry;
 use crate::ip_filter::SharedIpFilter;
 use crate::kad_sources::KadSourceRegistry;
 use crate::server_session::SharedServerSession;
-use crate::service::{CoreEvent, SharedReaskReplySink};
+use crate::service::SharedReaskReplySink;
 use crate::store::download::DurableDownloadRepository;
 
 pub(crate) struct SharedRuntime<S, P> {
     pub(crate) store: Arc<DurableDownloadRepository>,
+    /// The node's **Write Cache** (ADR-0117 §4), shared by every run.
+    pub(crate) write_cache: crate::download::write_cache::WriteCache,
     /// The core's one lookup handle: each ask clones it and runs on its own
     /// copy, so the lock is held only for the clone (ADR-0107).
     pub(crate) source_lookup: Arc<Mutex<S>>,
     /// The core's **Source Ask Budget** (ADR-0107), shared by every run.
     pub(crate) source_asks: crate::download::source_asks::SharedSourceAskBudget,
+    /// The node's **Connection Budget** (ADR-0116), shared by every run: each
+    /// run's brain holds a seat in it and asks it before opening any road.
+    pub(crate) connection_budget: crate::download::connection_budget::SharedConnectionBudget,
+    /// The node's **Queue Standings** (ADR-0107), shared by every run: each
+    /// run's brain holds a seat in it, so a peer queued for several downloads
+    /// is re-asked by one.
+    pub(crate) queue_standings: crate::download::queue_standings::SharedQueueStandings,
+    /// The node's **Spent Names**, shared by every run of the Download Set
+    /// and outliving each (ADR-0090).
+    pub(crate) spent_names: crate::download::spent_names::SharedSpentNames,
+    /// The node's **Held Places** (ADR-0116): each run publishes the peers it
+    /// stands queued at, and the serve activity ranks its queue by them.
+    pub(crate) held_places: crate::held_places::SharedHeldPlaces,
     pub(crate) peer_transfer: Arc<Mutex<P>>,
     pub(crate) credit: SharedCreditStore,
-    pub(crate) evt_tx: mpsc::Sender<CoreEvent>,
+    pub(crate) evt_tx: crate::service::Outbox,
     pub(crate) diagnostics: crate::diagnostics::DiagnosticsState,
     /// The shared server session, used to relay a Low-ID `OP_CALLBACKREQUEST`
     /// when enacting a `RequestCallback` decision (ADR-0039).
@@ -39,6 +54,10 @@ pub(crate) struct SharedRuntime<S, P> {
     /// hands the connection to this download instead of serving it. A
     /// callback's end releases both roads at once.
     pub(crate) awaited_inbound: crate::adapters::AwaitedInbound,
+    /// The **Peer Links** (ADR-0107): the runner files each source waiting in
+    /// its RemoteQueued stage as an **Awaited Grant**, so a link that reads
+    /// the uploader's unasked grant hands it to this download (ADR-0057).
+    pub(crate) peer_links: crate::adapters::SharedPeerLinks,
     /// How long the initial source lookup waits on the connected server
     /// before giving up (`CoreConfig::source_lookup_timeout`):
     /// bounds a sourceless file's `download start` so it terminates by
@@ -52,11 +71,6 @@ pub(crate) struct SharedRuntime<S, P> {
     /// `(file_hash, sink)` so the discovery task routes server-UDP-found sources
     /// to this download.
     pub(crate) global_source_registry: GlobalSourceRegistry,
-    /// The runner → discovery-task channel for per-server Low-ID callbacks (ADR-0051): a
-    /// `RequestGlobalCallback` is enacted by sending the encode inputs here (the
-    /// discovery owns the UDP socket). Read by the `RequestGlobalCallback`
-    /// enactment arm.
-    pub(crate) global_callback_tx: GlobalCallbackSender,
     /// The core-owned Kad source registry (ADR-0043): the runner registers
     /// `(file_hash → (size, sink))` so the Kad discovery task routes projected
     /// sources to this download. Registered unconditionally — with Kad
@@ -102,7 +116,22 @@ pub(crate) struct SharedRuntime<S, P> {
     /// own membership; the roster is kept per endpoint, so the two writers
     /// never retire each other's reason.
     pub(crate) peer_roster: crate::peer_roster::SharedPeerRoster,
+    /// The node's peer bans: where a corrupt sender's address goes.
+    pub(crate) bans: crate::ban_store::SharedBanStore,
     /// The **Name Resolver** a link's named sources are resolved through
     /// (ADR-0089's amendment), off the actor and bounded.
     pub(crate) resolver: crate::name_resolver::SharedNameResolver,
+    /// The completion move's rename and delete (ADR-0115): the operating
+    /// system's, or a test's.
+    pub(crate) completion_fs: Arc<dyn crate::download::CompletionFs>,
+    /// The core's one **Completion Copy** turn (ADR-0115): copies across
+    /// volumes run one at a time, as aMule's completion tasks do.
+    pub(crate) copy_turn: Arc<tokio::sync::Semaphore>,
+    /// The turn to read a file the scans and the Offer Check share, which a
+    /// resumed run's part check takes too (ADR-0094).
+    pub(crate) hash_turn: crate::directory_scan::HashTurn,
+    /// Where a run reports its finished file in place to the core actor,
+    /// which writes the registry row and ends the Served Download in one
+    /// step (ADR-0115, step 6).
+    pub(crate) in_place_tx: mpsc::Sender<crate::download::FinalFileInPlace>,
 }

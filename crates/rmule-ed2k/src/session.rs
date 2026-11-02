@@ -8,15 +8,15 @@
 use std::sync::Arc;
 
 use rmule_primitives::{
-    Capabilities, ClientId, ClientIdentity, CryptStance, Packet, PrimitiveError, SearchQuery,
-    ServerEndpoint, SessionCore, SessionOutput, pack_if_smaller,
+    Capabilities, ClientId, ClientIdentity, CryptStance, FrameCeiling, Packet, PrimitiveError,
+    SearchQuery, ServerEndpoint, SessionCore, SessionOutput, pack_if_smaller,
 };
 
 use crate::{
     CallbackRequest, CloseReason, CommandRejectReason, Ed2kCommand, Ed2kCommandKind, Ed2kError,
-    Ed2kEvent, GetServerList, GetSourcesRequest, HolepunchRequest, LoginAdvert, LoginRequest,
-    OfferFiles, QueryMoreResults, RelatedSearchRequest, SearchRequest, ServerAssignedFacts,
-    ServerCapability, ServerGrants, ServerPacket, UdpPortsAdvert,
+    Ed2kEvent, GetServerList, GetSourcesRequest, HolepunchRequest, Ipv6Update, LoginAdvert,
+    LoginRequest, OfferFiles, QueryMoreResults, RelatedSearchRequest, SearchRequest,
+    ServerAssignedFacts, ServerCapability, ServerGrants, ServerPacket, UdpPortsAdvert,
     server_packet::DecodedServerFrame,
 };
 
@@ -33,7 +33,6 @@ pub struct Ed2kSession {
     identity: ClientIdentity,
     capabilities: Capabilities,
     state: State,
-    client_id: Option<ClientId>,
     /// The server's `SRV_TCPFLG` grants, projected at `OP_IDCHANGE`
     /// (ADR-0047): every gated command path reads its own field. Default
     /// (nothing granted) before login or after a bare 4-byte reply.
@@ -41,16 +40,18 @@ pub struct Ed2kSession {
     /// The IDCHANGE-extension projection (ADR-0047): public IP, standard
     /// port, obfuscation port. Re-projected whole on every IDCHANGE.
     facts: ServerAssignedFacts,
-    /// Our Known IPv6 for the login's `CT_MOD_IP_V6` tag and its coupled
-    /// `SRVCAP_IPV6` flag bit (ADR-0087 §4.1), set via
-    /// [`with_ipv6_advertisement`](Self::with_ipv6_advertisement). `None`
-    /// sends neither.
+    /// Our Known IPv6 for the login's `CT_MOD_IP_V6` tag (ADR-0087 §4.1), set
+    /// via [`with_ipv6_advertisement`](Self::with_ipv6_advertisement). `None`
+    /// sends none.
     ipv6_advert: Option<std::net::Ipv6Addr>,
     /// The login's `0xF9` tag (ADR-0091), set by
     /// [`with_udp_ports_advertisement`](Self::with_udp_ports_advertisement).
     /// `None` — the default — sends none, which tells an ed2k-server this
     /// client cannot be punched.
     udp_ports_advert: Option<UdpPortsAdvert>,
+    /// Whether the login asks for OFFERFILES v1. Set through
+    /// [`with_offer_pace_request`](Self::with_offer_pace_request).
+    offer_pace_request: bool,
     core: SessionCore<Ed2kEvent, CloseReason>,
 }
 
@@ -58,7 +59,10 @@ pub struct Ed2kSession {
 enum State {
     BeforeStart,
     AwaitingIdChange,
-    LoggedIn,
+    /// The server gave an id, the last `OP_IDCHANGE`'s.
+    LoggedIn {
+        client_id: ClientId,
+    },
     Closed,
 }
 
@@ -108,17 +112,17 @@ impl Ed2kSession {
             identity,
             capabilities: Capabilities::shipped(CryptStance::disabled()),
             state: State::BeforeStart,
-            client_id: None,
             grants: ServerGrants::default(),
             facts: ServerAssignedFacts::default(),
             ipv6_advert: None,
             udp_ports_advert: None,
-            core: SessionCore::new(),
+            offer_pace_request: false,
+            core: SessionCore::new(FrameCeiling::STOCK),
         }
     }
 
-    /// Advertise our Known IPv6 at login — the `CT_MOD_IP_V6` tag and the
-    /// `SRVCAP_IPV6` flag together (ADR-0087 §4.1).
+    /// Advertise our Known IPv6 at login, as the `CT_MOD_IP_V6` tag (ADR-0087
+    /// §4.1).
     ///
     /// The runtime layer passes what the Advertised Endpoints chooser settled
     /// (ADR-0084: Known *and* not probed-unreachable), the same value the peer
@@ -141,6 +145,13 @@ impl Ed2kSession {
     #[must_use]
     pub const fn with_udp_ports_advertisement(mut self, ports: UdpPortsAdvert) -> Self {
         self.udp_ports_advert = Some(ports);
+        self
+    }
+
+    /// Ask for OFFERFILES v1 in the login (ADR-0099).
+    #[must_use]
+    pub const fn with_offer_pace_request(mut self) -> Self {
+        self.offer_pace_request = true;
         self
     }
 
@@ -194,6 +205,7 @@ impl Ed2kSession {
             LoginAdvert {
                 ipv6: self.ipv6_advert,
                 udp_ports: self.udp_ports_advert,
+                offer_pace: self.offer_pace_request,
             },
         )
         .encode_packet()
@@ -239,7 +251,7 @@ impl Ed2kSession {
         }
         match command {
             Ed2kCommand::RequestServerList => {
-                if !matches!(self.state, State::LoggedIn) {
+                if !matches!(self.state, State::LoggedIn { .. }) {
                     self.reject_command(
                         Ed2kCommandKind::RequestServerList,
                         CommandRejectReason::NotLoggedIn,
@@ -250,7 +262,7 @@ impl Ed2kSession {
                 self.core.push_write(Arc::from(bytes));
             }
             Ed2kCommand::QueryMoreResults => {
-                if !matches!(self.state, State::LoggedIn) {
+                if !matches!(self.state, State::LoggedIn { .. }) {
                     self.reject_command(
                         Ed2kCommandKind::QueryMoreResults,
                         CommandRejectReason::NotLoggedIn,
@@ -261,7 +273,7 @@ impl Ed2kSession {
                 self.core.push_write(Arc::from(bytes));
             }
             Ed2kCommand::Search { query } => {
-                if !matches!(self.state, State::LoggedIn) {
+                if !matches!(self.state, State::LoggedIn { .. }) {
                     self.reject_command(Ed2kCommandKind::Search, CommandRejectReason::NotLoggedIn);
                     return;
                 }
@@ -292,26 +304,29 @@ impl Ed2kSession {
                 self.core.push_write(Arc::from(bytes));
             }
             Ed2kCommand::RequestSources { target } => {
-                if !matches!(self.state, State::LoggedIn) {
+                if !matches!(self.state, State::LoggedIn { .. }) {
                     self.reject_command(
-                        Ed2kCommandKind::RequestSources,
+                        Ed2kCommandKind::RequestSources {
+                            file_hash: target.file_hash(),
+                        },
                         CommandRejectReason::NotLoggedIn,
                     );
                     return;
                 }
-                let request = if target.file_size() <= u64::from(u32::MAX) {
-                    GetSourcesRequest::Normal { target }
-                } else if self.grants.large_files {
-                    GetSourcesRequest::Large { target }
-                } else {
+                // aMule asks only a large-file server about a large file
+                // (`DownloadQueue.cpp:1083-1098`).
+                let request = GetSourcesRequest::sized(target);
+                if matches!(request, GetSourcesRequest::Large { .. }) && !self.grants.large_files {
                     self.reject_command(
-                        Ed2kCommandKind::RequestSources,
+                        Ed2kCommandKind::RequestSources {
+                            file_hash: target.file_hash(),
+                        },
                         CommandRejectReason::UnsupportedServerCapability {
                             capability: ServerCapability::LargeFiles,
                         },
                     );
                     return;
-                };
+                }
                 // Ask for obfuscation-aware sources (`0x23` → the server answers
                 // `0x44` with per-source crypt options + optional User Hash) only
                 // when the server advertises TCP obfuscation *and* rmule's crypt
@@ -327,7 +342,7 @@ impl Ed2kSession {
                 self.core.push_write(Arc::from(packet.encode()));
             }
             Ed2kCommand::RequestCallback { low_id } => {
-                if !matches!(self.state, State::LoggedIn) {
+                if !matches!(self.state, State::LoggedIn { .. }) {
                     self.reject_command(
                         Ed2kCommandKind::RequestCallback,
                         CommandRejectReason::NotLoggedIn,
@@ -341,10 +356,19 @@ impl Ed2kSession {
                 target,
                 our_udp_port,
             } => {
-                if !matches!(self.state, State::LoggedIn) {
+                if !matches!(self.state, State::LoggedIn { .. }) {
                     self.reject_command(
                         Ed2kCommandKind::RequestHolepunch,
                         CommandRejectReason::NotLoggedIn,
+                    );
+                    return;
+                }
+                if !self.grants.lowid_holepunch {
+                    self.reject_command(
+                        Ed2kCommandKind::RequestHolepunch,
+                        CommandRejectReason::UnsupportedServerCapability {
+                            capability: ServerCapability::LowIdHolepunch,
+                        },
                     );
                     return;
                 }
@@ -356,18 +380,42 @@ impl Ed2kSession {
                 .encode();
                 self.core.push_write(Arc::from(bytes));
             }
+            Ed2kCommand::UpdateIpv6 { address } => {
+                if !matches!(self.state, State::LoggedIn { .. }) {
+                    self.reject_command(
+                        Ed2kCommandKind::UpdateIpv6,
+                        CommandRejectReason::NotLoggedIn,
+                    );
+                    return;
+                }
+                if !self.grants.ipv6_update {
+                    self.reject_command(
+                        Ed2kCommandKind::UpdateIpv6,
+                        CommandRejectReason::UnsupportedServerCapability {
+                            capability: ServerCapability::Ipv6Update,
+                        },
+                    );
+                    return;
+                }
+                let bytes = Ipv6Update { address }.encode_packet().encode();
+                self.core.push_write(Arc::from(bytes));
+            }
             Ed2kCommand::OfferFiles {
                 files,
                 presented_id,
             } => {
-                if !matches!(self.state, State::LoggedIn) {
+                let State::LoggedIn { client_id } = self.state else {
                     self.reject_command(
                         Ed2kCommandKind::OfferFiles,
                         CommandRejectReason::NotLoggedIn,
                     );
                     return;
-                }
-                let needs_large_files = files.iter().any(|f| f.file_size() > u64::from(u32::MAX));
+                };
+                // aMule offers a large file only to a large-file server
+                // (`SharedFileList.cpp:732`, `IsLargeFile`).
+                let needs_large_files = files
+                    .iter()
+                    .any(|f| rmule_primitives::is_large_file(f.file_size()));
                 if needs_large_files && !self.grants.large_files {
                     self.reject_command(
                         Ed2kCommandKind::OfferFiles,
@@ -377,9 +425,6 @@ impl Ed2kSession {
                     );
                     return;
                 }
-                let client_id = self
-                    .client_id
-                    .expect("client_id is set at OP_IDCHANGE before reaching LoggedIn");
                 let packet = OfferFiles::announce(
                     self.grants,
                     client_id,
@@ -432,6 +477,10 @@ impl Ed2kSession {
                 self.core
                     .push_event(Ed2kEvent::SearchResultSkipped { reason });
             }
+            Ok(DecodedServerFrame::FoundSourcesSkipped { opcode, reason }) => {
+                self.core
+                    .push_event(Ed2kEvent::FoundSourcesSkipped { opcode, reason });
+            }
             Err(error) => {
                 self.close(CloseReason::ProtocolViolation(SessionError::Packet(error)));
             }
@@ -455,19 +504,25 @@ impl Ed2kSession {
             if id.client_id.as_u32() == 0 {
                 return;
             }
-            self.state = State::LoggedIn;
-            self.client_id = Some(id.client_id);
+            self.state = State::LoggedIn {
+                client_id: id.client_id,
+            };
             let event = Ed2kEvent::from_server_packet(&server_packet);
             self.core.push_event(event);
             return;
         }
         if matches!(server_packet, ServerPacket::Reject(_)) {
-            // Server-side explicit refusal. Emit the LoginRejected event
-            // so consumers see the typed signal, then close immediately —
-            // the runtime note documents that aMule treats OP_REJECT as
-            // terminal (server FINs next). A non-typed `ServerClosed`
-            // here would lose the "explicitly refused vs. socket dropped"
-            // distinction that consumers need for retry decisions.
+            // After the login the server discarded one command and the link
+            // stays, as aMule only logs it (stock 2.3.3
+            // `ServerSocket.cpp:599-603`): closing would re-login and send
+            // every offer and source ask again.
+            if matches!(self.state, State::LoggedIn { .. }) {
+                self.core.push_event(Ed2kEvent::ServerRejectedCommand);
+                return;
+            }
+            // Before the id there is no session to keep. The typed event
+            // tells a refusal from a dropped socket, which a retry decision
+            // needs; aMule logs too and waits for the server's close.
             let event = Ed2kEvent::from_server_packet(&server_packet);
             self.core.push_event(event);
             self.close(CloseReason::LoginRejected);

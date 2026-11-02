@@ -2,17 +2,21 @@
 //! ED2K digest core has (`FileHashSummary::digest_reader`), stoppable
 //! between reads. Every scan takes the one [`HashTurn`] before
 //! it reads a file, so one file is read at a time across every shared
-//! directory (ADR-0101, "Shared Directories").
+//! directory (ADR-0101, "Shared Directories"); the actor's Offer Check and a
+//! resumed run's part check take it too before they re-read a download's
+//! parts (ADR-0113, ADR-0094).
 
+use parking_lot::{Condvar, Mutex};
 use std::io::{self, Read};
+use std::path::PathBuf;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
 
 use rmule_primitives::FileHashSummary;
 
 use super::{DirectorySource, FoundFile};
-use crate::registry::{ShareSource, SharedFileEntry};
+use crate::registry::{ShareRefusal, ShareSource, SharedFileEntry};
 
 /// The most one read takes, so a raised stop flag is seen within one
 /// mebibyte of it rather than one part.
@@ -21,41 +25,58 @@ const READ_CAP: usize = 1 << 20;
 /// The longest a scan waits for its turn before it looks at its stop flag.
 const TURN_TICK: Duration = Duration::from_millis(250);
 
-/// The one turn to read a file that every scan of a core shares: transfers
-/// keep the disk, so hashing is one file at a time whatever the number of
-/// shared directories.
+/// The one turn to read a file that every scan of a core shares, and the
+/// Offer Check and a run's part check with them: transfers keep the disk, so hashing is one file at
+/// a time whatever the number of shared directories.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct HashTurn(Arc<(Mutex<bool>, Condvar)>);
 
 impl HashTurn {
     /// Wait for the turn, looking at `stop` every [`TURN_TICK`]; `None` once
     /// it is raised. The turn is given back when the guard drops.
-    fn take(&self, stop: &AtomicBool) -> Option<TurnGuard<'_>> {
+    pub(crate) fn take(&self, stop: &AtomicBool) -> Option<TurnGuard> {
         let (taken, freed) = &*self.0;
-        let mut held = taken.lock().expect("hash turn");
+        let mut held = taken.lock();
         while *held {
             if stop.load(Ordering::Relaxed) {
                 return None;
             }
-            held = freed.wait_timeout(held, TURN_TICK).expect("hash turn").0;
+            freed.wait_for(&mut held, TURN_TICK);
         }
         if stop.load(Ordering::Relaxed) {
             return None;
         }
         *held = true;
-        Some(TurnGuard(self))
+        drop(held);
+        Some(TurnGuard(self.clone()))
     }
 }
 
 /// The turn, held.
-struct TurnGuard<'a>(&'a HashTurn);
+pub(crate) struct TurnGuard(HashTurn);
 
-impl Drop for TurnGuard<'_> {
+impl Drop for TurnGuard {
     fn drop(&mut self) {
         let (taken, freed) = &*(self.0).0;
-        *taken.lock().expect("hash turn") = false;
+        *taken.lock() = false;
         freed.notify_one();
     }
+}
+
+/// Part `files` into those a scan may go on to read and those refused by
+/// their stamp alone, so a refused file costs no read. [`hash_file`] rejects
+/// a read whose size is not the stamp's, so an entry it yields for an admitted
+/// file is within the gate too.
+pub(super) fn admit(files: Vec<FoundFile>) -> (Vec<FoundFile>, Vec<(PathBuf, ShareRefusal)>) {
+    let mut admitted = Vec::with_capacity(files.len());
+    let mut refused = Vec::new();
+    for file in files {
+        match ShareRefusal::of(file.stamp.size) {
+            Some(refusal) => refused.push((file.path, refusal)),
+            None => admitted.push(file),
+        }
+    }
+    (admitted, refused)
 }
 
 /// The entry for `file`, or `None` when its size or time moved while it was

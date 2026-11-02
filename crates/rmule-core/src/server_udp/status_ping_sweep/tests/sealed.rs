@@ -38,11 +38,34 @@ async fn fallback_toward(
     key_ip: Ipv4Addr,
 ) -> (Vec<(Ipv4Endpoint, Vec<u8>)>, Vec<(Ipv4Endpoint, Vec<u8>)>) {
     let transport = Arc::new(scripted(vec![]));
+    let sweep = sweep_toward(key_ip, &transport);
+    let mut state = SweepState::default();
+
+    sweep.ping_next(&mut state).await;
+    tokio::time::advance(Duration::from_secs(20)).await;
+    sweep.ping_next(&mut state).await;
+
+    let plain = transport.sends.lock().clone();
+    let mut obfuscated = transport.obfuscated.lock().clone();
+    let crypt_ping = obfuscated.remove(0);
+    assert_eq!(
+        crypt_ping.0,
+        Ipv4Endpoint::new(Ipv4Addr::new(10, 0, 0, 1), 4673)
+    );
+    (plain, obfuscated)
+}
+
+/// A sweep over one keyed row whose key was learned under `key_ip`, while we
+/// hold 203.0.113.9.
+fn sweep_toward(
+    key_ip: Ipv4Addr,
+    transport: &Arc<ScriptedTransport>,
+) -> StatusPingSweep<Arc<ScriptedTransport>> {
     let crypt = crypt_arm();
     let facts = test_facts_rows(vec![keyed_row(key_ip)]).0;
-    let sweep = StatusPingSweep {
+    StatusPingSweep {
         seal: seal_over(
-            Arc::clone(&transport),
+            Arc::clone(transport),
             crypt.policy.clone(),
             crypt.own.clone(),
             crate::server_capabilities::SharedServerCapabilities::default(),
@@ -54,23 +77,50 @@ async fn fallback_toward(
         first_contact_tick: Duration::from_millis(250),
         tick: Duration::from_secs(5),
         reask: Duration::from_secs(16_200),
+        key_floor: Duration::from_secs(1_200),
         crypt,
         resolver: crate::name_resolver::FakeNameResolver::knowing(&[]),
-    };
-    let mut state = SweepState::default();
+    }
+}
 
+/// How many datagrams went out, plain and obfuscated.
+fn probes(transport: &ScriptedTransport) -> usize {
+    transport.sends.lock().len() + transport.obfuscated.lock().len()
+}
+
+/// Ping the row and let its crypt fallback go, then walk it again at the
+/// floor less a minute and at the floor; what went out at each.
+async fn pings_around_the_floor(key_ip: Ipv4Addr) -> (usize, usize) {
+    let transport = Arc::new(scripted(vec![]));
+    let sweep = sweep_toward(key_ip, &transport);
+    let mut state = SweepState::default();
     sweep.ping_next(&mut state).await;
     tokio::time::advance(Duration::from_secs(20)).await;
     sweep.ping_next(&mut state).await;
+    let settled = probes(&transport);
 
-    let plain = transport.sends.lock().unwrap().clone();
-    let mut obfuscated = transport.obfuscated.lock().unwrap().clone();
-    let crypt_ping = obfuscated.remove(0);
-    assert_eq!(
-        crypt_ping.0,
-        Ipv4Endpoint::new(Ipv4Addr::new(10, 0, 0, 1), 4673)
-    );
-    (plain, obfuscated)
+    tokio::time::advance(sweep.key_floor - Duration::from_secs(60)).await;
+    sweep.ping_next(&mut state).await;
+    let before_the_floor = probes(&transport) - settled;
+    tokio::time::advance(Duration::from_secs(60)).await;
+    sweep.ping_next(&mut state).await;
+    (before_the_floor, probes(&transport) - settled)
+}
+
+/// A key still good waits out the whole window: the 20 min floor is not the
+/// pace (stock 2.3.3 `ServerList.cpp:274`, `Constants.h:41`).
+#[tokio::test(start_paused = true)]
+async fn a_server_with_a_good_key_is_not_pinged_at_the_floor() {
+    let (before, at) = pings_around_the_floor(Ipv4Addr::new(203, 0, 113, 9)).await;
+    assert_eq!((before, at), (0, 0));
+}
+
+/// A key from an address we no longer hold brings the ping forward to the
+/// floor and no sooner (stock 2.3.3 `ServerList.cpp:1017-1024`).
+#[tokio::test(start_paused = true)]
+async fn an_expired_key_brings_the_ping_forward_to_the_floor() {
+    let (before, at) = pings_around_the_floor(Ipv4Addr::new(198, 51, 100, 7)).await;
+    assert_eq!((before, at), (0, 1));
 }
 
 #[tokio::test(start_paused = true)]

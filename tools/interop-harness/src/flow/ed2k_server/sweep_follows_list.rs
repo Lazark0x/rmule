@@ -22,6 +22,7 @@ use crate::flow::ed2k_server::SEARCH_QUERY;
 use crate::flow::ed2k_server::rmule_tools::run_to_exit;
 use crate::flow::ed2k_server::search_wire::server_tap::global_searches;
 use crate::flow::ed2k_server::search_wire::{ED2KSRV_IP, SUBNET, start_ed2ksrv};
+use crate::verdict::{self, Verdict};
 
 /// rmule's static address on the bench network.
 const RMULE_IP: &str = "203.0.113.70";
@@ -51,7 +52,7 @@ pub struct SweepFollowsListOptions<'a> {
     pub capture_image: &'a str,
 }
 
-/// Run the leg and write `sweep-follows-list/verdict.txt`.
+/// Run the leg and write `sweep-follows-list/sweep-follows-list-verdict.toml`.
 pub fn run_sweep_follows_list(options: SweepFollowsListOptions<'_>) -> Result<()> {
     let mut bench = Bench::new(
         options.container_runtime,
@@ -62,7 +63,7 @@ pub fn run_sweep_follows_list(options: SweepFollowsListOptions<'_>) -> Result<()
     let root = options.layout.root().join("sweep-follows-list");
     fs::create_dir_all(&root).with_context(|| format!("create {}", root.display()))?;
 
-    let result = (|| -> Result<String> {
+    let result = (|| -> Result<(Verdict, String)> {
         bench.create_network(options.layout, Some(SUBNET))?;
         bench.start_eserver_in_network(
             options.layout,
@@ -126,19 +127,22 @@ pub fn run_sweep_follows_list(options: SweepFollowsListOptions<'_>) -> Result<()
         }
         let searches = global_searches(&root.join(PCAP), RMULE_IP.parse()?)?;
         let verdict = if searches.is_empty() {
-            "NOT-SWEPT"
+            Verdict::Fail
         } else {
-            "SWEPT"
+            Verdict::Pass
         };
         let opcodes: Vec<String> = searches
             .iter()
             .map(|(_, opcode)| format!("{opcode:#04x}"))
             .collect();
-        Ok(format!(
-            "verdict={verdict} global_search_datagrams={} opcodes=[{}] completed_searches={}",
-            searches.len(),
-            opcodes.join(","),
-            logs.matches("search_completed").count(),
+        Ok((
+            verdict,
+            format!(
+                "global_search_datagrams={} opcodes=[{}] completed_searches={}",
+                searches.len(),
+                opcodes.join(","),
+                logs.matches("search_completed").count(),
+            ),
         ))
     })();
 
@@ -146,8 +150,8 @@ pub fn run_sweep_follows_list(options: SweepFollowsListOptions<'_>) -> Result<()
         bench.collect_failure_logs(options.layout);
     }
     bench.cleanup_best_effort();
-    let verdict = result?;
-    fs::write(root.join("verdict.txt"), format!("{verdict}\n")).context("write verdict")?;
-    println!("{verdict}");
+    let (verdict, report) = result?;
+    verdict::write_report(&root, "sweep-follows-list", verdict, &report)?;
+    println!("verdict={verdict} {report}");
     Ok(())
 }

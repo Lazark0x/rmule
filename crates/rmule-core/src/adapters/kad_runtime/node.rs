@@ -26,7 +26,7 @@ const VERDICT_QUEUE_LEN: usize = 8;
 pub struct RuntimeKadFactory;
 
 /// The wire identity this node's Kad dials present: the credentials as the
-/// node's hash, fixed at build (ADR-0048 "Identity ownership") — also the Kad
+/// node's hash, fixed at build (ADR-0048 "One identity per node, owned by the core") — also the Kad
 /// source ID and the buddy identity's hash. Its port is the one peers dial;
 /// aMule's `RequestTCP` self-connect guard compares a requester against it
 /// together with the live public IPv4 — Address Learning's projection,
@@ -109,12 +109,7 @@ impl KadRuntimeFactory for RuntimeKadFactory {
                 // Kad checks call `IsFiltered(ip)` with `isServer` defaulted false.
                 contact_admission: Some(rmule_kad::KadContactAdmission::new({
                     let ip_filter = adapters.ip_filter.clone();
-                    move |ip| {
-                        !ip_filter
-                            .read()
-                            .expect("ip filter lock")
-                            .is_filtered_client(ip)
-                    }
+                    move |ip| !ip_filter.read().is_filtered_client(ip)
                 })),
             },
             rmule_net::kad::KadInlet {
@@ -140,7 +135,7 @@ impl KadRuntimeFactory for RuntimeKadFactory {
         let reach = bind.reach.clone();
 
         // Contacts that already carry an earned Kad ID go straight into the
-        // routing table (ADR-0065 "v1/v2-merge"): this is the reload half
+        // routing table (ADR-0065): this is the reload half
         // of the nodes.dat persistence the driver writes, so a
         // restart resumes with its old neighbourhood instead of re-dialing for
         // one. Ordered before the dial-list seed because a merged table is what
@@ -260,7 +255,7 @@ impl KadRuntimeFactory for RuntimeKadFactory {
             own_tcp_port,
         };
         let enactor = pump::Enactor {
-            sources_tx,
+            sources: pump::SourcesOut::new(sources_tx),
             dial_back,
             buddy_service,
             ban_store: adapters.ban_store.clone(),
@@ -313,6 +308,7 @@ impl KadRuntimeFactory for RuntimeKadFactory {
         Ok(RuntimeKadChannel {
             commands: commands_tx,
             sources: Mutex::new(sources_rx),
+            verdicts: cells.verdicts.clone(),
         })
     }
 }

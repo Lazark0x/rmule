@@ -221,6 +221,8 @@ fn grant_words(grants: ServerGrants) -> String {
         large_files,
         tcp_obfuscation,
         ipv6,
+        ipv6_update,
+        lowid_holepunch,
     } = grants;
     let named: Vec<&str> = [
         (compression, "compression"),
@@ -231,6 +233,8 @@ fn grant_words(grants: ServerGrants) -> String {
         (large_files, "large files"),
         (tcp_obfuscation, "obfuscation"),
         (ipv6, "IPv6"),
+        (ipv6_update, "IPv6 updates"),
+        (lowid_holepunch, "Low-ID hole punch"),
     ]
     .into_iter()
     .filter_map(|(granted, name)| granted.then_some(name))

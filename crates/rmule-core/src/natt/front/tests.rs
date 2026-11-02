@@ -25,6 +25,7 @@ use crate::natt::RendezvousOffer;
 use crate::natt::acting::ACTING_MIN_INTERVAL;
 use crate::natt::requester::HINT_TIMEOUT;
 
+mod admission;
 mod held;
 mod introduction_and_attempts;
 mod lifecycle;
@@ -220,6 +221,7 @@ impl Harness {
                 admit: crate::adapters::SharedTunnelAdmit::default(),
                 claims: claims.clone(),
                 peer_pin: crate::adapters::SharedPeerPin::default(),
+                roster: crate::peer_roster::SharedPeerRoster::default(),
                 diagnostics: diagnostics.clone(),
                 events: None,
                 prediction: None,
@@ -259,6 +261,7 @@ impl Harness {
                             buddy,
                             ..buddy_facts()
                         },
+                        crypt: None,
                         offer: RendezvousOffer {
                             our_user_hash: hash(0xAA),
                             options: NattConnectOptions::advertise(0, true, false),
@@ -285,7 +288,7 @@ impl Harness {
         mpsc::Receiver<(crate::adapters::CallbackKey, AttemptRetirement)>,
         crate::adapters::AwaitedInboundHandle,
     ) {
-        let callback = crate::adapters::CallbackKey {
+        let callback = crate::adapters::CallbackKey::Server {
             server: None,
             low_id,
         };
@@ -296,17 +299,14 @@ impl Harness {
         claim.claim_tunnel(
             target,
             crate::adapters::AdoptionBrief {
-                own_status: rmule_peer::PartBitmap::downloader_empty(0),
+                own_status: rmule_peer::WireStatus::downloader_empty(0),
                 want_sources: true,
-                file: rmule_primitives::Ed2kFileLink {
-                    file_hash: FileHash::from_bytes([0x22; FileHash::BYTE_LEN]),
-                    size: 9_728_000,
-                    name: rmule_primitives::Ed2kText::from_utf8("claimed"),
-                    part_hash_set: None,
-                    aich_root: None,
-                    ipv6_sources: Vec::new(),
-                    sources: Default::default(),
-                },
+                file: rmule_primitives::Ed2kFileLink::new(
+                    rmule_primitives::Ed2kText::from_utf8("claimed"),
+                    9_728_000,
+                    FileHash::from_bytes([0x22; FileHash::BYTE_LEN]),
+                )
+                .expect("a size eD2k addresses"),
             },
             false,
         );
@@ -335,6 +335,7 @@ fn rendezvous_toward(target: UserHash) -> NattCommand {
         owner: Some(AttemptOwner {
             target,
             facts: buddy_facts(),
+            crypt: None,
             offer: RendezvousOffer {
                 our_user_hash: hash(0xAA),
                 options: NattConnectOptions::advertise(0, true, false),
@@ -544,6 +545,7 @@ async fn a_responders_punch_only_refreshes_and_a_strangers_is_never_answered() {
                 role: rmule_ed2k::HolepunchRole::Responder,
                 burst: false,
                 source: rmule_peer::natt::PunchTargetSource::Observed,
+                crypt: None,
             },
             now,
         )
@@ -602,6 +604,7 @@ async fn an_initiator_dials_once_however_many_punches_arrive() {
                 role: rmule_ed2k::HolepunchRole::Initiator,
                 burst: false,
                 source: rmule_peer::natt::PunchTargetSource::Observed,
+                crypt: None,
             },
             now,
         )
@@ -675,6 +678,7 @@ async fn two_peers_behind_one_address_are_two_traversals() {
                     role: rmule_ed2k::HolepunchRole::Initiator,
                     burst: false,
                     source: rmule_peer::natt::PunchTargetSource::Observed,
+                    crypt: None,
                 },
                 now,
             )
@@ -722,6 +726,7 @@ async fn a_punch_that_names_nobody_refreshes_and_dials_nothing() {
                     role: rmule_ed2k::HolepunchRole::Initiator,
                     burst: false,
                     source: rmule_peer::natt::PunchTargetSource::Observed,
+                    crypt: None,
                 },
                 now,
             )

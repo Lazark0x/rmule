@@ -1,24 +1,24 @@
-┌ 1 Networks │ 2 │ 3 │ 4 │ 5 │ 6 ─────────────────────────────────────── rmule ┐
+┌ 1 Networks │ 2 Searches │ 3 Transfers │ 4 Shared │ 5 Stats │ 6 Settings ─────┐
 ┌ Help ────────────────────────────────────────────────────────────────────────┐
-│ Tab / Shift-Tab cycle panes (accent border = focus)                          │
-│ m / Enter       row action menu                                              │
-│ /               Searches: focus query input                                  │
-│ ← / →           Searches: pick method (input focused)                        │
-│ o               Searches: type/size/sources/extension filters                │
-│ x / n           Searches: stop or close a search / server's next page        │
-│ s / S           sort the focused table by next column / reverse              │
-│ a               Shared: filter / Networks: add server                        │
-│ U               Networks: update server list from URL                        │
-│ 5 / 6           Statistics (display-only) / Settings                         │
-│ Enter  ← / →    Settings: edit a field / step a selector                     │
-│ x               Settings: stop sharing the selected directory                │
-│ c               Networks: connect to the selected server, or disconnect from │
-│                 the one you are on                                           │
-│ K               Networks: start or stop Kad                                  │
-│ p / C           pause/resume selected download / clear all completed         │
-│ L               Transfers: add a download from a pasted eD2k link            │
-│ ?               this help; j/k, PgUp/PgDn scroll it when it is long          │
-│ q / Esc         quit (top level) / dismiss (modal)                           │
-│ mouse           click tab/row selects, header sorts, wheel scrolls           │
-└──────────────────────────────────────────────────────────── 9–28 of 28 · j/k ┘
-└ — │ Users: — · Files: — │ ▼ 0.0 KB/s ▲ 0.0 KB/s │ ●eD2k off ●Kad off ────────┘
+│ Grants          what a server lets a client do: its limits and flags        ▲│
+│ —               a value a narrow cell has no room to name; see Off-screen    │
+│ Stalled         holds a slot and has moved no bytes for 30 seconds           │
+│ Sources 42 (7)  peers that have the file (of them, with all of it)           │
+│ Requests 3 (12) this run (all time); Accepted, Transferred too               │
+│ Done 42%        bytes verified against the file's hashes                     │
+│ ▸  •            the row the cursor is on; a tagged row                       │
+│                                                                              │
+│ Marks on a result                                                            │
+│ downloading     in Transfers now: its colour, bold                           │
+│ failed          its download failed and holds its place: its colour, bold,   │
+│                 underlined                                                   │
+│ have            on your disk, shared: its colour                             │
+│ withheld        rmule cannot read it now, offered to nobody: its colour,     │
+│                 underlined                                                  ▅│
+│ had             downloaded once, no longer held: its colour, italic         █│
+│ cancelled       you cancelled it: its colour, struck through                █│
+│ selected        the focused pane's row is bold whatever its mark: its word  █│
+│                 says which                                                  ▼│
+│/                                                                     63 of 63│
+└─────────────────────────────────────────────────────────────── ↑/↓ ─ 90 / 90 ┘
+└ ▼   0.0 KB/s ▲   0.0 KB/s │ ●eD2k off ●Kad: off────────────────────Esc leave ┘

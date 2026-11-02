@@ -71,14 +71,16 @@ pub enum KadCommand {
         /// The Kad endpoint the eD2k peer hinted at.
         endpoint: KadNodeEndpoint,
     },
-    /// Walk toward the request's Kad target and search the nearest responded
-    /// nodes for sources (the **Kad Requester** role).
+    /// Queue a walk toward the request's Kad target, to search the nearest
+    /// responded nodes for sources (the **Kad Requester** role). It starts at
+    /// stock's pace, once the node has joined (ADR-0064).
     SearchSources {
         /// The file to find sources for, carrying the target the walk aims at.
         request: KadSourceLookupRequest,
     },
     /// Register the request's file for publication (the **Kad Publisher**
-    /// role): publish immediately, then republish every
+    /// role): the node starts it at stock's pace once it may publish
+    /// (ADR-0064), then republishes every
     /// [`KadNode::SOURCE_REPUBLISH_INTERVAL`](crate::KadNode::SOURCE_REPUBLISH_INTERVAL) through `tick`.
     PublishSource {
         /// The file to publish ourselves as a source of.
@@ -273,7 +275,9 @@ pub enum KadCommand {
     /// firewalled client as `OP_CALLBACK` over the link it holds; the client
     /// then dials us at `tcp_port`. Plaintext always, as aMule sends it: the
     /// buddy's Kad version is unknown (`BaseClient.cpp:2141-2149`). The
-    /// admission decision and the dial-back adoption are core-side.
+    /// admission decision and the dial-back adoption are core-side. It leaves
+    /// through the **Callback Pace**, which answers each command with
+    /// [`BuddyCallbackPaced`](crate::KadEvent::BuddyCallbackPaced).
     RequestBuddyCallback {
         /// The buddy's Kad UDP endpoint, from the source row.
         buddy: KadNodeEndpoint,

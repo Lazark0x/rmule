@@ -33,10 +33,19 @@ async fn first_hello(options: rmule_net::peer::ConnectOptions) -> PeerHelloBody 
     read_hello_body(&mut theirs).await
 }
 
+/// The accept options of a node with no dials to meet.
+fn accept_options(adverts: &HelloAdverts) -> rmule_net::peer::ConnectOptions {
+    let links = crate::adapters::SharedPeerLinks::default();
+    let own = crate::adapters::tests::dialed_serve_ctx()
+        .identity
+        .user_hash();
+    build_accept_options(adverts, &links, own)
+}
+
 /// The buddy tags of the hello this node's accept options write — every other
 /// advert live beside them, and stated on every accept.
 async fn hello_buddy_tags(adverts: &HelloAdverts) -> BuddyTags {
-    let hello = first_hello(build_accept_options(adverts)).await;
+    let hello = first_hello(accept_options(adverts)).await;
     assert_states_live_adverts(&hello);
     BuddyTags::of(&hello)
 }

@@ -1,12 +1,13 @@
-//! A rename against a scripted directory (ADR-0100, "A rename carries its
-//! hash when the file's identity proves it"): carried unread when identity,
+//! A rename against a scripted directory (ADR-0104, "A rename carries its hash when the file's
+//! identity proves it"): carried unread when identity,
 //! size and time all match, and read, as before, in each case the model
 //! refuses.
 
+use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
-use std::sync::{Arc, Mutex};
 
 use rmule_primitives::FileHashSummary;
 
@@ -14,7 +15,7 @@ use super::super::scripted::{ROOT, Scripted, known, row};
 use super::super::{
     Consent, FileIdentity, Known, Memory, PassEnd, ProgressCell, ScanReport, SpareCopy, run_pass,
 };
-use crate::registry::SharedFileEntry;
+use crate::registry::SharedRow;
 
 fn pass_knowing(dir: &Scripted, known: &Known) -> (PassEnd, Vec<ScanReport>) {
     let progress: ProgressCell = Arc::new(Mutex::new(None));
@@ -22,7 +23,7 @@ fn pass_knowing(dir: &Scripted, known: &Known) -> (PassEnd, Vec<ScanReport>) {
     let end = run_pass(
         dir,
         Path::new(ROOT),
-        known,
+        &mut || Some(known.clone()),
         Consent::Given,
         &AtomicBool::new(false),
         &progress,
@@ -33,7 +34,7 @@ fn pass_knowing(dir: &Scripted, known: &Known) -> (PassEnd, Vec<ScanReport>) {
 }
 
 /// A shared film at `/dl/film.mkv` with identity inode 7, born at second 1.
-fn film(dir: &mut Scripted) -> (SharedFileEntry, FileIdentity) {
+fn film(dir: &mut Scripted) -> (SharedRow, FileIdentity) {
     let stamp = dir.file("/dl/film.mkv", b"the film", 5);
     let identity = dir.identify("/dl/film.mkv", 7, 1);
     let mut entry = row("/dl/film.mkv", stamp, 0);
@@ -41,7 +42,7 @@ fn film(dir: &mut Scripted) -> (SharedFileEntry, FileIdentity) {
     (entry, identity)
 }
 
-fn knowing(row: &SharedFileEntry, identity: Option<FileIdentity>) -> Known {
+fn knowing(row: &SharedRow, identity: Option<FileIdentity>) -> Known {
     Known {
         identities: identity
             .map(|identity| HashMap::from([(row.file_hash, identity)]))

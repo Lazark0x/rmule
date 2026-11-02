@@ -10,10 +10,10 @@ use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 use rmule_primitives::{FileHash, PartHash};
-use rmule_store::{Indexed, Readable, Record, StoreError, UpgradeStep, WriteTransaction};
+use rmule_store::{Indexed, Readable, Record, StoreError, WriteTransaction};
 use serde::{Deserialize, Serialize};
 
-use super::{DurableSharedFileRegistry, PART_HASHES, SHARED_FILES, file_name, part_hashes_of};
+use super::{DurableSharedFileRegistry, PART_HASHES, SHARED_FILES, part_hashes_of};
 use crate::CoreError;
 use crate::directory_scan::{FileIdentity, SetAside, SpareCopy};
 use crate::registry::{ShareSource, SharedFileEntry};
@@ -60,18 +60,6 @@ pub(super) fn schema() -> Schema {
         .indexed(&SET_ASIDE)
 }
 
-/// Store version 10 → 11 (ADR-0101, "Shared Directories"): the list and the
-/// set-aside rows appear, empty. A version-10 build refuses the store: it
-/// would share a path without deleting that path's set-aside row, and it
-/// would not scan the listed directories.
-pub(crate) const UPGRADE_FROM_V10: UpgradeStep = UpgradeStep {
-    from: 10,
-    run: |txn| {
-        SHARED_DIRECTORIES.create(txn)?;
-        SET_ASIDE.create(txn)
-    },
-};
-
 /// A share at `path` takes the set-aside row there: the path holds a row now.
 pub(super) fn forget_set_aside_at(txn: &WriteTransaction, path: &Path) -> Result<(), StoreError> {
     match path.to_str() {
@@ -97,7 +85,7 @@ impl DurableSharedFileRegistry {
     /// [`CoreError::Repository`] when the store read fails.
     pub(crate) fn shared_directories(&self) -> Result<Vec<PathBuf>, CoreError> {
         self.store.read(|txn| {
-            let mut dirs = SHARED_DIRECTORIES.iter(txn)?;
+            let mut dirs = crate::store::readable(&SHARED_DIRECTORIES, txn)?;
             dirs.sort_by(|a, b| a.1.added.cmp(&b.1.added).then_with(|| a.0.cmp(&b.0)));
             Ok(dirs
                 .into_iter()
@@ -110,8 +98,8 @@ impl DurableSharedFileRegistry {
     /// the operator's yes to a parent that replaces its children.
     ///
     /// # Errors
-    /// [`CoreError::Repository`] when the path is not valid UTF-8 or the
-    /// store write fails.
+    /// [`CoreError::PathNotUtf8`] when the path is not valid UTF-8,
+    /// [`CoreError::Repository`] when the store write fails.
     pub(crate) fn add_shared_directory(
         &self,
         dir: &Path,
@@ -166,7 +154,7 @@ impl DurableSharedFileRegistry {
                 spare_copy::forget_at(txn, &spare.path)?;
             }
             let mut rulings = Vec::new();
-            for (content, row) in SHARED_FILES.iter(txn)? {
+            for (content, row) in crate::store::readable(&SHARED_FILES, txn)? {
                 if !under(&row.path) {
                     continue;
                 }
@@ -191,7 +179,7 @@ impl DurableSharedFileRegistry {
                 if let Some(spare) = elsewhere {
                     let mut moved = row;
                     moved.path.clone_from(&spare.path);
-                    moved.name = file_name(&spare.path);
+                    moved.name = SharedFileEntry::name_of(&spare.path);
                     moved.modified = Some(spare.stamp.modified);
                     moved.identity = spare.identity;
                     SHARED_FILES.set(txn, &content, &moved)?;
@@ -247,8 +235,7 @@ fn set_aside_spare(
 }
 
 fn list(txn: &impl Readable) -> Result<Vec<SetAside>, CoreError> {
-    Ok(SET_ASIDE
-        .iter(txn)?
+    Ok(crate::store::readable(&SET_ASIDE, txn)?
         .into_iter()
         .map(|(path, row)| {
             let path = PathBuf::from(path);
@@ -256,7 +243,7 @@ fn list(txn: &impl Readable) -> Result<Vec<SetAside>, CoreError> {
                 entry: SharedFileEntry {
                     file_hash: row.file_hash,
                     file_size: row.size,
-                    name: file_name(&path),
+                    name: SharedFileEntry::name_of(&path),
                     path,
                     source: ShareSource::DownloadDirectory,
                     part_hashes: row.part_hashes,
@@ -271,8 +258,37 @@ fn list(txn: &impl Readable) -> Result<Vec<SetAside>, CoreError> {
 fn utf8(dir: &Path) -> Result<String, CoreError> {
     dir.to_str()
         .map(str::to_owned)
-        .ok_or_else(|| CoreError::Repository(format!("{} is not valid UTF-8", dir.display())))
+        .ok_or_else(|| CoreError::PathNotUtf8(dir.to_owned()))
 }
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod pinned {
+    use std::time::{Duration, UNIX_EPOCH};
+
+    use super::*;
+    use crate::store::assert_pinned;
+
+    #[test]
+    fn a_shared_directory_and_a_set_aside_row_keep_their_bytes() {
+        let at = UNIX_EPOCH + Duration::from_secs(1_000_000_000);
+        assert_pinned(&SharedDirectory { added: at }, "8094ebdc0300");
+        let row = SetAsideRow {
+            file_hash: FileHash::from_bytes([7; 16]),
+            size: 300,
+            modified: at,
+            identity: None,
+            part_hashes: vec![PartHash::from_bytes([9; 16])],
+        };
+        assert_pinned(
+            &row,
+            &format!(
+                "{}ac028094ebdc030000{}",
+                "07".repeat(16),
+                "01".to_owned() + &"09".repeat(16)
+            ),
+        );
+    }
+}

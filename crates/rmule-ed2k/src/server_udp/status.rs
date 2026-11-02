@@ -10,6 +10,7 @@
 
 use rmule_primitives::{Packet, PacketProtocol, ServerUdpFlags};
 
+use super::datagram_body;
 use crate::{Ed2kError, Opcode, Result};
 
 /// `OP_GLOBSERVSTATREQ` (0x96): the plain status ping, client → server. Body is
@@ -58,24 +59,7 @@ impl GlobServStatReq {
     /// `[protocol 0xE3][opcode 0x96]` then the fixed body `[challenge u32 LE]`.
     pub fn decode_udp(bytes: &[u8]) -> Result<Self> {
         let opcode = Opcode::GlobServStatReq.as_u8();
-        let [protocol, op, body @ ..] = bytes else {
-            return Err(Ed2kError::InvalidPayload {
-                opcode,
-                reason: "OP_GLOBSERVSTATREQ datagram missing header",
-            });
-        };
-        if *protocol != PacketProtocol::Edonkey.as_byte() {
-            return Err(Ed2kError::InvalidPayload {
-                opcode,
-                reason: "unsupported packet protocol",
-            });
-        }
-        if *op != opcode {
-            return Err(Ed2kError::InvalidPayload {
-                opcode,
-                reason: "wrong opcode for OP_GLOBSERVSTATREQ",
-            });
-        }
+        let body = datagram_body(bytes, opcode)?;
         let challenge: [u8; 4] = body.try_into().map_err(|_| Ed2kError::InvalidPayload {
             opcode,
             reason: "OP_GLOBSERVSTATREQ payload must be [challenge u32]",
@@ -95,13 +79,13 @@ impl GlobServStatReq {
 /// length is free to be clamped. Two counterparty acceptance windows constrain
 /// it, and only their intersection is universally deliverable:
 ///
-/// - the **eserver family** (Lugdunum, eNode) admits an obfuscated ping of
+/// - the **eserver family** (Lugdunum) admits an obfuscated ping of
 ///   `4..=18` bytes;
-/// - **ed2k-server** (`andrey23127/ed2k-server` @`eacf7f1`) reads that same
-///   `4..=18` arm, but its pre-flight drops anything shorter than 10 bytes
-///   before the arm is reached — an effective `10..=18` window.
+/// - **ed2k-server** (`andrey23127/ed2k-server`) answers `4..=19` since
+///   v0.9.83, but servers before it read `4..=18` behind a pre-flight that
+///   drops anything shorter than 10 bytes — an effective `10..=18` window.
 ///
-/// `4 + 6..=4 + 14` = `10..=18` total sits inside both, so no server drops the
+/// `4 + 6..=4 + 14` = `10..=18` total sits inside all of them, so no server drops the
 /// ping silently — which on the wire is indistinguishable from "the server
 /// never answered", and cost a single-shot probe ~1 run in 16 before the clamp.
 /// The wire form is unchanged: aMule mints paddings across this range too, so a
@@ -252,24 +236,7 @@ impl GlobServStatRes {
     /// beyond the deepest field are ignored.
     pub fn decode_udp(bytes: &[u8]) -> Result<Self> {
         let opcode = Opcode::GlobServStatRes.as_u8();
-        let [protocol, op, body @ ..] = bytes else {
-            return Err(Ed2kError::InvalidPayload {
-                opcode,
-                reason: "OP_GLOBSERVSTATRES datagram missing header",
-            });
-        };
-        if *protocol != PacketProtocol::Edonkey.as_byte() {
-            return Err(Ed2kError::InvalidPayload {
-                opcode,
-                reason: "unsupported packet protocol",
-            });
-        }
-        if *op != opcode {
-            return Err(Ed2kError::InvalidPayload {
-                opcode,
-                reason: "wrong opcode for OP_GLOBSERVSTATRES",
-            });
-        }
+        let body = datagram_body(bytes, opcode)?;
         // aMule's `size >=` thresholds measure the body: `OnPacketReceived`
         // hands `ProcessPacket` a `CMemFile(pBuffer + 2, nPayLoadLen - 2)`,
         // so its `size < 12` minimum is challenge + users + files.

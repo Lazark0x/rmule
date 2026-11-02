@@ -7,8 +7,9 @@
 //! makes the set an input instead, so a dual-homed host, a host with only a
 //! link-local IPv6, and a host with nothing routable are all one call away.
 
+use parking_lot::Mutex;
 use std::net::IpAddr;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use rmule_net::interfaces::InterfaceSource;
 
@@ -27,6 +28,6 @@ impl FakeInterfaces {
 
 impl InterfaceSource for FakeInterfaces {
     fn addresses(&self) -> Vec<IpAddr> {
-        self.0.lock().expect("fake interface mutex").clone()
+        self.0.lock().clone()
     }
 }

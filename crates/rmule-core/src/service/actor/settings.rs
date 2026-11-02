@@ -38,6 +38,9 @@ where
                 }
                 self.download_directory(dir).await;
             }
+            // Downloads already placed keep the paths their rows hold; the
+            // list is judged again against the new Temp Directory (ADR-0115).
+            LiveSetting::TempDir(dir) => self.temp_directory_moved(dir).await,
             LiveSetting::Obfuscation(policy) => self.on_set_obfuscation(policy).await,
         }
     }
@@ -50,7 +53,7 @@ where
     /// the lean Run Log states it.
     async fn on_set_obfuscation(&mut self, policy: Option<rmule_net::peer::ObfuscationPolicy>) {
         if self.wiring.hello_adverts.obfuscation.set(policy) {
-            super::send_event(&self.evt_tx, CoreEvent::ObfuscationPolicyChanged { policy }).await;
+            super::send_event(&self.evt_tx, CoreEvent::ObfuscationPolicyChanged { policy });
         }
     }
 }

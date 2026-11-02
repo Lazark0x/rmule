@@ -9,7 +9,7 @@ use std::net::Ipv4Addr;
 use std::time::Duration;
 
 use rmule_primitives::{
-    Ed2kText, Ipv4Endpoint, PeerEndpoint, PeerSource, SourceListTail, UserHash,
+    Ed2kText, Ipv4Endpoint, PeerEndpoint, PeerSource, SourceClaim, SourceListTail, UserHash,
 };
 
 use super::super::tests::{FakeLink, client_id, connected, test_sinks};
@@ -17,12 +17,18 @@ use super::*;
 
 mod callback;
 mod more_results;
+mod offers;
 mod related_search;
 mod search;
 mod server_facts;
 
 fn target(byte: u8) -> SourceLookupTarget {
     SourceLookupTarget::new(FileHash::from_bytes([byte; FileHash::BYTE_LEN]), 1024)
+}
+
+/// What each sighting's row said, whoever stated it.
+fn claims(sightings: &[SourceSighting]) -> Vec<SourceClaim> {
+    sightings.iter().map(|sighting| sighting.claim()).collect()
 }
 
 #[tokio::test]
@@ -54,10 +60,10 @@ async fn concurrent_lookups_are_demuxed_by_file_hash() {
     assert!(requested.contains(&a.file_hash()) && requested.contains(&b.file_hash()));
 
     // Answer out of order: each waiter gets ITS own sources (no stealing).
-    let src_b = vec![SourceSighting::plain(PeerSource::new(client_id(), 7001))];
+    let src_b = vec![SourceClaim::plain(PeerSource::new(client_id(), 7001))];
     let src_a = vec![
-        SourceSighting::plain(PeerSource::new(client_id(), 7002)),
-        SourceSighting::plain(PeerSource::new(client_id(), 7003)),
+        SourceClaim::plain(PeerSource::new(client_id(), 7002)),
+        SourceClaim::plain(PeerSource::new(client_id(), 7003)),
     ];
     evt_tx
         .send(Ed2kEvent::SourcesFound {
@@ -78,9 +84,53 @@ async fn concurrent_lookups_are_demuxed_by_file_hash() {
 
     let outcome_a = lookup_a.await.unwrap().unwrap();
     let outcome_b = lookup_b.await.unwrap().unwrap();
-    assert_eq!(outcome_a.sources, src_a);
-    assert_eq!(outcome_b.sources, src_b);
+    assert_eq!(claims(&outcome_a.sources), src_a);
+    assert_eq!(claims(&outcome_b.sources), src_b);
     assert_eq!(outcome_a.client_id, client_id());
+}
+
+/// A server's answer reaches the run as the word of the address its session
+/// reached, the party a loopback source is judged against (ADR-0085).
+#[tokio::test]
+async fn a_server_answer_is_the_word_of_the_address_its_session_reached() {
+    let (evt_tx, evt_rx) = mpsc::channel(8);
+    let (cmd_tx, mut cmd_rx) = mpsc::channel(8);
+    let server_ip = std::net::IpAddr::V4(Ipv4Addr::new(203, 0, 113, 9));
+    let handle = ServerSession::spawn(
+        FakeLink {
+            events: evt_rx,
+            sent: cmd_tx,
+        },
+        client_id(),
+        SessionSinks {
+            server_ip: Some(server_ip),
+            ..test_sinks(SharedOwnIdentity::default())
+        },
+    );
+    let wanted = target(0xAC);
+    let lookup = tokio::spawn(async move { handle.lookup_sources(wanted).await });
+    assert!(matches!(
+        cmd_rx.recv().await,
+        Some(Ed2kCommand::RequestSources { .. })
+    ));
+    let source = SourceClaim::plain(PeerSource::new(
+        ClientId::from_u32(u32::from_le_bytes([127, 0, 0, 1])),
+        7001,
+    ));
+    evt_tx
+        .send(Ed2kEvent::SourcesFound {
+            file_hash: wanted.file_hash(),
+            sources: vec![source],
+            tail: SourceListTail::Read { sentinels: 0 },
+        })
+        .await
+        .unwrap();
+
+    let outcome = lookup.await.unwrap().unwrap();
+    assert_eq!(
+        outcome.sources,
+        [source.stated_by(rmule_primitives::Informant::Party(server_ip))]
+    );
 }
 
 /// A file hash whose four 4-byte words all differ, so a word-order slip in any
@@ -135,7 +185,7 @@ async fn a_second_lookup_for_the_same_file_joins_the_ask_in_flight() {
     for _ in 0..8 {
         tokio::task::yield_now().await;
     }
-    let answer = vec![SourceSighting::plain(PeerSource::new(client_id(), 7104))];
+    let answer = vec![SourceClaim::plain(PeerSource::new(client_id(), 7104))];
     evt_tx
         .send(Ed2kEvent::SourcesFound {
             file_hash: file.file_hash(),
@@ -145,8 +195,14 @@ async fn a_second_lookup_for_the_same_file_joins_the_ask_in_flight() {
         .await
         .unwrap();
 
-    assert_eq!(lookup_first.await.unwrap().unwrap().sources, answer);
-    assert_eq!(lookup_second.await.unwrap().unwrap().sources, answer);
+    assert_eq!(
+        claims(&lookup_first.await.unwrap().unwrap().sources),
+        answer
+    );
+    assert_eq!(
+        claims(&lookup_second.await.unwrap().unwrap().sources),
+        answer
+    );
     assert!(
         cmd_rx.try_recv().is_err(),
         "the joined lookup put a second ask on the wire"
@@ -220,6 +276,8 @@ async fn the_server_coordinator_asks_punches_and_ends_with_its_session() {
                 peer_tcp_port: 4662,
                 peer_hash: UserHash::from_bytes([0x44; 16]),
                 role: HolepunchRole::Responder,
+                peer_id: None,
+                peer_crypt: None,
             },
         })
         .await
@@ -291,8 +349,11 @@ async fn a_dropped_link_fails_every_parked_lookup() {
     ));
 }
 
+/// aMule's `SendLocalSrcRequest` skips the one ask (`DownloadQueue.cpp:1083-1084`):
+/// a refused lookup ends empty, the other file's stays parked, and the link
+/// goes on carrying asks.
 #[tokio::test]
-async fn a_command_rejection_fails_the_lookup() {
+async fn a_refused_lookup_ends_empty_and_the_session_stays_up() {
     let (evt_tx, evt_rx) = mpsc::channel(8);
     let (cmd_tx, mut cmd_rx) = mpsc::channel(8);
     let handle = ServerSession::spawn(
@@ -304,30 +365,123 @@ async fn a_command_rejection_fails_the_lookup() {
         test_sinks(SharedOwnIdentity::default()),
     );
 
-    let h = handle.clone();
-    let lookup = tokio::spawn(async move { h.lookup_sources(target(0xAA)).await });
+    let refused = {
+        let h = handle.clone();
+        tokio::spawn(async move { h.lookup_sources(target(0xAA)).await })
+    };
+    assert!(matches!(
+        cmd_rx.recv().await.unwrap(),
+        Ed2kCommand::RequestSources { .. }
+    ));
+    let parked = {
+        let h = handle.clone();
+        tokio::spawn(async move { h.lookup_sources(target(0xBB)).await })
+    };
     assert!(matches!(
         cmd_rx.recv().await.unwrap(),
         Ed2kCommand::RequestSources { .. }
     ));
 
-    // The server rejects the request (no file hash on the event): the
-    // session ends and the parked lookup fails promptly instead of hanging
-    // until the link drops.
     evt_tx
         .send(Ed2kEvent::CommandRejected {
-            command: Ed2kCommandKind::RequestSources,
-            reason: CommandRejectReason::NotLoggedIn,
+            command: Ed2kCommandKind::RequestSources {
+                file_hash: target(0xAA).file_hash(),
+            },
+            reason: CommandRejectReason::UnsupportedServerCapability {
+                capability: ServerCapability::LargeFiles,
+            },
         })
         .await
         .unwrap();
-    assert!(matches!(
-        lookup.await.unwrap(),
-        Err(DownloadFailure::ServerDisconnected)
-    ));
+
+    let outcome = refused
+        .await
+        .unwrap()
+        .expect("the ask ends, the link does not");
+    assert!(outcome.sources.is_empty());
+    assert!(handle.is_alive(), "the session outlives the refusal");
+    assert!(!parked.is_finished(), "the other file's ask is still out");
+
+    evt_tx
+        .send(Ed2kEvent::SourcesFound {
+            file_hash: target(0xBB).file_hash(),
+            sources: Vec::new(),
+            tail: SourceListTail::Read { sentinels: 0 },
+        })
+        .await
+        .unwrap();
+    assert!(parked.await.unwrap().is_ok());
 }
 
+/// A refusal is local: nothing reached the wire, so the link is as healthy as
+/// it was. Whatever the command, the session goes on taking requests.
 #[tokio::test]
+async fn no_refused_command_ends_the_session() {
+    let (evt_tx, evt_rx) = mpsc::channel(16);
+    let (cmd_tx, mut cmd_rx) = mpsc::channel(16);
+    let handle = ServerSession::spawn(
+        FakeLink {
+            events: evt_rx,
+            sent: cmd_tx,
+        },
+        client_id(),
+        test_sinks(SharedOwnIdentity::default()),
+    );
+
+    let refusals = [
+        (
+            Ed2kCommandKind::RequestServerList,
+            CommandRejectReason::NotLoggedIn,
+        ),
+        (
+            Ed2kCommandKind::QueryMoreResults,
+            CommandRejectReason::NotLoggedIn,
+        ),
+        (Ed2kCommandKind::Search, CommandRejectReason::NotLoggedIn),
+        (
+            Ed2kCommandKind::RequestCallback,
+            CommandRejectReason::NotLoggedIn,
+        ),
+        (
+            Ed2kCommandKind::RequestHolepunch,
+            CommandRejectReason::UnsupportedServerCapability {
+                capability: ServerCapability::LowIdHolepunch,
+            },
+        ),
+        (
+            Ed2kCommandKind::UpdateIpv6,
+            CommandRejectReason::UnsupportedServerCapability {
+                capability: ServerCapability::Ipv6Update,
+            },
+        ),
+        (
+            Ed2kCommandKind::OfferFiles,
+            CommandRejectReason::UnsupportedServerCapability {
+                capability: ServerCapability::LargeFiles,
+            },
+        ),
+    ];
+    for (command, reason) in refusals {
+        evt_tx
+            .send(Ed2kEvent::CommandRejected { command, reason })
+            .await
+            .unwrap();
+    }
+
+    let h = handle.clone();
+    let lookup = tokio::spawn(async move { h.lookup_sources(target(0xCC)).await });
+    assert!(
+        matches!(
+            cmd_rx.recv().await,
+            Some(Ed2kCommand::RequestSources { .. })
+        ),
+        "the link still carries asks"
+    );
+    assert!(handle.is_alive());
+    lookup.abort();
+}
+
+#[tokio::test(start_paused = true)]
 async fn announce_rides_the_session_as_offer_files() {
     let (_evt_tx, evt_rx) = mpsc::channel(8);
     let (cmd_tx, mut cmd_rx) = mpsc::channel(8);
@@ -355,7 +509,7 @@ async fn announce_rides_the_session_as_offer_files() {
 /// An offer carries the Presented Client ID as Self Reach answers it when the
 /// offer is sent: an open Kad node names its confirmed address, not the id its
 /// server assigned.
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn an_offer_names_the_presented_id_self_reach_answers() {
     use crate::address_learning::AddressObservation;
     use crate::natt::front::SharedNattFront;
@@ -392,7 +546,12 @@ async fn an_offer_names_the_presented_id_self_reach_answers() {
         },
     );
 
-    handle.announce(Vec::new()).await.unwrap();
+    let file = OfferedFile::new(
+        FileHash::from_bytes([0x01; FileHash::BYTE_LEN]),
+        1024,
+        Ed2kText::from_utf8("a.bin"),
+    );
+    handle.announce(vec![file]).await.unwrap();
 
     match cmd_rx.recv().await.unwrap() {
         Ed2kCommand::OfferFiles { presented_id, .. } => assert_eq!(
@@ -574,4 +733,69 @@ async fn the_server_high_id_level_follows_reassignment_and_ends_with_the_session
 
     drop(evt_tx);
     settles(&mut generation, &reach, false).await;
+}
+
+/// The server's copy of our IPv6 follows the Advertised IPv6: told once per
+/// move, zeros when it goes, and nothing on a wake that moved nothing or on a
+/// server that took no update (ADR-0087).
+#[tokio::test]
+async fn an_advertised_ipv6_that_moves_is_told_only_to_a_server_that_takes_it() {
+    use parking_lot::Mutex;
+    use std::net::Ipv6Addr;
+    use std::sync::Arc;
+
+    let (first, second): (Ipv6Addr, Ipv6Addr) = (
+        "2001:db8::1".parse().unwrap(),
+        "2001:db8::2".parse().unwrap(),
+    );
+    for takes_it in [true, false] {
+        let (_evt_tx, evt_rx) = mpsc::channel(8);
+        let (cmd_tx, mut cmd_rx) = mpsc::channel(8);
+        let (changed_tx, changed) = tokio::sync::watch::channel(0_u64);
+        let held = Arc::new(Mutex::new(Some(first)));
+        let read = {
+            let held = held.clone();
+            Arc::new(move || *held.lock())
+        };
+        let _handle = ServerSession::spawn(
+            FakeLink {
+                events: evt_rx,
+                sent: cmd_tx,
+            },
+            client_id(),
+            SessionSinks {
+                grants: rmule_ed2k::ServerGrants {
+                    ipv6_update: takes_it,
+                    ..rmule_ed2k::ServerGrants::default()
+                },
+                ipv6_told: Some(crate::server_session::multiplexer::Ipv6Told {
+                    told: Some(first),
+                    follow: rmule_net::peer::Ipv6Follow { changed, read },
+                }),
+                ..test_sinks(SharedOwnIdentity::default())
+            },
+        );
+        let wake = |address| {
+            *held.lock() = address;
+            changed_tx.send_modify(|generation| *generation += 1);
+        };
+        let quiet = Duration::from_millis(50);
+
+        wake(Some(first));
+        assert!(
+            tokio::time::timeout(quiet, cmd_rx.recv()).await.is_err(),
+            "the same address is not news"
+        );
+        for address in [Some(second), None] {
+            wake(address);
+            let told = tokio::time::timeout(quiet, cmd_rx.recv()).await;
+            if takes_it {
+                assert!(
+                    matches!(told, Ok(Some(Ed2kCommand::UpdateIpv6 { address: sent })) if sent == address)
+                );
+            } else {
+                assert!(told.is_err(), "the server took no update");
+            }
+        }
+    }
 }

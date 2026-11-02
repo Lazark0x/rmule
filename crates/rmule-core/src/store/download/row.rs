@@ -13,35 +13,63 @@
 mod part_path;
 mod rungs;
 
+pub(super) use crate::store::home_path::HomePath;
 pub(super) use part_path::PartPathSlot;
-pub(crate) use rungs::{UPGRADE_FROM_V5, UPGRADE_FROM_V6, UPGRADE_FROM_V7, grow_from_v8};
+pub(crate) use rungs::{UPGRADE_FROM_V16, UPGRADE_FROM_V18, grow_from_v14};
 #[cfg(test)]
-pub(crate) use rungs::{schema_v1, seed_v1};
+pub(crate) use rungs::{schema_v5_rows, seed_running_v5};
 
 use rmule_primitives::{
-    Ed2kFileLink, Ed2kLink, Ed2kText, FileHash, PartHash, ServerEndpoint, UserHash,
+    AichRootHash, Ed2kFileLink, Ed2kLink, Ed2kText, FileHash, PartHash, ServerEndpoint, UserHash,
 };
+use std::path::Path;
+
 use rmule_store::{Children, Indexed, MultimapIndex, Record, Sequence, UniqueIndex};
 use serde::{Deserialize, Serialize};
 
 use crate::durable::DurableDownloadRecordInput;
 use crate::{
     DownloadFailure, DownloadId, DownloadLifecycle, DownloadMetadata, DownloadMetadataOrigin,
-    DownloadPaths, DurableDownloadRecord, VerificationAuthority, VerifiedPartRecord,
+    DownloadPaths, DurableDownloadRecord, KadAichRoot, VerificationAuthority, VerifiedPartRecord,
 };
 
+/// The link a row keeps: typed in hand, the `ed2k://` text on disk, whose round
+/// trip the `link` fuzz target pins. Nothing reads the text again, and text
+/// that does not parse is a row that does not decode, which costs that row
+/// and a line in the Run Log (ADR-0083).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub(super) struct StoredLink(pub(super) Ed2kFileLink);
+
+impl TryFrom<String> for StoredLink {
+    type Error = &'static str;
+
+    fn try_from(text: String) -> Result<Self, Self::Error> {
+        match Ed2kLink::parse(&text) {
+            Ok(Ed2kLink::File(file)) => Ok(Self(file)),
+            _ => Err("the stored link does not parse"),
+        }
+    }
+}
+
+impl From<StoredLink> for String {
+    fn from(link: StoredLink) -> Self {
+        Ed2kLink::File(link.0).to_string()
+    }
+}
+
 /// One download as the store holds it, keyed by its [`DownloadId`]'s `u64`.
-/// Paths are kept as text because the part path is also a unique index value;
-/// a path that is not valid UTF-8 is stored lossily.
+/// Paths are kept as text, [`HomePath`]s, because the part path is also a
+/// unique index value.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(super) struct DownloadRow {
     pub file_hash: FileHash,
     pub file_size: u64,
-    pub canonical_link: String,
+    pub link: StoredLink,
     /// The server the link was found on, `None` for a Kad-only start:
     /// a hint, never dialed.
     pub source_hint: Option<ServerEndpoint>,
-    pub final_path: String,
+    pub final_path: HomePath,
     pub part_path: PartPathSlot,
     pub lifecycle: DownloadLifecycle,
     pub verification_authority: Option<VerificationAuthority>,
@@ -50,11 +78,16 @@ pub(super) struct DownloadRow {
     /// Why the last run failed: set with the `Failed` lifecycle, cleared by
     /// any other (ADR-0094, "Failed"). A code, never a sentence.
     pub failure: Option<DownloadFailure>,
+    /// The Download Name: the command's, before any number (ADR-0115).
+    pub name: String,
+    /// The Qualified Kad Root the download was started from, or the contest
+    /// that ended it (ADR-0038).
+    pub kad_aich_root: Option<KadAichRoot>,
 }
 
 impl Record for DownloadRow {
     const NAME: &'static str = "download";
-    const VERSION: u32 = 5;
+    const VERSION: u32 = 6;
 }
 
 /// One hash-checked part on disk, keyed by `(download id, part index)` so a
@@ -92,7 +125,7 @@ impl Record for ProvisionalPartHashRow {
 }
 
 /// One peer this download distrusts, keyed by `(download id, ordinal)`: it
-/// served this file bad data (ADR-0090 "Source ownership"). Kept by
+/// served this file bad data (ADR-0090 "A download holds each source under one owner"). Kept by
 /// User Hash, not address, so the distrust follows the peer to a new one.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(super) struct DistrustedPeerRow {
@@ -131,26 +164,27 @@ pub(super) static DOWNLOAD_IDS: Sequence = Sequence::new("download");
 
 impl DownloadRow {
     /// The row a `create_download` writes: every fact taken from the caller's
-    /// link, source hint and paths, queued and unverified.
+    /// link, source hint, paths and Kad root, queued and unverified.
     pub(super) fn new(
         file: &Ed2kFileLink,
         source_hint: Option<&ServerEndpoint>,
         paths: &DownloadPaths,
+        kad_aich_root: Option<AichRootHash>,
+        home: Option<&Path>,
     ) -> Self {
         let metadata = DownloadMetadata::from_link(file);
         // A link set that is not the file's own is never recorded: the
         // row's authority and its canonical link agree with the run's.
-        let file = Ed2kFileLink {
-            part_hash_set: crate::hashing::proven_link_hash_set(file),
-            ..file.clone()
-        };
+        let file = file
+            .clone()
+            .with_part_hash_set(crate::hashing::proven_link_hash_set(file));
         Self {
             file_hash: file.file_hash,
             file_size: metadata.size,
-            canonical_link: Ed2kLink::File(file.clone()).to_string(),
+            link: StoredLink(file.clone()),
             source_hint: source_hint.cloned(),
-            final_path: paths.final_path().to_string_lossy().into_owned(),
-            part_path: PartPathSlot::held(paths.part_path()),
+            final_path: HomePath::new(paths.final_path(), home),
+            part_path: PartPathSlot::held(paths.part_path(), home),
             lifecycle: DownloadLifecycle::Queued,
             verification_authority: file
                 .part_hash_set
@@ -159,11 +193,27 @@ impl DownloadRow {
             file_name: metadata.name,
             metadata_origin: metadata.origin,
             failure: None,
+            name: paths.name().to_owned(),
+            kad_aich_root: kad_aich_root.map(KadAichRoot::Trusted),
         }
     }
 
+    /// Fail the row for `reason`.
+    pub(super) fn fail(&mut self, reason: DownloadFailure) {
+        self.lifecycle = DownloadLifecycle::Failed;
+        self.failure = Some(reason);
+    }
+
+    /// Move the row to `state`, with no reason: one belongs to the failure
+    /// it explains.
+    pub(super) fn enter(&mut self, state: DownloadLifecycle) {
+        self.lifecycle = state;
+        self.failure = None;
+    }
+
     /// Whether a second row for this file's identity would race this one.
-    /// Terminal rows (completed, cancelled) do not.
+    /// Terminal rows (completed, cancelled) do not; a completing one still
+    /// writes its part file and its destination (ADR-0115).
     pub(super) const fn is_live(&self) -> bool {
         matches!(
             self.lifecycle,
@@ -171,6 +221,7 @@ impl DownloadRow {
                 | DownloadLifecycle::Active
                 | DownloadLifecycle::Paused
                 | DownloadLifecycle::Failed
+                | DownloadLifecycle::Completing
         )
     }
 
@@ -181,7 +232,8 @@ impl DownloadRow {
     }
 
     /// Whether a caller could still resume this row — the live set minus
-    /// `Active`, which belongs to a run that is already on the wire.
+    /// `Active` and `Completing`, which belong to a run that is already on
+    /// the wire or that attach starts again.
     pub(super) const fn is_resumable(&self) -> bool {
         matches!(
             self.lifecycle,
@@ -189,16 +241,20 @@ impl DownloadRow {
         )
     }
 
-    /// Where this download's bytes live: the two paths it was created with.
-    pub(super) fn paths(&self) -> DownloadPaths {
-        DownloadPaths::from_persisted_paths(
-            self.final_path.clone().into(),
-            self.part_path.index_text().into(),
-        )
+    /// Where this download's bytes live: the two paths it was created with,
+    /// the final one a completion move's destination once it has one, and
+    /// its Download Name. `home` is the Data Directory a relative path is
+    /// read against.
+    pub(super) fn paths(&self, home: Option<&Path>) -> DownloadPaths {
+        let part_path = self
+            .part_path
+            .held_path(home)
+            .unwrap_or_else(|| self.part_path.index_text().into());
+        DownloadPaths::new(self.final_path.path(home), part_path).named(self.name.clone())
     }
 
     /// The domain record this row stands for, under the id it is keyed by.
-    pub(super) fn to_record(&self, id: DownloadId) -> DurableDownloadRecord {
+    pub(super) fn to_record(&self, id: DownloadId, home: Option<&Path>) -> DurableDownloadRecord {
         DurableDownloadRecord::new(DurableDownloadRecordInput {
             id,
             file_hash: self.file_hash,
@@ -207,12 +263,13 @@ impl DownloadRow {
                 size: self.file_size,
                 origin: self.metadata_origin,
             },
-            canonical_link: self.canonical_link.clone(),
+            link: self.link.0.clone(),
             source_hint: self.source_hint.clone(),
-            paths: self.paths(),
+            paths: self.paths(home),
             lifecycle: self.lifecycle,
             verification_authority: self.verification_authority,
             failure: self.failure.clone(),
+            kad_aich_root: self.kad_aich_root,
         })
     }
 }

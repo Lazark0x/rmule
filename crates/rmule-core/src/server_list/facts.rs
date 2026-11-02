@@ -77,14 +77,14 @@ pub(crate) struct ServerFacts {
     /// the event channel open forever — [`Core::shutdown`](crate::Core::shutdown)
     /// drains until the last sender is gone. Once the actor is down there is
     /// nobody left to hear an edge, so failing to upgrade is exactly right.
-    events: Option<tokio::sync::mpsc::WeakSender<CoreEvent>>,
+    events: Option<crate::service::WeakOutbox>,
 }
 
 impl ServerFacts {
     pub(crate) fn new(
         store: SharedServerListStore,
         diagnostics: DiagnosticsState,
-        events: Option<tokio::sync::mpsc::WeakSender<CoreEvent>>,
+        events: Option<crate::service::WeakOutbox>,
     ) -> Self {
         Self {
             store: Some(store),
@@ -95,7 +95,7 @@ impl ServerFacts {
 
     /// A seam with no list behind it that reports its events to `events`.
     #[cfg(test)]
-    pub(crate) fn reporting_to(events: &tokio::sync::mpsc::Sender<CoreEvent>) -> Self {
+    pub(crate) fn reporting_to(events: &crate::service::Outbox) -> Self {
         Self {
             store: None,
             diagnostics: DiagnosticsState::new(),
@@ -130,6 +130,19 @@ impl ServerFacts {
     /// counts at the verdict, so a network outage moves no tally.
     pub(crate) async fn silent(&self, endpoint: &ServerEndpoint) -> Result<(), CoreError> {
         self.count_a_failure(endpoint).await
+    }
+
+    /// The Status Ping Sweep sent `row` a probe (ADR-0080, "The Ping
+    /// State"): a run-time fact on the level, never stored.
+    pub(crate) fn probe_sent(&self, row: &ServerEndpoint) {
+        self.diagnostics.record_probe_sent(row);
+    }
+
+    /// A plain probe to `row` that left at `sent_at` was judged silent, or
+    /// its name gave no address: the ping went unanswered, whatever the
+    /// offline guard makes of the tally.
+    pub(crate) fn probe_silent(&self, row: &ServerEndpoint, sent_at: std::time::Instant) {
+        self.diagnostics.record_probe_silent(row, sent_at);
     }
 
     /// `row`'s host name answered `address` (ADR-0052's amendment): a
@@ -226,6 +239,20 @@ impl ServerFacts {
         self.diagnostics.set_share_announcement(endpoint, shares);
     }
 
+    /// What the list knows of `endpoint`'s file limits, from `server.met` and
+    /// its status answers (ADR-0099).
+    pub(crate) fn file_limits(&self, endpoint: &ServerEndpoint) -> rmule_ed2k::ServerFileLimits {
+        let figures = self
+            .listed()
+            .ok()
+            .and_then(|rows| rows.into_iter().find(|row| row.endpoint == *endpoint))
+            .and_then(|row| row.figures);
+        figures.map_or_else(Default::default, |figures| rmule_ed2k::ServerFileLimits {
+            soft: figures.soft_files.filter(|limit| *limit > 0),
+            hard: figures.hard_files.filter(|limit| *limit > 0),
+        })
+    }
+
     /// The policy servers are judged under now (ADR-0052).
     pub(crate) fn policy(&self) -> super::ServerPolicy {
         self.diagnostics.server_policy()
@@ -275,9 +302,11 @@ impl ServerFacts {
         let crypt = super::ServerUdpCrypt::from_status(status, key_ip);
         self.write(|store| store.set_server_udp_crypt(endpoint, crypt))?;
         let now = super::unix_seconds(std::time::SystemTime::now());
+        self.diagnostics.record_probe_answered(endpoint);
         self.edit_figures(endpoint, |figures| {
             let figures = figures.get_or_insert_with(|| ServerFigures::answered(now));
-            figures.answered_at = now;
+            figures.answered_at = Some(now);
+            figures.counted_at = Some(now);
             figures.ping = Some(ping);
             figures.users = Some(status.users());
             figures.files = Some(status.files());
@@ -291,15 +320,18 @@ impl ServerFacts {
     }
 
     /// The connected server reported its own load in the login welcome burst
-    /// (`OP_SERVERSTATUS`). Counts only — a TCP session measures no UDP ping,
-    /// and reaching a server over TCP says nothing about the UDP port the
-    /// failure tally is about, so neither the ping nor the tally moves. Nor
-    /// does the time of the last answer, as in aMule, whose `ST_LASTPING` is
-    /// the status ping's: figures that had none are dated now.
+    /// (`OP_SERVERSTATUS`). Counts only, dated as counts — a TCP session
+    /// measures no UDP ping, and reaching a server over TCP says nothing about
+    /// the UDP port the failure tally is about, so neither the ping nor the
+    /// tally moves. Nor does the status-answer date, as in aMule, whose
+    /// `ST_LASTPING` is the status ping's and which this packet never moves
+    /// (`ServerSocket.cpp:465-479`): figures that had none get no status
+    /// answer, so the next start's sweep still makes a first contact.
     pub(crate) fn reported(&self, endpoint: &ServerEndpoint, users: u32, files: u32) {
         let now = super::unix_seconds(std::time::SystemTime::now());
         let written = self.edit_figures(endpoint, |figures| {
-            let figures = figures.get_or_insert_with(|| ServerFigures::answered(now));
+            let figures = figures.get_or_insert_with(|| ServerFigures::reported(now));
+            figures.counted_at = Some(now);
             figures.users = Some(users);
             figures.files = Some(files);
         });
@@ -460,8 +492,8 @@ impl ServerFacts {
         self.granted(endpoint, client_id, tcp_flags, assigned);
     }
 
-    /// `endpoint`'s `OP_IDCHANGE` named what it grants (ADR-0080, "What a
-    /// server grants is durable"): the row keeps the word, dated now. A reply
+    /// `endpoint`'s `OP_IDCHANGE` named what it grants (ADR-0080): the row keeps the word, dated
+    /// now. A reply
     /// that carried no flags word grants nothing, and is kept as that.
     ///
     /// The answer's obfuscation TCP port is kept with it when it names one:
@@ -537,11 +569,11 @@ impl ServerFacts {
         let Some(events) = self
             .events
             .as_ref()
-            .and_then(tokio::sync::mpsc::WeakSender::upgrade)
+            .and_then(crate::service::WeakOutbox::upgrade)
         else {
             return;
         };
-        let _ = events.send(event).await;
+        events.send(event);
     }
 }
 
@@ -617,7 +649,11 @@ mod tests {
         let servers = diagnostics.snapshot().servers;
         assert_eq!(servers.len(), 1, "no phantom row appeared");
         assert_eq!(servers[0].server.endpoint, endpoint("1.2.3.4", 4661));
-        assert_eq!(servers[0].ping, None, "the stranger's ping is not ours");
+        assert_eq!(
+            servers[0].ping,
+            crate::diagnostics::PingState::NotAskedYet,
+            "the stranger's ping is not ours"
+        );
     }
 
     /// An answer is kept on the durable row, dated, so the snapshot
@@ -641,7 +677,7 @@ mod tests {
         assert_eq!(
             (row.ping, row.users, row.files),
             (
-                Some(std::time::Duration::from_millis(42)),
+                crate::diagnostics::PingState::Measured(std::time::Duration::from_millis(42)),
                 Some(10),
                 Some(20)
             )

@@ -67,6 +67,7 @@ fn result_row(id: u8, name: &str, size: u32) -> KeywordResultRow {
                 TagValue::U32(0x0100_0000),
             ),
         ],
+        aich_roots: Vec::new(),
     }
 }
 
@@ -203,7 +204,7 @@ fn storer_serves_a_keyword_search_from_the_index() {
 
     let rows = keyword_rows_answered_to(&datagrams, searcher());
     assert_eq!(rows.len(), 1);
-    let projected = rows[0].project();
+    let projected = rows[0].project(KadNode::KAD_VERSION);
     assert_eq!(projected.file_id, file_id(0xC1));
     assert_eq!(projected.filename.as_deref(), Some("keyword song.mp3"));
     assert_eq!(projected.size, Some(4_096));

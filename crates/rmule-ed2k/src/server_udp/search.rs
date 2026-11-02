@@ -5,6 +5,7 @@
 
 use rmule_primitives::{Packet, PacketProtocol, SearchResult, Tag, TagName, TagValue};
 
+use super::datagram_body;
 use crate::search_request::SearchRequest;
 use crate::search_result::{SearchResultSkipReason, decode_row_prefix};
 use crate::{Ed2kError, Opcode, Result};
@@ -123,25 +124,7 @@ impl GlobSearchRes {
     /// first row; a failure after the first row returns what was walked.
     pub fn decode_udp(bytes: &[u8]) -> Result<Self> {
         let opcode = Opcode::GlobSearchRes.as_u8();
-        let [protocol, op, body @ ..] = bytes else {
-            return Err(Ed2kError::InvalidPayload {
-                opcode,
-                reason: "OP_GLOBSEARCHRES datagram missing header",
-            });
-        };
-        let mut remaining = body;
-        if *protocol != PacketProtocol::Edonkey.as_byte() {
-            return Err(Ed2kError::InvalidPayload {
-                opcode,
-                reason: "unsupported packet protocol",
-            });
-        }
-        if *op != opcode {
-            return Err(Ed2kError::InvalidPayload {
-                opcode,
-                reason: "wrong opcode for OP_GLOBSEARCHRES",
-            });
-        }
+        let mut remaining = datagram_body(bytes, opcode)?;
         let mut results = Vec::new();
         let mut first_skip = None;
         loop {

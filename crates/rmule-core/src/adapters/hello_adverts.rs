@@ -58,7 +58,7 @@ pub struct HelloAdverts {
     /// Our Secure User Identification keypair (ADR-0041): the `MiscOptions1`
     /// SUI nibble, and the key the `OP_SECIDENTSTATE` exchange signs with
     /// The Core's, loaded once by `Core::builder` from the store
-    /// it is given and never replaced (ADR-0048 "Identity ownership")
+    /// it is given and never replaced (ADR-0048 "One identity per node, owned by the core")
     /// — aMule's `CClientCreditsList::InitalizeCrypting` shape. `None`
     /// only when that load failed, or on an adapter-level test build.
     ///
@@ -96,6 +96,16 @@ impl HelloAdverts {
         firewalled.then(|| self.buddy.snapshot().serving).flatten()
     }
 
+    /// The options of a link a peer's own record is dialed on
+    /// ([`connect_options`](Self::connect_options)): it waits for the peer's
+    /// hello as long as aMule's socket does (ADR-0107 invariant 7).
+    pub(crate) fn dial_options(&self, peer_crypt: PeerCrypt) -> ConnectOptions {
+        ConnectOptions {
+            hello_timeout: rmule_net::peer::PEER_SOCKET_TIMEOUT,
+            ..self.connect_options(peer_crypt)
+        }
+    }
+
     /// The options one connection starts from: every advert read now, and our
     /// crypt policy met with `peer_crypt` — the peer's own stance and key, as
     /// far as the road knows them (ADR-0049's outbound rule; the accept side,
@@ -111,6 +121,8 @@ impl HelloAdverts {
             // hello built from a cached one would name an address we no longer
             // hold (ADR-0087).
             ipv6: self.ipv6.get(),
+            // And a move after the hello reaches the peer as `0xAC`.
+            ipv6_follow: Some(self.ipv6.follow()),
             // The buddy link is held and lost on the firewalled front's task,
             // and the tag must not outlive it.
             serving_buddy: self.serving_buddy(),

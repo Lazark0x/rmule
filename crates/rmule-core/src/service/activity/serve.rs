@@ -8,7 +8,7 @@ use std::net::SocketAddrV4;
 use tokio::sync::{mpsc, watch};
 use tokio::task::{JoinError, JoinHandle};
 
-use crate::adapters::ServeConnection;
+use crate::adapters::LinkServeHalf;
 use crate::mailbox::Lease;
 use crate::serve::ServeOutcome;
 
@@ -43,7 +43,7 @@ pub(in crate::service) struct ServeActivity<L> {
     /// This start's claim on the dialed-serve sink: dropped when the activity
     /// ends, after the task is joined, so dialed connections stop being handed
     /// to a serve task that no longer exists.
-    _dialed_sink: Lease<ServeConnection>,
+    _dialed_sink: Lease<LinkServeHalf>,
 }
 
 impl<L> ServeActivity<L> {
@@ -57,7 +57,7 @@ impl<L> ServeActivity<L> {
         share_changed_tx: mpsc::Sender<()>,
         handle: JoinHandle<ServeOutcome<L>>,
         bound: SocketAddrV4,
-        dialed_sink: Lease<ServeConnection>,
+        dialed_sink: Lease<LinkServeHalf>,
     ) -> Self {
         Self {
             generation,

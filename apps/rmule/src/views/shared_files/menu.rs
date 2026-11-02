@@ -4,38 +4,41 @@
 //! asks first; the items the current selection cannot use stay visible and
 //! greyed rather than disappearing.
 
+use std::cell::Cell;
+
 use ratatui::Frame;
-use ratatui::crossterm::event::{KeyCode, KeyEvent};
+use ratatui::crossterm::event::KeyEvent;
 use ratatui::layout::Rect;
-use ratatui::style::{Modifier, Style};
-use ratatui::text::{Line, Span};
 
 use rmule_core::{CoreCommand, ServeCommand};
 use rmule_primitives::FileHash;
 
 use super::ViewOutcome;
-use super::{GUTTER_W, Pane, SharedView};
+use super::{Pane, SharedView};
 use crate::action::Action;
-use crate::row_selection::MARKER;
+use crate::row_selection::viewport::Viewport;
 use crate::state::UiState;
+use crate::table_sort::RowMove;
 use crate::theme::Theme;
-use crate::views::modal::Modal;
-use crate::words::units::short_hash;
-use crate::wrap::{clamp_u16, labeled_lines, wrapped_lines};
+use crate::views::menu::{self, Asked, Item, Place};
+use crate::views::modal::{Question, confirm_key, draw_question, scroll_key};
+use crate::words::{labels, rows};
 
-/// The files-table row menu: one real action (Unshare) plus two greyed
-/// placeholders that name their reason instead of vanishing (
-/// visible deferral, never silent absence).
+/// The files-table row menu.
 pub(super) struct FileMenu {
     /// The file the menu was opened on, resolved to a hash at open time so it
     /// survives later selection drift.
     file_hash: FileHash,
     selected: usize,
+    /// Where it is, and what part of it is on screen.
+    place: Place,
 }
 
 /// The unshare confirmation (names the object and the consequence).
 pub(super) struct Confirm {
-    file_hash: FileHash,
+    targets: Vec<FileHash>,
+    /// What part of the question is on screen, in a frame too short for it.
+    viewport: Cell<Viewport>,
 }
 
 #[derive(Clone, Copy)]
@@ -43,188 +46,143 @@ pub(super) enum MenuAction {
     CopyLink,
     SearchRelated,
     Unshare,
-    Comments,
 }
 
-pub(super) struct MenuItem {
-    label: &'static str,
-    /// `Some(reason)` renders the item greyed and makes it unselectable.
-    greyed: Option<&'static str>,
-    action: MenuAction,
+/// The eD2k link of a shared file, once its name and size are known.
+fn shared_link(state: &UiState, file_hash: FileHash) -> Option<String> {
+    let row = state.shared.get(&file_hash)?;
+    let name = rmule_primitives::Ed2kText::from_utf8(row.name()?);
+    crate::views::ed2k_file_link(&name, row.file_size?, file_hash)
 }
 
-/// The files-table menu (spec §3.5). Copy is greyed because an eD2k link needs
-/// the name+size the UI does not have; *Search related* sits directly under
+/// The files-table menu (spec §3.5). Copy is greyed until the file's name and
+/// size are read; *Search related* sits directly under
 /// it, as in every row menu, dimmed while the connected server cannot answer
-/// it (read from `state` on every call, so a server switch shows at once);
-/// Comments is a standing non-goal.
-fn file_menu(state: &UiState) -> [MenuItem; 4] {
-    [
-        MenuItem {
-            label: "Copy eD2k link",
-            greyed: Some("core exposes no name/size yet"),
-            action: MenuAction::CopyLink,
-        },
-        MenuItem {
-            label: crate::views::related::LABEL,
-            greyed: crate::views::related::unavailable(state),
-            action: MenuAction::SearchRelated,
-        },
-        MenuItem {
-            label: "Unshare…",
-            greyed: None,
-            action: MenuAction::Unshare,
-        },
-        MenuItem {
-            label: "Comments",
-            greyed: Some("non-goal, ADR-0068"),
-            action: MenuAction::Comments,
-        },
-    ]
-}
-
-pub(super) fn draw_confirm(frame: &mut Frame, area: Rect, confirm: &Confirm, theme: &Theme) {
-    let short = short_hash(confirm.file_hash);
-    let question = format!("Unshare {short}?");
-    let consequence = "Stops serving it; peers lose the source.";
-    let title = " Unshare? ";
-    // Greedy width, wrapped prose.
-    let natural = [
-        question.chars().count(),
-        consequence.chars().count(),
-        title.chars().count(),
-    ]
-    .into_iter()
-    .max()
-    .unwrap_or(0)
-        + 4;
-    let width = clamp_u16(natural).min(area.width);
-    let text_w = usize::from(width).saturating_sub(4).max(1);
-
-    let mut lines = wrapped_lines(&question, text_w, Style::new().fg(theme.fg));
-    lines.push(Line::from(""));
-    lines.extend(wrapped_lines(consequence, text_w, theme.dim_text()));
-    lines.push(Line::from(""));
-    lines.push(Line::from(vec![
-        Span::styled("y", Style::new().fg(theme.bad).add_modifier(Modifier::BOLD)),
-        Span::styled(" confirm    ", Style::new().fg(theme.fg)),
-        Span::styled("Esc", Style::new().fg(theme.accent)),
-        Span::styled(" cancel", Style::new().fg(theme.fg)),
-    ]));
-    Modal::new(title, theme)
-        .padded()
-        .draw(frame, area, width, theme, lines);
-}
-
-/// Natural (unwrapped) width of a menu item, gutter included.
-fn menu_item_width(item: &MenuItem) -> usize {
-    GUTTER_W
-        + item.label.chars().count()
-        + item.greyed.map_or(0, |reason| reason.chars().count() + 4)
-}
-
-/// The menu cursor's gutter: an accent marker on the item the menu is on.
-fn menu_gutter(selected: bool, theme: &Theme) -> Span<'static> {
-    if selected {
-        Span::styled(MARKER, Style::new().fg(theme.accent))
-    } else {
-        Span::raw("  ")
-    }
-}
-
-/// One menu item, wrapping under its gutter rather than clipping.
-fn menu_item_lines(
-    item: &MenuItem,
-    selected: bool,
-    width: usize,
-    theme: &Theme,
-) -> Vec<Line<'static>> {
-    let (text, style) = match item.greyed {
-        Some(reason) => (format!("{}  ({reason})", item.label), theme.dim_text()),
-        None => (item.label.to_string(), Style::new().fg(theme.fg)),
+/// it (read from `state` on every call, so a server switch shows at once).
+fn file_menu(state: &UiState, file_hash: FileHash, tagged: bool) -> [Item<MenuAction>; 3] {
+    let one = |reason: Option<&'static str>| {
+        if tagged {
+            Some(rows::ONE_ROW_ONLY)
+        } else {
+            reason
+        }
     };
-    labeled_lines(menu_gutter(selected, theme), &text, style, width)
+    [
+        Item::new(labels::COPY_LINK, MenuAction::CopyLink).greyed(one(shared_link(
+            state, file_hash,
+        )
+        .is_none()
+        .then_some(crate::words::shared::NOT_READ_YET))),
+        Item::new(labels::SEARCH_RELATED, MenuAction::SearchRelated)
+            .greyed(one(crate::views::related::unavailable(state))),
+        Item::new(labels::UNSHARE, MenuAction::Unshare).keyed('x'),
+    ]
 }
 
-/// First selectable (non-greyed) menu index — where a fresh menu lands.
-fn first_enabled_menu_index(state: &UiState) -> usize {
-    file_menu(state)
-        .iter()
-        .position(|item| item.greyed.is_none())
-        .unwrap_or(0)
+/// A shared file as a sentence names it, never by its hash.
+fn file_name(state: &UiState, file_hash: FileHash) -> String {
+    state
+        .shared
+        .get(&file_hash)
+        .and_then(crate::state::SharedRow::name)
+        .unwrap_or_else(|| rows::UNNAMED_FILE.to_string())
 }
 
-/// Step menu selection to the nearest selectable item in `delta`'s direction,
-/// skipping greyed items and staying put when there is none that way.
-fn step_menu(current: usize, delta: isize, state: &UiState) -> usize {
-    let items = file_menu(state);
-    let len = items.len() as isize;
-    let mut cursor = current as isize;
-    loop {
-        let next = cursor + delta;
-        if next < 0 || next >= len {
-            return current;
-        }
-        cursor = next;
-        if items[cursor as usize].greyed.is_none() {
-            return cursor as usize;
-        }
-    }
+pub(super) fn draw_confirm(
+    frame: &mut Frame,
+    area: Rect,
+    confirm: &Confirm,
+    state: &UiState,
+    theme: &Theme,
+) {
+    let asks = match confirm.targets.as_slice() {
+        [file_hash] => rows::unshare_one(&file_name(state, *file_hash)),
+        many => rows::unshare_many(many.len()),
+    };
+    let question = Question {
+        title: labels::UNSHARE_TITLE,
+        asks: &asks,
+        does: rows::UNSHARE_DOES,
+    };
+    draw_question(frame, area, &question, theme, &confirm.viewport);
 }
 
 impl SharedView {
     pub(super) fn handle_confirm_key(&mut self, key: KeyEvent) -> ViewOutcome {
-        match key.code {
-            // Confirm: emit the real unshare command for the named file.
-            KeyCode::Char('y') => match self.confirm.take() {
-                Some(confirm) => ViewOutcome::Emit(Action::Command(CoreCommand::Serve(
-                    ServeCommand::UnshareFile {
-                        file_hash: confirm.file_hash,
-                    },
-                ))),
-                None => ViewOutcome::Redraw,
-            },
-            // Abort back to the table. `q` dismisses a modal too,
-            // so it never falls through to the global quit mid-confirm.
-            KeyCode::Esc | KeyCode::Char('q') => {
+        match (confirm_key(key.code), key.code) {
+            (Some(true), _) => {
+                let Some(confirm) = self.confirm.take() else {
+                    return ViewOutcome::Redraw;
+                };
+                self.tags.clear();
+                ViewOutcome::Emit(Action::Commands(
+                    confirm
+                        .targets
+                        .into_iter()
+                        .map(|file_hash| {
+                            CoreCommand::Serve(ServeCommand::UnshareFile { file_hash })
+                        })
+                        .collect(),
+                ))
+            }
+            (Some(false), _) => {
                 self.confirm = None;
                 ViewOutcome::Redraw
             }
-            _ => ViewOutcome::Ignored,
+            (None, code) => match self.confirm.as_mut() {
+                Some(confirm) if RowMove::of(code).is_some() => {
+                    scroll_key(&mut confirm.viewport, code);
+                    ViewOutcome::Redraw
+                }
+                _ => ViewOutcome::Ignored,
+            },
         }
     }
 
     pub(super) fn handle_menu_key(&mut self, key: KeyEvent, state: &UiState) -> ViewOutcome {
-        match key.code {
-            KeyCode::Char('j') | KeyCode::Down => {
-                if let Some(menu) = self.menu.as_mut() {
-                    menu.selected = step_menu(menu.selected, 1, state);
+        let Some(open) = self.menu.as_ref() else {
+            return ViewOutcome::Ignored;
+        };
+        let items = file_menu(state, open.file_hash, !self.tags.is_empty());
+        let asked = menu::key(&items, open.selected, key.code);
+        self.answer_menu(asked, state)
+    }
+
+    /// A click on the open menu: an item runs, outside closes.
+    pub(super) fn click_menu(&mut self, column: u16, row: u16, state: &UiState) -> ViewOutcome {
+        let Some(open) = self.menu.as_ref() else {
+            return ViewOutcome::Ignored;
+        };
+        let items = file_menu(state, open.file_hash, !self.tags.is_empty());
+        let asked = open.place.click(&items, column, row);
+        self.answer_menu(asked, state)
+    }
+
+    fn answer_menu(&mut self, asked: Asked, state: &UiState) -> ViewOutcome {
+        match asked {
+            Asked::Close => self.menu = None,
+            Asked::Move(index) => {
+                if let Some(open) = self.menu.as_mut() {
+                    open.selected = index;
                 }
-                ViewOutcome::Redraw
             }
-            KeyCode::Char('k') | KeyCode::Up => {
-                if let Some(menu) = self.menu.as_mut() {
-                    menu.selected = step_menu(menu.selected, -1, state);
+            Asked::Run(index) => {
+                if let Some(open) = self.menu.as_mut() {
+                    open.selected = index;
                 }
-                ViewOutcome::Redraw
+                return self.activate_menu(state);
             }
-            KeyCode::Enter => self.activate_menu(state),
-            // `m` toggles the menu closed; Esc/`q` dismiss it so `q`
-            // never falls through to the global quit with a menu open.
-            KeyCode::Esc | KeyCode::Char('m') | KeyCode::Char('q') => {
-                self.menu = None;
-                ViewOutcome::Redraw
-            }
-            _ => ViewOutcome::Ignored,
+            Asked::Nothing => {}
         }
+        ViewOutcome::Redraw
     }
 
     fn activate_menu(&mut self, state: &UiState) -> ViewOutcome {
-        let Some(menu) = self.menu.as_ref() else {
+        let Some(open) = self.menu.as_ref() else {
             return ViewOutcome::Ignored;
         };
-        let action = file_menu(state)[menu.selected].action;
-        let file_hash = menu.file_hash;
+        let file_hash = open.file_hash;
+        let action = file_menu(state, file_hash, !self.tags.is_empty())[open.selected].action;
         match action {
             // Dimmed since the cursor rested here (a server switch under the
             // open menu): nothing is sent, and the menu stays.
@@ -239,14 +197,31 @@ impl SharedView {
                 }
             }
             MenuAction::Unshare => {
-                self.confirm = Some(Confirm { file_hash });
-                self.menu = None;
+                let targets = self.targets(state);
+                self.ask_unshare(if targets.is_empty() {
+                    vec![file_hash]
+                } else {
+                    targets
+                });
                 ViewOutcome::Redraw
             }
-            // Greyed items are never landable (see `step_menu`), so activation
-            // cannot reach them; handled for match exhaustiveness only.
-            MenuAction::CopyLink | MenuAction::Comments => ViewOutcome::Redraw,
+            MenuAction::CopyLink => match shared_link(state, file_hash) {
+                Some(link) => {
+                    self.menu = None;
+                    ViewOutcome::Emit(Action::CopyLink(link))
+                }
+                None => ViewOutcome::Redraw,
+            },
         }
+    }
+
+    /// Ask before unsharing `targets`.
+    pub(super) fn ask_unshare(&mut self, targets: Vec<FileHash>) {
+        self.menu = None;
+        self.confirm = Some(Confirm {
+            targets,
+            viewport: Cell::default(),
+        });
     }
 
     /// Open the files-table row menu. The menu lives on the FILES table only
@@ -256,46 +231,43 @@ impl SharedView {
             return ViewOutcome::Ignored;
         }
         self.clamp_selection(state);
-        let Some(row) = self.ordered(state).get(self.files_selected).copied() else {
-            return ViewOutcome::Ignored; // nothing shared → no menu
+        // Nothing shared, or a Partial Share: its offer is its download's,
+        // ended only by cancelling it, so it has no menu.
+        let Some(row) = self.selected_row(state) else {
+            return ViewOutcome::Ignored;
         };
         self.menu = Some(FileMenu {
             file_hash: row.file_hash,
-            selected: first_enabled_menu_index(state),
+            selected: menu::first_enabled(&file_menu(state, row.file_hash, !self.tags.is_empty())),
+            place: Place::default(),
         });
         ViewOutcome::Redraw
     }
 
     pub(super) fn draw_menu(&self, frame: &mut Frame, area: Rect, state: &UiState, theme: &Theme) {
-        let Some(menu) = &self.menu else {
+        let Some(open) = &self.menu else {
             return;
         };
-        let title = format!(" File · {} ", short_hash(menu.file_hash));
-        // Greedy modal: as wide as the widest item, clamped to the frame; what
-        // still overflows wraps under the gutter instead of clipping.
-        let items = file_menu(state);
-        let natural = items
-            .iter()
-            .map(menu_item_width)
-            .chain(std::iter::once(title.chars().count()))
-            .max()
-            .unwrap_or(0)
-            + 4; // borders + 1-col pad each side
-        let width = clamp_u16(natural).min(area.width);
-        let text_w = usize::from(width).saturating_sub(6).max(1);
-        let lines: Vec<Line<'static>> = items
-            .iter()
-            .enumerate()
-            .flat_map(|(idx, item)| menu_item_lines(item, idx == menu.selected, text_w, theme))
-            .collect();
-        Modal::new(title, theme)
-            .padded()
-            .draw(frame, area, width, theme, lines);
+        let name = if self.tags.is_empty() {
+            file_name(state, open.file_hash)
+        } else {
+            rows::tagged(self.tags.len())
+        };
+        let items = file_menu(state, open.file_hash, !self.tags.is_empty());
+        menu::draw(
+            frame,
+            area,
+            (&name, &items, open.selected),
+            theme,
+            &open.place,
+        );
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use ratatui::crossterm::event::KeyCode;
+
     use std::time::Instant;
 
     use crate::golden::assert_golden;
@@ -341,11 +313,12 @@ mod tests {
 
         let outcome = view.handle_key(press(KeyCode::Char('y')), &state);
         match outcome {
-            ViewOutcome::Emit(Action::Command(CoreCommand::Serve(ServeCommand::UnshareFile {
-                file_hash,
-            }))) => assert_eq!(
-                file_hash,
-                crate::fixture::file_hash(1),
+            ViewOutcome::Emit(Action::Commands(commands)) => assert!(
+                matches!(
+                    commands.as_slice(),
+                    [CoreCommand::Serve(ServeCommand::UnshareFile { file_hash })]
+                        if *file_hash == crate::fixture::file_hash(1)
+                ),
                 "the first shared file (sorted by hash)"
             ),
             _ => panic!("expected an UnshareFile command"),
@@ -391,10 +364,10 @@ mod tests {
     #[test]
     fn search_related_is_dimmed_with_each_reason_and_sends_nothing() {
         for (state, reason) in [
-            (served_files(), "Search related  (not connected)"),
+            (served_files(), "Search related  not connected"),
             (
                 connected_granting(served_files(), false),
-                "Search related  (server does not offer it)",
+                "Search related  server does not offer it",
             ),
         ] {
             let mut view = SharedView::default();
@@ -416,6 +389,7 @@ mod tests {
         let state = with_history(connected_granting(served_files(), true));
         let mut view = SharedView::default();
         view.handle_key(press(KeyCode::Char('m')), &state);
+        view.handle_key(press(KeyCode::Char('j')), &state);
         assert_eq!(view.menu.as_ref().unwrap().selected, 1);
         match view.handle_key(press(KeyCode::Enter), &state) {
             ViewOutcome::Emit(Action::SearchRelated(query)) => {
@@ -423,6 +397,21 @@ mod tests {
                 assert_eq!(query.file_name().to_display_string(), "debian.iso");
             }
             other => panic!("expected SearchRelated, got {other:?}"),
+        }
+        assert!(view.menu.is_none());
+    }
+
+    /// The name and size were on the row all along: Copy works.
+    #[test]
+    fn a_file_with_a_known_name_copies_its_link() {
+        let state = with_history(served_files());
+        let mut view = SharedView::default();
+        view.handle_key(press(KeyCode::Char('m')), &state);
+        match view.handle_key(press(KeyCode::Enter), &state) {
+            ViewOutcome::Emit(Action::CopyLink(link)) => {
+                assert!(link.starts_with("ed2k://|file|debian.iso|"), "{link}");
+            }
+            other => panic!("expected CopyLink, got {other:?}"),
         }
         assert!(view.menu.is_none());
     }

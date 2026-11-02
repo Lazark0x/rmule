@@ -1,5 +1,6 @@
 //! Serve activity lifecycle + queue policy, driven by a fake serve runtime.
 use crate::fixture::sized_file;
+use parking_lot::Mutex;
 use rmule_core::DurableSharedFileRegistry;
 use rmule_core::{
     Core, CoreCommand, CoreConfig, CoreEvent, DownloadFailure, PeerTransferService, PeerWorker,
@@ -16,7 +17,7 @@ use rmule_primitives::{
 };
 use rmule_testkit::HANG_GUARD;
 use std::net::SocketAddrV4;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio::time::timeout;
 
@@ -64,9 +65,7 @@ impl ServeRuntimeService for FakeServeRuntime {
         _listen_addr: SocketAddrV4,
     ) -> Result<SocketAddrV4, rmule_core::CoreError> {
         if self.start_fails {
-            return Err(rmule_core::CoreError::Repository(
-                "listener bind failed (injected)".into(),
-            ));
+            return Err(rmule_core::GoneService::Serve.into());
         }
         Ok("127.0.0.1:4662".parse().unwrap())
     }
@@ -80,7 +79,7 @@ impl ServeRuntimeService for FakeServeRuntime {
         &mut self,
         files: Vec<OfferedFile>,
     ) -> Result<rmule_core::AnnounceOutcome, rmule_core::CoreError> {
-        *self.announced.lock().unwrap() = files.len();
+        *self.announced.lock() = files.len();
         Ok(rmule_core::AnnounceOutcome::Announced {
             file_count: files.len(),
         })
@@ -228,7 +227,7 @@ async fn serve_grants_within_budget_then_queues_and_promotes_on_disconnect() {
         next_serve_event(&mut core).await,
         ServeEvent::FilesAnnounced { file_count: 1 }
     );
-    assert_eq!(*announced.lock().unwrap(), 1);
+    assert_eq!(*announced.lock(), 1);
 
     // Peer A requests a slot → granted (budget 1).
     evt_a
@@ -245,6 +244,7 @@ async fn serve_grants_within_budget_then_queues_and_promotes_on_disconnect() {
             peer: peer(1),
             file_hash,
             software: None,
+            road: rmule_core::GrantRoad::Linked,
         }
     );
 
@@ -284,6 +284,7 @@ async fn serve_grants_within_budget_then_queues_and_promotes_on_disconnect() {
             peer: peer(2),
             file_hash,
             software: None,
+            road: rmule_core::GrantRoad::Linked,
         }
     );
     assert_eq!(
@@ -353,7 +354,7 @@ async fn serve_transfer_cancel_frees_the_slot_keeps_the_connection_and_promotes_
         next_serve_event(&mut core).await,
         ServeEvent::FilesAnnounced { file_count: 1 }
     );
-    assert_eq!(*announced.lock().unwrap(), 1);
+    assert_eq!(*announced.lock(), 1);
 
     // A granted, B queued.
     evt_a
@@ -370,6 +371,7 @@ async fn serve_transfer_cancel_frees_the_slot_keeps_the_connection_and_promotes_
             peer: peer(31),
             file_hash,
             software: None,
+            road: rmule_core::GrantRoad::Linked,
         }
     );
     evt_b
@@ -408,6 +410,7 @@ async fn serve_transfer_cancel_frees_the_slot_keeps_the_connection_and_promotes_
             peer: peer(32),
             file_hash,
             software: None,
+            road: rmule_core::GrantRoad::Linked,
         }
     );
     assert_eq!(
@@ -548,21 +551,29 @@ async fn serve_skips_ranges_already_sent_on_a_granted_slot() {
             peer: peer(10),
             file_hash,
             software: None,
+            road: rmule_core::GrantRoad::Linked,
         }
     );
 
-    let first = PartRanges::new([(0, 100), (100, 200), (200, 300)]).unwrap();
+    let first = PartRanges::new([(0, 100), (100, 200), (200, 300)]);
     evt.send(ServeInput::Server(ServerEvent::PartsRequested {
         file_hash,
         ranges: first,
     }))
     .await
     .unwrap();
-    assert_send_block(&mut cmd, file_hash, 0, 100, &bytes).await;
-    assert_send_block(&mut cmd, file_hash, 100, 200, &bytes).await;
-    assert_send_block(&mut cmd, file_hash, 200, 300, &bytes).await;
+    for start in [0, 100, 200] {
+        assert_send_block(&mut cmd, file_hash, start, start + 100, &bytes).await;
+        evt.send(ServeInput::Server(ServerEvent::BlockLeft {
+            file_hash,
+            start,
+            end: start + 100,
+        }))
+        .await
+        .unwrap();
+    }
 
-    let overlapping = PartRanges::new([(100, 200), (200, 300), (300, 400)]).unwrap();
+    let overlapping = PartRanges::new([(100, 200), (200, 300), (300, 400)]);
     evt.send(ServeInput::Server(ServerEvent::PartsRequested {
         file_hash,
         ranges: overlapping,
@@ -588,6 +599,7 @@ async fn assert_send_block(
         start: actual_start,
         end: actual_end,
         bytes,
+        ..
     }) = command
     else {
         panic!("expected SendBlock, got {command:?}");
@@ -657,6 +669,7 @@ async fn builder_mixed_override_over_default_registry_and_credit_serves() {
             peer: peer(7),
             file_hash,
             software: None,
+            road: rmule_core::GrantRoad::Linked,
         }
     );
 }

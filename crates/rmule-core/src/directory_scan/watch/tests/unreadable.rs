@@ -106,3 +106,29 @@ fn a_file_told_unreadable_is_told_again_when_it_is_deleted_recreated_and_fails_a
     let told = not_hashed(&harness);
     assert_eq!(told.len(), 2, "told for each file that failed: {told:?}");
 }
+
+#[test]
+fn a_file_that_grows_past_the_size_limit_is_told_once_and_never_read() {
+    let size = rmule_primitives::MAX_ED2K_FILE_SIZE + 1;
+    let world = World::new();
+    let harness = Harness::new(world.clone(), Vec::new());
+    harness.run(
+        vec![
+            step(ms(1_000), move |dir| {
+                dir.sized("/dl/disk.img", size, 1);
+                vec![moved("/dl/disk.img")]
+            }),
+            step(ms(10_000), |_| vec![moved("/dl/disk.img")]),
+        ],
+        ms(20_000),
+    );
+    let told = harness
+        .reports
+        .borrow()
+        .iter()
+        .filter(|(_, report)| matches!(report, ScanReport::Refused { .. }))
+        .count();
+    assert_eq!(told, 1, "told once, not at every notice");
+    assert_eq!(world.opens(), 0);
+    assert!(harness.shares().is_empty());
+}

@@ -150,8 +150,8 @@ async fn a_search_asks_for_at_most_five_more_pages() {
     );
 }
 
-/// A request the server drops leaves an answer owed that never comes (ADR-0034,
-/// "Owed answers lapse"): until it lapses no answer names a pager, and once it
+/// A request the server drops leaves an answer owed that never comes (ADR-0034): until it lapses
+/// no answer names a pager, and once it
 /// has, places are trusted again.
 #[tokio::test(start_paused = true)]
 async fn an_owed_answer_lapses_and_an_answer_names_its_pager_again() {

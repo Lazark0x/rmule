@@ -11,13 +11,14 @@ use std::sync::Arc;
 
 use crate::fixture::{CT_EMULE_MISCOPTIONS1, hello_body};
 use rmule_peer::{
-    ConnectionEvent, Hello, HelloAnswer, PeerEvent, PeerHandshakeContext, PeerHelloBody,
-    PeerOutput, PeerSession, PublicKeyPacket, SecIdentState, SecIdentStatePacket,
-    SecureIdentConfig, SecureIdentFailure, SignaturePacket,
+    ConnectionCommand, ConnectionEvent, Hello, HelloAnswer, HelloGate, PeerCommand, PeerEvent,
+    PeerHandshakeContext, PeerHelloBody, PeerIdentity, PeerOutput, PeerPacket, PeerSession,
+    PublicKeyPacket, SecIdentState, SecIdentStatePacket, SecureIdentConfig, SecureIdentFailure,
+    SignaturePacket,
 };
 use rmule_primitives::{
-    ClientId, ClientIdentity, Ed2kText, Packet, SecureIdentKey, SecureIdentPublicKey, Tag, TagName,
-    TagValue, UserHash,
+    ClientId, ClientIdentity, Ed2kText, Packet, PeerEndpoint, SecureIdentKey, SecureIdentPublicKey,
+    Tag, TagName, TagValue, UserHash,
 };
 use rmule_testkit::peer_session::peer;
 
@@ -613,6 +614,117 @@ fn an_unknown_v2_ip_kind_fails_non_terminally() {
 /// still `AwaitingHelloAnswer` when our first packets arrive, and its dispatch
 /// guard drops any SUI packet received before the hello exchange completes — a
 /// state packet queued first therefore deadlocks the whole exchange.
+/// A gate that holds every hello.
+#[derive(Debug)]
+struct HoldEvery;
+
+impl HelloGate for HoldEvery {
+    fn may_answer(&self, _peer: PeerEndpoint, _identity: &PeerIdentity) -> bool {
+        false
+    }
+}
+
+#[derive(Debug)]
+struct OpensNoDial;
+
+impl HelloGate for OpensNoDial {
+    fn may_answer(&self, _: PeerEndpoint, _: &PeerIdentity) -> bool {
+        true
+    }
+
+    fn may_open_dial(&self) -> bool {
+        false
+    }
+}
+
+#[test]
+fn a_dial_that_owes_an_answer_says_it_before_the_links_first_words() {
+    // The far end took this dial over with the answer to its own hello still
+    // pending, and throws at `OP_SECIDENTSTATE` before it comes
+    // (`ClientTCPSocket.cpp:1298-1302`, ADR-0107 invariant 7).
+    let our_key = Arc::new(SecureIdentKey::generate().expect("a key"));
+    let mut session = PeerSession::new_outbound(peer(), plain_ctx())
+        .with_secure_ident(config(&our_key, OUR_CHALLENGE))
+        .with_hello_gate(Arc::new(OpensNoDial));
+    session.start();
+    drain(&mut session);
+    feed(
+        &mut session,
+        HelloAnswer::new(sui_answer_body(UserHash::from_bytes(
+            [0x55; UserHash::BYTE_LEN],
+        )))
+        .encode_packet(),
+    );
+    let (packets, events) = drain(&mut session);
+    assert!(packets.is_empty(), "nothing is said yet: {packets:?}");
+    assert!(events.iter().any(|event| matches!(
+        event,
+        PeerEvent::Connection(ConnectionEvent::Identified { .. })
+    )));
+
+    session.handle_command(PeerCommand::Connection(
+        ConnectionCommand::AnswerCrossedHello,
+    ));
+    let (packets, _) = drain(&mut session);
+    assert!(
+        matches!(packets[0], PeerPacket::HelloAnswer(_)),
+        "{packets:?}"
+    );
+    assert!(
+        packets
+            .iter()
+            .skip(1)
+            .any(|packet| matches!(packet, PeerPacket::SecIdentState(_))),
+        "the challenge follows the answer: {packets:?}"
+    );
+}
+
+#[test]
+fn a_held_hello_says_nothing_until_it_is_answered_and_then_answers_before_the_challenge() {
+    // A dial of ours crosses this hello (ADR-0107 invariant 7): the far end
+    // must stay in `DS_CONNECTING`, so nothing at all may go out on the link,
+    // and the node must still learn who it is.
+    let our_key = Arc::new(SecureIdentKey::generate().expect("our key"));
+    let mut session = PeerSession::new_inbound(peer(), plain_ctx())
+        .with_secure_ident(config(&our_key, OUR_CHALLENGE))
+        .with_hello_gate(Arc::new(HoldEvery));
+    feed(
+        &mut session,
+        Hello::new(sui_answer_body(UserHash::from_bytes(
+            [0x55; UserHash::BYTE_LEN],
+        )))
+        .encode_packet(),
+    );
+    let (packets, events) = drain(&mut session);
+    assert!(packets.is_empty(), "nothing is said: {packets:?}");
+    assert!(
+        events.iter().any(|event| matches!(
+            event,
+            PeerEvent::Connection(ConnectionEvent::Identified { .. })
+        )),
+        "the node reads who it is all the same"
+    );
+
+    let answer = PeerCommand::Connection(ConnectionCommand::AnswerHello);
+    session.handle_command(answer.clone());
+    let (packets, _) = drain(&mut session);
+    assert!(
+        matches!(packets[0], PeerPacket::HelloAnswer(_)),
+        "{packets:?}"
+    );
+    assert!(
+        packets
+            .iter()
+            .skip(1)
+            .any(|packet| matches!(packet, PeerPacket::SecIdentState(_))),
+        "the challenge follows the answer: {packets:?}"
+    );
+
+    session.handle_command(answer);
+    let (packets, _) = drain(&mut session);
+    assert!(packets.is_empty(), "one hello, one answer: {packets:?}");
+}
+
 #[test]
 fn an_inbound_session_answers_the_hello_before_challenging_sui() {
     let our_key = Arc::new(SecureIdentKey::generate().expect("our key"));
@@ -747,6 +859,46 @@ fn a_forged_peer_signature_fails_non_terminally() {
     );
     // Non-terminal: no Close was drained (drain panics on Close), so the session
     // stayed open — the peer simply keeps unsecured credit.
+}
+
+/// aMule takes one signature per address, a failed one included
+/// (`BaseClient.cpp:2638`, `:2670`), or each packet costs an RSA verify: the
+/// peer's own good signature after a forged one is not read either.
+#[test]
+fn a_failed_signature_spends_the_links_one_verify() {
+    let our_key = Arc::new(SecureIdentKey::generate().expect("our key"));
+    let peer_key = SecureIdentKey::generate().expect("peer key");
+    let peer_user_hash = UserHash::from_bytes([0x57; UserHash::BYTE_LEN]);
+    let (mut session, _sig) = drive_to_our_signature(&our_key, &peer_key, peer_user_hash);
+
+    let mut signed = our_key.public_key_der();
+    signed.extend_from_slice(&OUR_CHALLENGE.to_le_bytes());
+    let forged = SecureIdentKey::generate().expect("impostor").sign(&signed);
+    let good = peer_key.sign(&signed);
+
+    feed(
+        &mut session,
+        SignaturePacket {
+            signature: forged,
+            ip_kind: None,
+        }
+        .encode_packet(),
+    );
+    let _ = drain(&mut session);
+    feed(
+        &mut session,
+        SignaturePacket {
+            signature: good,
+            ip_kind: None,
+        }
+        .encode_packet(),
+    );
+    let (_, events) = drain(&mut session);
+
+    assert!(
+        events.is_empty(),
+        "the second signature is dropped unread: {events:?}"
+    );
 }
 
 /// A native-IPv6 session signs **V1** even against a V2-only peer (ADR-0087).

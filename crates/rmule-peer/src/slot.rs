@@ -6,23 +6,28 @@
 //!   OP_ACCEPTUPLOADREQ = 0x55 (OP_EDONKEYPROT) empty
 //!   OP_CANCELTRANSFER  = 0x56 (OP_EDONKEYPROT) empty — "stop sending, I no
 //!                        longer want this transfer" (ADR-0056)
-//!   OP_OUTOFPARTREQS   = 0x57 (OP_EDONKEYPROT) empty — TCP "no slot now"
+//!   OP_OUTOFPARTREQS   = 0x57 (OP_EDONKEYPROT) empty — TCP "back to queue"
 //!   OP_QUEUERANKING    = 0x60 (OP_EMULEPROT)   12 bytes: u16 rank + 10 zero pad
 //!
-//! `OP_OUTOFPARTREQS`, not `OP_QUEUEFULL`, is the TCP "no slot" answer:
+//! `OP_OUTOFPARTREQS` is the uploader ending a granted transfer and queueing
+//! the downloader again: aMule sends it when the session's time or bytes are
+//! up while someone waits, then ranks the downloader on the same socket
+//! (`UploadClient.cpp:643-660`). Its receiver goes back to queued
+//! (`ClientTCPSocket.cpp:755-762`), and the session does the same (ADR-0025).
 //! `OP_QUEUEFULL = 0x93` is a UDP-only opcode and this session has no UDP
-//! surface. eMule spec §6.4.13 notes that the receiver of
-//! `OP_OUTOFPARTREQS` takes no action — the session stays queued.
+//! surface.
 //!
 //! `OP_QUEUERANKING`'s 10-byte trailing pad is "purpose unknown" per
 //! eMule spec §6.5.4; aMule sender writes zeros (`UploadClient.cpp:585-589`)
 //! and receiver requires exactly 12 bytes via `PeekUInt16` on the head
 //! (`ClientTCPSocket.cpp:1331-1349`). Legacy `OP_QUEUERANK = 0x5C` (u32,
 //! standard protocol) has never been sent by any aMule version (git
-//! search returns zero hits) and falls through to `PeerPacket::Unknown`.
+//! search returns zero hits), yet aMule still reads it and throws on a short
+//! one (`ClientTCPSocket.cpp:649-652`), so it decodes all the same.
 
 use rmule_primitives::{FileHash, Packet, WireReader, empty_body_codec};
-use thiserror::Error;
+
+use crate::error::WireFault;
 
 use crate::opcode::PeerOpcode;
 
@@ -44,12 +49,38 @@ pub struct QueueRanking {
     pub rank: u16,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// `OP_QUEUERANK` (`0x5C`) — the rank as an older client states it.
+pub struct QueueRank {
+    /// Places ahead of the peer, as much of the four wire bytes as aMule's
+    /// sixteen-bit rank keeps.
+    pub rank: u16,
+}
+
+impl QueueRank {
+    /// Read the rank's four bytes; anything after them is unread.
+    pub fn decode_packet(packet: &Packet) -> Result<Self, WireFault> {
+        let rank = WireReader::new(packet.payload()).read_u32_le("queue rank")?;
+        Ok(Self { rank: rank as u16 })
+    }
+
+    #[must_use]
+    /// Frame the rank.
+    pub fn encode_packet(&self) -> Packet {
+        Packet::new(
+            PeerOpcode::QueueRank.protocol(),
+            PeerOpcode::QueueRank.as_u8(),
+            u32::from(self.rank).to_le_bytes().to_vec(),
+        )
+    }
+}
+
 impl StartUploadReq {
     /// Read the request.
-    pub fn decode_packet(packet: &Packet) -> Result<Self, SlotDecodeError> {
+    pub fn decode_packet(packet: &Packet) -> Result<Self, WireFault> {
         let payload = packet.payload();
         if payload.len() != FileHash::BYTE_LEN {
-            return Err(SlotDecodeError::WrongPayloadLen {
+            return Err(WireFault::WrongSize {
                 expected: FileHash::BYTE_LEN,
                 actual: payload.len(),
             });
@@ -76,15 +107,16 @@ empty_body_codec! {
     /// `OP_ACCEPTUPLOADREQ` (`0x55`) — the slot is granted; part requests
     /// may start.
     #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-    AcceptUploadReq, SlotDecodeError,
+    AcceptUploadReq, WireFault,
     protocol: PeerOpcode::AcceptUploadReq.protocol(),
     opcode: PeerOpcode::AcceptUploadReq.as_u8()
 }
 
 empty_body_codec! {
-    /// `OP_OUTOFPARTREQS` (`0x57`) — no slot, now or any longer.
+    /// `OP_OUTOFPARTREQS` (`0x57`) — the granted transfer is over; back to
+    /// the queue.
     #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-    OutOfPartReqs, SlotDecodeError,
+    OutOfPartReqs, WireFault,
     protocol: PeerOpcode::OutOfPartReqs.protocol(),
     opcode: PeerOpcode::OutOfPartReqs.as_u8()
 }
@@ -94,24 +126,24 @@ empty_body_codec! {
     /// transfer." The downloader emits it; the uploader ends the upload
     /// relationship on receipt but keeps the connection open (no disconnect).
     #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-    CancelTransfer, SlotDecodeError,
+    CancelTransfer, WireFault,
     protocol: PeerOpcode::CancelTransfer.protocol(),
     opcode: PeerOpcode::CancelTransfer.as_u8()
 }
 
 impl QueueRanking {
     /// Read the ranking, which is fixed-size and padded.
-    pub fn decode_packet(packet: &Packet) -> Result<Self, SlotDecodeError> {
+    pub fn decode_packet(packet: &Packet) -> Result<Self, WireFault> {
         let payload = packet.payload();
         if payload.len() != QUEUE_RANKING_PAYLOAD_LEN {
-            return Err(SlotDecodeError::WrongPayloadLen {
+            return Err(WireFault::WrongSize {
                 expected: QUEUE_RANKING_PAYLOAD_LEN,
                 actual: payload.len(),
             });
         }
         let rank = WireReader::new(payload)
             .read_u16_le("queue rank")
-            .map_err(|truncated| SlotDecodeError::WrongPayloadLen {
+            .map_err(|truncated| WireFault::WrongSize {
                 expected: QUEUE_RANKING_PAYLOAD_LEN,
                 actual: truncated.available,
             })?;
@@ -130,18 +162,4 @@ impl QueueRanking {
             payload,
         )
     }
-}
-
-/// Why a slot or queue packet could not be read.
-#[derive(Clone, Debug, Error, PartialEq, Eq)]
-pub enum SlotDecodeError {
-    #[error("slot-queue packet payload wrong size: expected {expected} bytes, had {actual}")]
-    /// The body was not the fixed size this packet's shape requires —
-    /// including the empty-body packets, where anything at all is wrong.
-    WrongPayloadLen {
-        /// The size this packet's shape requires.
-        expected: usize,
-        /// The size that arrived.
-        actual: usize,
-    },
 }

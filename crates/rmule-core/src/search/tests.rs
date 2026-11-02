@@ -5,8 +5,9 @@
 //! merging attributed and Kad batches into one deduplicated result set. One
 //! module because every producer's rows are built by the same `result` helper.
 
+use crate::CoreEvent;
+use parking_lot::Mutex;
 use std::net::Ipv4Addr;
-use std::sync::Mutex;
 
 use rmule_ed2k::{GlobSearchReq, GlobSearchVariant, Opcode, SearchRequest, ServerUdpFlags};
 use rmule_primitives::{
@@ -26,7 +27,7 @@ mod lifecycle;
 mod sweep_tally;
 
 /// The next event that is not a leg picture (`SearchLegsChanged`).
-async fn next_past_legs(evt_rx: &mut mpsc::Receiver<CoreEvent>) -> Option<CoreEvent> {
+async fn next_past_legs(evt_rx: &mut crate::service::EventStream) -> Option<CoreEvent> {
     loop {
         match evt_rx.recv().await? {
             CoreEvent::Search(SearchEvent::SearchLegsChanged { .. }) => {}
@@ -74,8 +75,8 @@ impl RecordingTransport {
 
 impl ServerUdpTransport for &'static RecordingTransport {
     async fn send_to(&self, to: Ipv4Endpoint, datagram: Vec<u8>) {
-        self.sends.lock().unwrap().push((to, datagram[1]));
-        self.datagrams.lock().unwrap().push(datagram);
+        self.sends.lock().push((to, datagram[1]));
+        self.datagrams.lock().push(datagram);
     }
 
     async fn recv(&self) -> Option<ServerUdpDatagram> {
@@ -103,11 +104,11 @@ fn oversize_query() -> KeywordQuery {
 async fn sweep_paces_one_variant_datagram_per_server_and_skips_the_connected_one() {
     let transport: &'static RecordingTransport = Box::leak(Box::new(RecordingTransport::new()));
     let capabilities = SharedServerCapabilities::default();
-    capabilities.lock().unwrap().insert(
+    capabilities.lock().insert(
         Ipv4Endpoint::new(Ipv4Addr::new(10, 0, 0, 2), 4661),
         caps_with_flags(ServerUdpFlags::EXT_GETFILES | ServerUdpFlags::LARGEFILES),
     );
-    capabilities.lock().unwrap().insert(
+    capabilities.lock().insert(
         Ipv4Endpoint::new(Ipv4Addr::new(10, 0, 0, 4), 4661),
         caps_with_flags(ServerUdpFlags::EXT_GETFILES),
     );
@@ -129,7 +130,7 @@ async fn sweep_paces_one_variant_datagram_per_server_and_skips_the_connected_one
     .run()
     .await;
 
-    let sends = transport.sends.lock().unwrap().clone();
+    let sends = transport.sends.lock().clone();
     assert_eq!(
         sends,
         vec![
@@ -149,7 +150,7 @@ async fn sweep_paces_one_variant_datagram_per_server_and_skips_the_connected_one
 async fn a_sweep_widens_a_large_bound_only_where_the_server_takes_it() {
     let transport: &'static RecordingTransport = Box::leak(Box::new(RecordingTransport::new()));
     let capabilities = SharedServerCapabilities::default();
-    capabilities.lock().unwrap().insert(
+    capabilities.lock().insert(
         Ipv4Endpoint::new(Ipv4Addr::new(10, 0, 0, 2), 4661),
         caps_with_flags(ServerUdpFlags::EXT_GETFILES | ServerUdpFlags::LARGEFILES),
     );
@@ -174,7 +175,7 @@ async fn a_sweep_widens_a_large_bound_only_where_the_server_takes_it() {
     let clamped = GlobSearchReq::new(SearchRequest::from_query(oversize_query()))
         .encode_packet(GlobSearchVariant::Baseline)
         .encode_udp();
-    assert_eq!(*transport.datagrams.lock().unwrap(), vec![wide, clamped]);
+    assert_eq!(*transport.datagrams.lock(), vec![wide, clamped]);
 }
 
 /// Searches started together share each server's spacing: their datagrams
@@ -195,7 +196,7 @@ async fn sweeps_started_together_reach_one_server_spaced() {
     };
     let start = tokio::time::Instant::now();
     tokio::join!(sweep().run(), sweep().run(), sweep().run());
-    assert_eq!(transport.sends.lock().unwrap().len(), 3);
+    assert_eq!(transport.sends.lock().len(), 3);
     assert_eq!(start.elapsed(), 2 * UDP_SEARCH_SPACING);
 }
 
@@ -216,7 +217,6 @@ async fn a_sweep_seals_its_datagram_toward_a_keyed_server() {
     });
     capabilities
         .lock()
-        .unwrap()
         .insert(Ipv4Endpoint::new(Ipv4Addr::new(10, 0, 0, 2), 4661), keyed);
     let own = crate::own_identity::SharedOwnIdentity::default();
     own.addresses()
@@ -247,8 +247,8 @@ async fn a_sweep_seals_its_datagram_toward_a_keyed_server() {
     let baseline = GlobSearchReq::new(SearchRequest::from_query(abba()))
         .encode_packet(GlobSearchVariant::Baseline)
         .encode_udp();
-    let sends = transport.sends.lock().unwrap().clone();
-    let datagrams = transport.datagrams.lock().unwrap().clone();
+    let sends = transport.sends.lock().clone();
+    let datagrams = transport.datagrams.lock().clone();
     assert_eq!(
         sends[0].0,
         Ipv4Endpoint::new(Ipv4Addr::new(10, 0, 0, 2), 4675)
@@ -407,7 +407,7 @@ async fn merges_attributed_and_kad_batches_into_one_result_set() {
     let (tcp_tx, tcp_rx) = mpsc::channel(8);
     let live = LiveSearches::default();
     let (kad_tx, kad_rx) = crate::search::kad_keyword_leg();
-    let (evt_tx, mut evt_rx) = mpsc::channel(16);
+    let (evt_tx, mut evt_rx) = crate::service::outbox(Default::default());
     let (_cancel_tx, cancel_rx) = watch::channel(false);
 
     let task = tokio::spawn(
@@ -477,8 +477,8 @@ async fn merges_attributed_and_kad_batches_into_one_result_set() {
     };
     assert_eq!(
         results.len(),
-        3,
-        "0xDD is new; 0xAA deduped across all three"
+        2,
+        "the batch's rows only: 0xDD is new, 0xAA deduped across all three"
     );
     assert_eq!(
         results[0].names().len(),
@@ -514,7 +514,7 @@ async fn merges_attributed_and_kad_batches_into_one_result_set() {
 async fn an_unattributable_related_answer_fails_the_search() {
     let (tcp_tx, tcp_rx) = mpsc::channel(8);
     let live = LiveSearches::default();
-    let (evt_tx, mut evt_rx) = mpsc::channel(16);
+    let (evt_tx, mut evt_rx) = crate::service::outbox(Default::default());
     let (_cancel_tx, cancel_rx) = watch::channel(false);
     let task = tokio::spawn(
         SearchTask {
@@ -571,7 +571,7 @@ async fn a_dropped_cancel_sender_ends_the_search_task() {
     let (_tcp_tx, tcp_rx) = mpsc::channel(8);
     let live = LiveSearches::default();
     let (_kad_tx, kad_rx) = crate::search::kad_keyword_leg();
-    let (evt_tx, mut evt_rx) = mpsc::channel(16);
+    let (evt_tx, mut evt_rx) = crate::service::outbox(Default::default());
     let (cancel_tx, cancel_rx) = watch::channel(false);
 
     let task = tokio::spawn(
@@ -609,4 +609,69 @@ async fn a_dropped_cancel_sender_ends_the_search_task() {
         .await
         .expect("the event stream closes with the task");
     assert!(said.is_none(), "a stopped task says nothing, got {said:?}");
+}
+
+/// A row of `size`, a file of its own, under `name`.
+fn named(size: u64, name: Vec<u8>) -> SearchResult {
+    SearchResult::new(
+        FileHash::from_bytes([0xCC; FileHash::BYTE_LEN]),
+        size,
+        vec![Ed2kText::from_bytes(name)],
+        Vec::new(),
+    )
+    .expect("valid result")
+}
+
+fn sized(size: u64) -> SearchResult {
+    named(size, b"a.bin".to_vec())
+}
+
+/// The cost of a batch is the batch: a row the batch neither added nor
+/// changed stays out of what the front end is sent.
+#[test]
+fn a_batch_answers_only_the_rows_it_added_or_changed() {
+    let mut set = SearchResultSet::default();
+    let first = set.merge_batch(vec![sized(1), sized(2)]);
+    assert_eq!((first.changed.len(), first.added), (2, 2));
+
+    let second = set.merge_batch(vec![sized(3), named(1, b"b.bin".to_vec())]);
+
+    assert_eq!(second.added, 1);
+    let sizes: Vec<u64> = second.changed.iter().map(SearchResult::file_size).collect();
+    assert_eq!(sizes, [1, 3]);
+    assert_eq!(second.changed[0].names().len(), 2, "the row whole, merged");
+    assert_eq!(set.len(), 3);
+}
+
+/// A server that keeps answering grows the set to the cap and no further,
+/// and a batch past it adds nothing, so it holds no quiet window open.
+#[test]
+fn rows_past_the_cap_are_refused_and_said_once() {
+    let mut set = SearchResultSet::default();
+    let cap = SEARCH_ROW_CAP as u64;
+    assert!(!set.merge_batch((1..=cap).map(sized).collect()).capped);
+
+    let past = set.merge_batch(vec![sized(cap + 1)]);
+
+    assert!(past.capped);
+    assert_eq!(past.added, 0);
+    assert!(past.changed.is_empty());
+    assert_eq!(set.len(), SEARCH_ROW_CAP);
+    assert!(!set.merge_batch(vec![sized(cap + 2)]).capped, "said once");
+}
+
+/// Rows are capped by bytes too: a name is as long as a frame allows.
+#[test]
+fn rows_past_the_byte_budget_are_refused() {
+    let mut set = SearchResultSet::default();
+    let rows = (SEARCH_BYTE_BUDGET / 65_535 + 2) as u64;
+
+    let merged = set.merge_batch(
+        (1..=rows)
+            .map(|size| named(size, vec![b'a'; 65_535]))
+            .collect(),
+    );
+
+    assert!(merged.capped);
+    assert!(set.held_bytes <= SEARCH_BYTE_BUDGET);
 }

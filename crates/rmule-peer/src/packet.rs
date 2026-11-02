@@ -7,9 +7,11 @@
 //! routing attribution intact (ADR-0018), and a packed frame that fails to
 //! inflate surfaces as a skip rather than a close (ADR-0053).
 
-use rmule_primitives::{Packet, PacketProtocol};
+use std::borrow::Cow;
 
-use crate::aich::{AichAnswer, AichFileHashAns, AichFileHashReq, AichRequest};
+use rmule_primitives::{FileHash, Packet, PacketProtocol};
+
+use crate::aich::{AichAnswer, AichFileHashAns, AichFileHashReq, AichRefused, AichRequest};
 use crate::buddy::{Callback, ReaskCallbackTcp};
 use crate::capability::MiscOptions1;
 use crate::compressed_frame::CompressedFrameSkipReason;
@@ -27,30 +29,21 @@ use crate::opcode::PeerOpcode;
 use crate::parts::PartOffsetWidth;
 use crate::parts::{CompressedPart, RequestParts, SendingPart};
 use crate::secure_ident::{PublicKeyPacket, SecIdentStatePacket, SignaturePacket};
-use crate::slot::{AcceptUploadReq, CancelTransfer, OutOfPartReqs, QueueRanking, StartUploadReq};
+use crate::slot::{
+    AcceptUploadReq, CancelTransfer, OutOfPartReqs, QueueRank, QueueRanking, StartUploadReq,
+};
 use crate::source_exchange::{
     AnswerSources, AnswerSources2, RequestSources, RequestSources2, SourceExchangeClaim,
     SourceExchangeEntry, SourceExchangeVersion,
 };
 
-fn narrowest_width_for_ranges(req: &RequestParts) -> PartOffsetWidth {
-    let max_offset = req
-        .ranges
-        .as_array()
-        .iter()
-        .flat_map(|(s, e)| [*s, *e])
-        .max()
-        .unwrap_or(0);
-    PartOffsetWidth::for_file_size(max_offset)
-}
-
 /// The narrowest [`SourceExchangeVersion`] that round-trips every field a
 /// decoded [`AnswerSources`] actually carries: v4 iff any source has crypt
 /// options, else v2 iff any source has a user hash, else v1. Mirrors
-/// `narrowest_width_for_ranges`'s spirit — the umbrella-wide `encode()` picks
+/// [`PartRanges::width`](crate::parts::PartRanges::width)'s spirit — the umbrella-wide `encode()` picks
 /// a sufficient variant from the data rather than assuming a fixed one; a
 /// caller wanting a specific wire version (v3's hybrid id order in
-/// particular, which this can never pick since nothing in `SourceSighting`
+/// particular, which this can never pick since nothing in `SourceClaim`
 /// distinguishes "v2" from "v3") should call
 /// `AnswerSources::encode_packet(version)` directly.
 fn narrowest_version_for_sources(sources: &[SourceExchangeEntry]) -> SourceExchangeVersion {
@@ -100,10 +93,13 @@ pub enum PeerPacket {
     /// `OP_CANCELTRANSFER` (`0x56`, ADR-0056): "stop sending, I no longer
     /// want this transfer." Symmetric — either capability may receive it.
     CancelTransfer(CancelTransfer),
-    /// `OP_OUTOFPARTREQS` (`0x57`): no slot, now or any longer.
+    /// `OP_OUTOFPARTREQS` (`0x57`): the granted transfer is over; back to the
+    /// queue.
     OutOfPartReqs(OutOfPartReqs),
     /// `OP_QUEUERANKING` (`0x60` under Emule): how far from the front the queued peer stands.
     QueueRanking(QueueRanking),
+    /// `OP_QUEUERANK` (`0x5C` under Edonkey): the same fact, in the older four-byte form.
+    QueueRank(QueueRank),
     /// `OP_REQUESTPARTS` (`0x47`, or `0xA3` for 64-bit offsets): up to three byte ranges.
     RequestParts(RequestParts),
     /// `OP_SENDINGPART` (`0x46`, or `0xA2`): one block, uncompressed.
@@ -128,9 +124,11 @@ pub enum PeerPacket {
     AichRequest(AichRequest),
     /// `OP_AICHANSWER` (`0x9C`): that branch.
     AichAnswer(AichAnswer),
+    /// `OP_AICHANSWER` (`0x9C`) with the file hash alone: no branch for that ask.
+    AichRefused(AichRefused),
     /// `OP_AICHFILEHASHREQ` (`0x9E`): the file's AICH master root.
     AichFileHashReq(AichFileHashReq),
-    /// `OP_AICHFILEHASHANS` (`0x9D`): that root. The wire names no file — it is the link's current one.
+    /// `OP_AICHFILEHASHANS` (`0x9D`): that root.
     AichFileHashAns(AichFileHashAns),
     /// `OP_SECIDENTSTATE` (`0x87`): which half of the identity proof the peer wants next (ADR-0041).
     SecIdentState(SecIdentStatePacket),
@@ -253,31 +251,13 @@ pub enum PeerPacket {
     },
 }
 
-/// Result of decoding one inbound peer packet frame. Plain frames decode to
-/// a [`PeerPacket`]; inbound packed `0xD4` frames whose payload fails to
-/// inflate (bad zlib or oversize) surface as a non-terminal skip the session
-/// reports as [`crate::NoticeEvent::CompressedFrameSkipped`] rather than
-/// closing (ADR-0053). Mirrors
-/// `rmule_ed2k::server_packet::DecodedServerFrame` (plain reference, not an
-/// intra-doc link — `rmule-peer` does not depend on `rmule-ed2k`).
-#[derive(Debug)]
-pub(crate) enum DecodedPeerFrame {
-    Packet(PeerPacket),
-    CompressedFrameSkipped {
-        opcode: u8,
-        compressed_len: usize,
-        reason: CompressedFrameSkipReason,
-    },
-}
-
 impl PeerPacket {
     /// Decode a packet using rmule's own advertised source-exchange nibble as
     /// the `OP_ANSWERSOURCES` cross-check version — a faithful stand-in for
     /// callers with no session context (offline fixture decode, tests) — and
     /// no extended-requests level, the level before any peer identified.
-    /// `Self::decode_frame` (the live session's entry point) uses
-    /// `Self::decode_for_peer` instead, threading the *tracked peer's own*
-    /// claimed nibble (ADR-0055).
+    /// The live session uses `Self::decode_for_peer` instead, threading the
+    /// *tracked peer's own* claimed nibble (ADR-0055).
     pub fn decode(packet: &Packet) -> Result<Self, PeerPacketDecodeError> {
         Self::decode_for_peer(
             packet,
@@ -293,9 +273,11 @@ impl PeerPacket {
     /// against the [`SourceExchangeClaim`] — the answering peer's own
     /// claimed SX1 nibble, not rmule's (see
     /// [`AnswerSources::decode_packet`]'s doc comment). [`Self::decode`]
-    /// supplies rmule's own nibble as a stand-in; [`Self::decode_frame`]
-    /// threads the session's tracked peer capability through to this instead.
-    fn decode_for_peer(
+    /// supplies rmule's own nibble as a stand-in; the session threads its
+    /// tracked peer capability through to this instead. `level` is the
+    /// session's negotiated extended-requests level, which alone frames a
+    /// bundle's `0x58` sub.
+    pub(crate) fn decode_for_peer(
         packet: &Packet,
         claim: SourceExchangeClaim,
         level: ExtendedRequests,
@@ -308,25 +290,23 @@ impl PeerPacket {
         // Both resolve here, ahead of the registry — see `human_layer`'s
         // module doc for why they cannot join it as ordinary variants.
         match (packet.protocol(), packet.opcode()) {
+            (PacketProtocol::Ed2kV2, _) => return Ok(crate::ed2kv2::read(packet)?),
             (PacketProtocol::Edonkey, human_layer::OP_ASKSHAREDFILESDIRANS) => {
+                human_layer::read_directory_name(packet)?;
                 return Ok(Self::AskSharedFilesDirAns);
             }
             (PacketProtocol::Edonkey, human_layer::OP_ASKSHAREDDENIEDANS) => {
                 return Ok(Self::AskSharedDeniedAns);
             }
             (PacketProtocol::Emule, human_layer::OP_FILEDESC) => {
-                return FileDesc::decode_packet(packet)
-                    .map(Self::FileDesc)
-                    .map_err(|source| PeerPacketDecodeError::HumanLayer { source });
+                return Ok(Self::FileDesc(FileDesc::decode_packet(packet)?));
             }
             (PacketProtocol::Emule, OP_EMULEINFO | OP_EMULEINFOANSWER) => {
-                return EmuleInfo::decode_packet(packet)
-                    .map(|info| Self::EmuleInfo {
-                        answer: packet.opcode() == OP_EMULEINFOANSWER,
-                        info,
-                        payload: packet.payload().to_vec(),
-                    })
-                    .map_err(|source| PeerPacketDecodeError::EmuleInfo { source });
+                return Ok(Self::EmuleInfo {
+                    answer: packet.opcode() == OP_EMULEINFOANSWER,
+                    info: EmuleInfo::decode_packet(packet)?,
+                    payload: packet.payload().to_vec(),
+                });
             }
             _ => {}
         }
@@ -347,57 +327,47 @@ impl PeerPacket {
             PeerOpcode::HelloAnswer => HelloAnswer::decode_packet(packet)
                 .map(Self::HelloAnswer)
                 .map_err(|source| PeerPacketDecodeError::HelloAnswer { source }),
-            PeerOpcode::RequestFileName => RequestFileName::decode_packet(packet)
-                .map(Self::RequestFileName)
-                .map_err(|source| PeerPacketDecodeError::FileRequest { source }),
-            PeerOpcode::ReqFileNameAnswer => ReqFileNameAnswer::decode_packet(packet)
-                .map(Self::ReqFileNameAnswer)
-                .map_err(|source| PeerPacketDecodeError::FileRequest { source }),
-            PeerOpcode::FileReqAnsNoFil => FileReqAnsNoFil::decode_packet(packet)
-                .map(Self::FileReqAnsNoFil)
-                .map_err(|source| PeerPacketDecodeError::FileRequest { source }),
-            PeerOpcode::SetReqFileId => SetReqFileId::decode_packet(packet)
-                .map(Self::SetReqFileId)
-                .map_err(|source| PeerPacketDecodeError::FileRequest { source }),
-            PeerOpcode::FileStatus => FileStatus::decode_packet(packet)
-                .map(Self::FileStatus)
-                .map_err(|source| PeerPacketDecodeError::FileRequest { source }),
-            PeerOpcode::HashSetRequest => HashSetRequest::decode_packet(packet)
-                .map(Self::HashSetRequest)
-                .map_err(|source| PeerPacketDecodeError::HashSet { source }),
-            PeerOpcode::HashSetAnswer => HashSetAnswer::decode_packet(packet)
-                .map(Self::HashSetAnswer)
-                .map_err(|source| PeerPacketDecodeError::HashSet { source }),
-            PeerOpcode::StartUploadReq => StartUploadReq::decode_packet(packet)
-                .map(Self::StartUploadReq)
-                .map_err(|source| PeerPacketDecodeError::Slot { source }),
-            PeerOpcode::AcceptUploadReq => AcceptUploadReq::decode_packet(packet)
-                .map(Self::AcceptUploadReq)
-                .map_err(|source| PeerPacketDecodeError::Slot { source }),
-            // aMule acts on a cancel whatever rides after the opcode, reading
-            // none of it (stock 2.3.3 `4e8f2b3c` `ClientTCPSocket.cpp:673-678`):
-            // a body is ignored, never a reason to close.
+            PeerOpcode::RequestFileName => Ok(Self::RequestFileName(
+                RequestFileName::decode_packet(packet)?,
+            )),
+            PeerOpcode::ReqFileNameAnswer => Ok(Self::ReqFileNameAnswer(
+                ReqFileNameAnswer::decode_packet(packet)?,
+            )),
+            PeerOpcode::FileReqAnsNoFil => Ok(Self::FileReqAnsNoFil(
+                FileReqAnsNoFil::decode_packet(packet)?,
+            )),
+            PeerOpcode::SetReqFileId => {
+                Ok(Self::SetReqFileId(SetReqFileId::decode_packet(packet)?))
+            }
+            PeerOpcode::FileStatus => Ok(Self::FileStatus(FileStatus::decode_packet(packet)?)),
+            PeerOpcode::HashSetRequest => {
+                Ok(Self::HashSetRequest(HashSetRequest::decode_packet(packet)?))
+            }
+            PeerOpcode::HashSetAnswer => {
+                Ok(Self::HashSetAnswer(HashSetAnswer::decode_packet(packet)?))
+            }
+            PeerOpcode::StartUploadReq => {
+                Ok(Self::StartUploadReq(StartUploadReq::decode_packet(packet)?))
+            }
+            // aMule acts on these three whatever rides after the opcode,
+            // reading none of it (stock 2.3.3 `4e8f2b3c`
+            // `ClientTCPSocket.cpp:637-667`, `:673-678`, `:755-762`): a body
+            // is ignored, never a reason to close.
+            PeerOpcode::AcceptUploadReq => Ok(Self::AcceptUploadReq(AcceptUploadReq)),
             PeerOpcode::CancelTransfer => Ok(Self::CancelTransfer(CancelTransfer)),
-            PeerOpcode::OutOfPartReqs => OutOfPartReqs::decode_packet(packet)
-                .map(Self::OutOfPartReqs)
-                .map_err(|source| PeerPacketDecodeError::Slot { source }),
-            PeerOpcode::QueueRanking => QueueRanking::decode_packet(packet)
-                .map(Self::QueueRanking)
-                .map_err(|source| PeerPacketDecodeError::Slot { source }),
+            PeerOpcode::OutOfPartReqs => Ok(Self::OutOfPartReqs(OutOfPartReqs)),
+            PeerOpcode::QueueRanking => {
+                Ok(Self::QueueRanking(QueueRanking::decode_packet(packet)?))
+            }
+            PeerOpcode::QueueRank => Ok(Self::QueueRank(QueueRank::decode_packet(packet)?)),
             PeerOpcode::RequestParts | PeerOpcode::RequestPartsI64 => {
-                RequestParts::decode_packet(packet)
-                    .map(Self::RequestParts)
-                    .map_err(|source| PeerPacketDecodeError::Parts { source })
+                Ok(Self::RequestParts(RequestParts::decode_packet(packet)?))
             }
             PeerOpcode::SendingPart | PeerOpcode::SendingPartI64 => {
-                SendingPart::decode_packet(packet)
-                    .map(Self::SendingPart)
-                    .map_err(|source| PeerPacketDecodeError::Parts { source })
+                Ok(Self::SendingPart(SendingPart::decode_packet(packet)?))
             }
             PeerOpcode::CompressedPart | PeerOpcode::CompressedPartI64 => {
-                CompressedPart::decode_packet(packet)
-                    .map(Self::CompressedPart)
-                    .map_err(|source| PeerPacketDecodeError::Parts { source })
+                Ok(Self::CompressedPart(CompressedPart::decode_packet(packet)?))
             }
             PeerOpcode::AnswerSources => {
                 // An ExtSX claimant's answer is a record list, so its reader is
@@ -417,13 +387,26 @@ impl PeerPacket {
             // (ADR-0055): `OP_REQUESTSOURCES` (a bare file hash) and
             // `OP_REQUESTSOURCES2` (the SX2 `<ver><opts><hash>` triple; rmule
             // accepts its correct 19-byte shape rather than replicating aMule
-            // 2.3.3's `size != 16` disconnect defect — ADR-0055).
-            PeerOpcode::RequestSources => RequestSources::decode_packet(packet)
-                .map(Self::RequestSources)
-                .map_err(|source| PeerPacketDecodeError::SourceExchangeRequest { source }),
-            PeerOpcode::RequestSources2 => RequestSources2::decode_packet(packet)
-                .map(Self::RequestSources2)
-                .map_err(|source| PeerPacketDecodeError::SourceExchangeRequest2 { source }),
+            // 2.3.3's `size != 16` disconnect defect — ADR-0055). aMule reads
+            // an ask only from a peer that claims source exchange or names a
+            // version (`ClientTCPSocket.cpp:1447-1458`); any other is passed
+            // over unread, and a sixteen-byte `0x83` passes the size check to
+            // name no file.
+            PeerOpcode::RequestSources if claim.sx1_nibble == 0 => Ok(Self::unknown_from(packet)),
+            PeerOpcode::RequestSources => {
+                Ok(Self::RequestSources(RequestSources::decode_packet(packet)?))
+            }
+            PeerOpcode::RequestSources2 => {
+                let version = RequestSources2::requested_version(packet)?;
+                if (version == 0 && claim.sx1_nibble == 0)
+                    || packet.payload().len() == FileHash::BYTE_LEN
+                {
+                    return Ok(Self::unknown_from(packet));
+                }
+                Ok(Self::RequestSources2(RequestSources2::decode_packet(
+                    packet,
+                )?))
+            }
             // `OP_ANSWERSOURCES2` (`0x84`) — a peer's SX2 answer to our own
             // `0x83` ask (ADR-0055 requester consume). Unlike `0x82`, the entry
             // version travels on the wire, so decode is self-contained (no
@@ -437,39 +420,36 @@ impl PeerPacket {
             }
             .map(Self::AnswerSources2)
             .map_err(|source| PeerPacketDecodeError::SourceExchange2 { source }),
-            PeerOpcode::AichRequest => AichRequest::decode_packet(packet)
-                .map(Self::AichRequest)
-                .map_err(|source| PeerPacketDecodeError::Aich { source }),
-            PeerOpcode::AichAnswer => AichAnswer::decode_packet(packet)
-                .map(Self::AichAnswer)
-                .map_err(|source| PeerPacketDecodeError::Aich { source }),
-            PeerOpcode::AichFileHashReq => AichFileHashReq::decode_packet(packet)
-                .map(Self::AichFileHashReq)
-                .map_err(|source| PeerPacketDecodeError::Aich { source }),
-            PeerOpcode::AichFileHashAns => AichFileHashAns::decode_packet(packet)
-                .map(Self::AichFileHashAns)
-                .map_err(|source| PeerPacketDecodeError::Aich { source }),
-            PeerOpcode::SecIdentState => SecIdentStatePacket::decode_packet(packet)
-                .map(Self::SecIdentState)
-                .map_err(|source| PeerPacketDecodeError::Sui { source }),
-            PeerOpcode::PublicKey => PublicKeyPacket::decode_packet(packet)
-                .map(Self::PublicKey)
-                .map_err(|source| PeerPacketDecodeError::Sui { source }),
-            PeerOpcode::Signature => SignaturePacket::decode_packet(packet)
-                .map(Self::Signature)
-                .map_err(|source| PeerPacketDecodeError::Sui { source }),
+            PeerOpcode::AichRequest => Ok(Self::AichRequest(AichRequest::decode_packet(packet)?)),
+            PeerOpcode::AichAnswer if AichRefused::is_form_of(packet) => {
+                Ok(Self::AichRefused(AichRefused::decode_packet(packet)))
+            }
+            PeerOpcode::AichAnswer => Ok(Self::AichAnswer(AichAnswer::decode_packet(packet)?)),
+            PeerOpcode::AichFileHashReq => Ok(Self::AichFileHashReq(
+                AichFileHashReq::decode_packet(packet)?,
+            )),
+            PeerOpcode::AichFileHashAns => Ok(Self::AichFileHashAns(
+                AichFileHashAns::decode_packet(packet)?,
+            )),
+            // aMule's three SUI readers log a body they cannot use and return
+            // (`BaseClient.cpp:2128-2190`, `:2252-2271`): one parks as
+            // `Unknown` and the link stays.
+            PeerOpcode::SecIdentState => Ok(SecIdentStatePacket::decode_packet(packet)
+                .map_or_else(|_| Self::unknown_from(packet), Self::SecIdentState)),
+            PeerOpcode::PublicKey => Ok(PublicKeyPacket::decode_packet(packet)
+                .map_or_else(|_| Self::unknown_from(packet), Self::PublicKey)),
+            PeerOpcode::Signature => Ok(SignaturePacket::decode_packet(packet)
+                .map_or_else(|_| Self::unknown_from(packet), Self::Signature)),
             // OP_MULTIPACKET (0x92) and OP_MULTIPACKET_EXT (0xA4) both decode
             // through `MultiPacketRequest::decode_packet`, which tells the two
             // apart by opcode (the `size8` field is EXT-only) — the same
             // pattern `RequestParts | RequestPartsI64` uses above (ADR-0054).
-            PeerOpcode::MultiPacket | PeerOpcode::MultiPacketExt => {
-                MultiPacketRequest::decode_packet(packet, level)
-                    .map(Self::MultiPacketRequest)
-                    .map_err(|source| PeerPacketDecodeError::MultiPacket { source })
-            }
-            PeerOpcode::MultiPacketAnswer => MultiPacketAnswer::decode_packet(packet)
-                .map(Self::MultiPacketAnswer)
-                .map_err(|source| PeerPacketDecodeError::MultiPacket { source }),
+            PeerOpcode::MultiPacket | PeerOpcode::MultiPacketExt => Ok(Self::MultiPacketRequest(
+                MultiPacketRequest::decode_packet(packet, level)?,
+            )),
+            PeerOpcode::MultiPacketAnswer => Ok(Self::MultiPacketAnswer(
+                MultiPacketAnswer::decode_packet(packet)?,
+            )),
             // OP_KAD_FWTCPCHECK_ACK acks *our own* firewall check over the
             // dial-back's TCP link (ADR-0058 requester). aMule's ack is a null
             // packet; any trailing bytes are tolerated (ADR-0018 liberal
@@ -489,11 +469,11 @@ impl PeerPacket {
             // reason they decode here: the session surfaces the parsed relay
             // and its owner routes it, exactly as it does the buddy ping.
             //
-            // A malformed relay is **not** a protocol violation: the gates
+            // A malformed relay is not the session's to rule on: the gates
             // that matter (it arrived on our buddy's link, the buddy-ID XOR
-            // check, the file we serve) are core's, and tearing the buddy link
-            // down over one bad frame would cost every relay behind it. It
-            // parks as `Unknown`, ADR-0018's liberal receive.
+            // check, the file we serve) are core's. It parks as `Unknown`,
+            // and the held buddy link's owner reads the notice for the cut
+            // aMule's reader throws on.
             PeerOpcode::Callback => Ok(Callback::decode_packet(packet)
                 .map_or_else(|_| Self::unknown_from(packet), Self::BuddyCallback)),
             PeerOpcode::ReaskCallbackTcp => Ok(ReaskCallbackTcp::decode_packet(packet)
@@ -502,67 +482,51 @@ impl PeerPacket {
             // the payload-less drop rows carry no fields worth decoding — the
             // response (or lack of one) never depends on their content — so
             // they tolerate any payload, mirroring `BuddyPing`/`BuddyPong`
-            // above.
+            // above. The two directory-naming frames are the exception: aMule
+            // reads the name before it decides (`ClientTCPSocket.cpp:923`,
+            // `:963`), and a name its bytes deny throws.
             PeerOpcode::AskSharedFiles => Ok(Self::AskSharedFiles),
             PeerOpcode::AskSharedDirs => Ok(Self::AskSharedDirs),
-            PeerOpcode::AskSharedFilesDir => Ok(Self::AskSharedFilesDir),
+            PeerOpcode::AskSharedFilesDir => {
+                human_layer::read_directory_name(packet)?;
+                Ok(Self::AskSharedFilesDir)
+            }
             PeerOpcode::AskSharedFilesAnswer => Ok(Self::AskSharedFilesAnswer),
             PeerOpcode::AskSharedDirsAns => Ok(Self::AskSharedDirsAns),
             PeerOpcode::PublicIpReq => Ok(Self::PublicIpReq),
             PeerOpcode::ChatCaptchaReq => Ok(Self::ChatCaptchaReq),
             PeerOpcode::ChatCaptchaRes => Ok(Self::ChatCaptchaRes),
-            PeerOpcode::PublicIpAnswer => PublicIpAnswer::decode_packet(packet)
-                .map(Self::PublicIpAnswer)
-                .map_err(|source| PeerPacketDecodeError::HumanLayer { source }),
-            PeerOpcode::Message => Message::decode_packet(packet)
-                .map(Self::Message)
-                .map_err(|source| PeerPacketDecodeError::HumanLayer { source }),
-            PeerOpcode::ChangeClientId => ChangeClientId::decode_packet(packet)
-                .map(Self::ChangeClientId)
-                .map_err(|source| PeerPacketDecodeError::HumanLayer { source }),
-            PeerOpcode::ChangeClientIpV6 => ChangeClientIpV6::decode_packet(packet)
-                .map(Self::ChangeClientIpV6)
-                .map_err(|source| PeerPacketDecodeError::Ipv6 { source }),
+            PeerOpcode::PublicIpAnswer => {
+                Ok(Self::PublicIpAnswer(PublicIpAnswer::decode_packet(packet)?))
+            }
+            PeerOpcode::Message => Ok(Self::Message(Message::decode_packet(packet)?)),
+            PeerOpcode::ChangeClientId => {
+                Ok(Self::ChangeClientId(ChangeClientId::decode_packet(packet)?))
+            }
+            // A stock client ignores this opcode whole: a body that does not
+            // read costs nothing here either.
+            PeerOpcode::ChangeClientIpV6 => Ok(ChangeClientIpV6::decode_packet(packet)
+                .map_or_else(|_| Self::unknown_from(packet), Self::ChangeClientIpV6)),
         }
     }
 
-    /// Dispatch-layer entry point used by [`crate::PeerSession`]: maps one
-    /// raw [`Packet`] either to a decoded [`PeerPacket`] or to a
-    /// non-terminal compressed-frame skip, so failed inbound inflation does
-    /// not close the session. Packed (`0xD4`) frames are inflated with the
-    /// peer surface's cap and re-attributed to [`PacketProtocol::Emule`]
-    /// before normal decode (ADR-0053). Callers that don't need the skip
-    /// signal should use [`Self::decode`].
-    ///
-    /// `claim` is the session's tracked peer capability (the answerer's
-    /// source-exchange nibble, `0` before it identified, plus its ExtSX claim)
-    /// — the live counterpart to [`Self::decode`]'s stand-in default
-    /// (ADR-0055, ADR-0087). `level` is the session's negotiated
-    /// extended-requests level, which alone frames a bundle's `0x58` sub.
-    pub(crate) fn decode_frame(
-        packet: &Packet,
-        claim: SourceExchangeClaim,
-        level: ExtendedRequests,
-    ) -> Result<DecodedPeerFrame, PeerPacketDecodeError> {
-        if packet.protocol() == PacketProtocol::PackedEd2k {
-            return match crate::compressed_frame::inflate_peer_packet(packet) {
-                Ok(inflated) => {
-                    Self::decode_for_peer(&inflated, claim, level).map(DecodedPeerFrame::Packet)
-                }
-                Err(reason) => Ok(DecodedPeerFrame::CompressedFrameSkipped {
-                    opcode: packet.opcode(),
-                    compressed_len: packet.payload().len(),
-                    reason,
-                }),
-            };
+    /// The plain frame `packet` holds: itself, or a packed (`0xD4`) frame
+    /// inflated with the peer surface's cap and re-attributed to
+    /// [`PacketProtocol::Emule`] (ADR-0053). A frame that does not inflate is
+    /// the reason why, which the session reports as
+    /// [`crate::NoticeEvent::CompressedFrameSkipped`] rather than closing.
+    pub(crate) fn inflated(packet: &Packet) -> Result<Cow<'_, Packet>, CompressedFrameSkipReason> {
+        if packet.protocol().is_packed() {
+            crate::compressed_frame::inflate_peer_packet(packet).map(Cow::Owned)
+        } else {
+            Ok(Cow::Borrowed(packet))
         }
-        Self::decode_for_peer(packet, claim, level).map(DecodedPeerFrame::Packet)
     }
 
     /// Preserve `packet` verbatim as [`Self::Unknown`] — ADR-0018's liberal
     /// receive for a frame whose own decoder refused it but whose opcode must
     /// not close the session.
-    fn unknown_from(packet: &Packet) -> Self {
+    pub(crate) fn unknown_from(packet: &Packet) -> Self {
         Self::Unknown {
             protocol: packet.protocol(),
             opcode: packet.opcode(),
@@ -588,14 +552,14 @@ impl PeerPacket {
             Self::CancelTransfer(r) => r.encode_packet(),
             Self::OutOfPartReqs(r) => r.encode_packet(),
             Self::QueueRanking(r) => r.encode_packet(),
+            Self::QueueRank(r) => r.encode_packet(),
             Self::RequestParts(r) => {
                 // Pick the narrowest width that fits the actual offsets;
                 // round-trips through the umbrella may choose a different
                 // opcode than the original wire frame if all offsets fit
                 // u32. For wire-faithful round-trip, call
                 // `RequestParts::encode_packet(width)` directly.
-                let width = narrowest_width_for_ranges(r);
-                r.encode_packet(width)
+                r.encode_packet(r.ranges.width())
                     .expect("narrowest width always satisfies its own range check")
             }
             Self::SendingPart(sp) => {
@@ -614,6 +578,7 @@ impl PeerPacket {
             Self::AnswerSources2(a) => a.encode_packet(),
             Self::AichRequest(r) => r.encode_packet(),
             Self::AichAnswer(a) => a.encode_packet(),
+            Self::AichRefused(a) => a.encode_packet(),
             Self::AichFileHashReq(r) => r.encode_packet(),
             Self::AichFileHashAns(a) => a.encode_packet(),
             Self::SecIdentState(p) => p.encode_packet(),

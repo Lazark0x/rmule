@@ -3,6 +3,9 @@
 //! file is chunked by, and the summary that folds a whole file's bytes into a
 //! file hash plus its part hash set.
 
+use std::collections::{HashMap, HashSet};
+use std::hash::{BuildHasherDefault, Hasher};
+
 use data_encoding::{BASE32_NOPAD, HEXUPPER};
 use ed2k::digest::Digest;
 
@@ -17,9 +20,28 @@ const ED2K_PART_SIZE_USIZE: usize = ED2K_PART_SIZE as usize;
 /// The largest file eD2k addresses: 2^38 bytes, 256 GiB. aMule defines it
 /// as `MAX_FILE_SIZE` (`src/include/protocol/ed2k/Constants.h:80`) and
 /// refuses a link (`src/ED2KLink.cpp:179`) or a search row
-/// (`src/SearchList.cpp:561-569`) naming a larger file; so does rmule, where
-/// each is decoded.
+/// (`src/SearchList.cpp:561-569`) naming a larger file, and skips hashing one
+/// (`src/ThreadTasks.cpp:98`); so does rmule, where each is decoded, and a
+/// [`PartHashSet`] exists only up to it.
 pub const MAX_ED2K_FILE_SIZE: u64 = 0x40_0000_0000;
+
+/// The largest file the pre-large-file eD2k wire carried: 4 290 048 000 bytes,
+/// the largest whole number of parts under `2^32`. aMule defines it as
+/// `OLD_MAX_FILE_SIZE` (`src/include/protocol/ed2k/Constants.h:77`), eMule as
+/// `OLD_MAX_EMULE_FILE_SIZE`. A file past it is large ([`is_large_file`]).
+pub const OLD_MAX_FILE_SIZE: u64 = 4_290_048_000;
+
+/// Whether a file is large — aMule's `IsLargeFile` (`KnownFile.h:114`):
+/// strictly past [`OLD_MAX_FILE_SIZE`], not past `u32::MAX`, so a file of
+/// 4 290 048 001 bytes fits a `u32` and is still large. Every decision aMule
+/// keys on it reads this one test: the AICH recovery data's 32-bit
+/// identifiers, the Kad large source types, the large-file forms of a source
+/// request and an offer, and whether a server without large-file support may
+/// be asked for one at all.
+#[must_use]
+pub const fn is_large_file(file_size: u64) -> bool {
+    file_size > OLD_MAX_FILE_SIZE
+}
 
 /// Number of ED2K parts that cover `file_size` bytes — `ceil(file_size / ED2K_PART_SIZE)`.
 ///
@@ -28,6 +50,28 @@ pub const MAX_ED2K_FILE_SIZE: u64 = 0x40_0000_0000;
 #[must_use]
 pub const fn part_count(file_size: u64) -> u32 {
     let parts = file_size.saturating_add(ED2K_PART_SIZE - 1) / ED2K_PART_SIZE;
+    if parts > u32::MAX as u64 {
+        u32::MAX
+    } else {
+        parts as u32
+    }
+}
+
+/// The part count an `OP_FILESTATUS` states for a `file_size`-byte file:
+/// `file_size / ED2K_PART_SIZE + 1`, and `0` for an empty file (aMule
+/// `m_iED2KPartCount`, stock 2.3.3 `KnownFile.cpp:422`). An exact multiple of
+/// the part size counts one phantom part past its last real one, so this is
+/// one more than [`part_count`] there and equal to it everywhere else. aMule
+/// refuses a status of any other non-zero count (`DownloadClient.cpp:417-425`)
+/// and its uploader drops one (`UploadClient.cpp` `ProcessExtendedInfo`).
+///
+/// Saturates at `u32::MAX` like [`part_count`].
+#[must_use]
+pub const fn ed2k_status_part_count(file_size: u64) -> u32 {
+    if file_size == 0 {
+        return 0;
+    }
+    let parts = file_size / ED2K_PART_SIZE + 1;
     if parts > u32::MAX as u64 {
         u32::MAX
     } else {
@@ -107,6 +151,38 @@ fixed_hash!(PartHash, 16, "part", from_hex, to_hex_upper);
 fixed_hash!(UserHash, 16, "user", from_hex, to_hex_upper);
 fixed_hash!(ServerHash, 16, "server", from_hex, to_hex_upper);
 
+/// A [`HashMap`] of the node's own files, by [`FileHash`], hashed by
+/// [`OwnFileHasher`].
+pub type OwnFileMap<V> = HashMap<FileHash, V, BuildHasherDefault<OwnFileHasher>>;
+
+/// A [`HashSet`] of the node's own files, hashed by [`OwnFileHasher`].
+pub type OwnFileSet = HashSet<FileHash, BuildHasherDefault<OwnFileHasher>>;
+
+/// The hasher of a table only the node itself fills: a [`FileHash`] is already
+/// a digest, so its last eight bytes serve as they stand. The last, because a
+/// table often fills in byte order, from the store.
+///
+/// Unkeyed, so a peer who picks a table's keys could pick them to collide. Keep
+/// it to tables whose keys come from the files the node shares or downloads: a
+/// peer's ask is a lookup there, one probe whatever it names. A hash a peer
+/// states and the table keeps, its own User Hash above all, stays on the
+/// standard keyed hasher.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct OwnFileHasher(u64);
+
+impl Hasher for OwnFileHasher {
+    /// The key's bytes arrive last, after the length of its array.
+    fn write(&mut self, bytes: &[u8]) {
+        if let Some(tail) = bytes.last_chunk() {
+            self.0 = u64::from_le_bytes(*tail);
+        }
+    }
+
+    fn finish(&self) -> u64 {
+        self.0
+    }
+}
+
 /// Declarative codec for an empty-payload packet — a unit struct whose wire
 /// form is opcode-only (no body). Generates the `struct`, a `decode_packet`,
 /// and an empty-body `encode_packet`, so the empty-payload packets across
@@ -116,17 +192,17 @@ fixed_hash!(ServerHash, 16, "server", from_hex, to_hex_upper);
 /// decoded:
 ///
 /// * **self-validating** (`Name, Err, opcode, "OP_LABEL"`) — the decoder is
-///   handed a raw [`Packet`](crate::Packet) and checks the protocol byte (must
-///   be eDonkey), the opcode, and that the payload is empty, mapping each
-///   failure onto `Err::InvalidPayload { opcode, reason }`. The error strings
-///   are byte-identical to the hand-rolled originals.
+///   handed a raw [`Packet`](crate::Packet), takes its body with
+///   [`Packet::body_of`](crate::Packet::body_of) (the protocol must be eDonkey,
+///   and `Err` must read a [`WrongFrame`](crate::WrongFrame)) and refuses a
+///   non-empty one as `Err::InvalidPayload { opcode, reason }`.
 /// * **self-validating, body-tolerant** — as above with a trailing
 ///   `, tolerate_body`, which drops the empty-payload check for a packet whose
 ///   body is documented as ignorable (`OP_CALLBACK_FAIL`'s "null notverified").
 /// * **dispatch-validated** (`Name, Err, protocol: <p>, opcode: <o>`) — the
 ///   protocol/opcode were already matched by a packet dispatcher, so the
 ///   decoder only rejects a non-empty payload, via
-///   `Err::WrongPayloadLen { expected: 0, actual }`.
+///   `Err::WrongSize { expected: 0, actual }`.
 #[macro_export]
 macro_rules! empty_body_codec {
     // Dispatch-validated: opcode/protocol already matched upstream; the decoder
@@ -144,11 +220,11 @@ macro_rules! empty_body_codec {
             /// already matched.
             ///
             /// # Errors
-            /// `WrongPayloadLen` if the body is not empty.
+            /// `WrongSize` if the body is not empty.
             pub fn decode_packet(packet: &$crate::Packet) -> ::core::result::Result<Self, $err> {
                 let actual = packet.payload().len();
                 if actual != 0 {
-                    return ::core::result::Result::Err($err::WrongPayloadLen { expected: 0, actual });
+                    return ::core::result::Result::Err($err::WrongSize { expected: 0, actual });
                 }
                 ::core::result::Result::Ok(Self)
             }
@@ -172,22 +248,10 @@ macro_rules! empty_body_codec {
             /// Decode the packet, checking it is this protocol and opcode.
             ///
             /// # Errors
-            /// `InvalidPayload` if the protocol byte, the opcode, or (where
-            /// this codec checks it) the empty body does not match.
+            /// The crate error's reading of a wrong frame, or `InvalidPayload`
+            /// if this codec checks the empty body and it is not.
             pub fn decode_packet(packet: &$crate::Packet) -> ::core::result::Result<Self, $err> {
-                let opcode = $opcode;
-                if packet.protocol() != $crate::PacketProtocol::Edonkey {
-                    return ::core::result::Result::Err($err::InvalidPayload {
-                        opcode,
-                        reason: "unsupported packet protocol",
-                    });
-                }
-                if packet.opcode() != opcode {
-                    return ::core::result::Result::Err($err::InvalidPayload {
-                        opcode,
-                        reason: ::core::concat!("wrong opcode for ", $label),
-                    });
-                }
+                packet.body_of($crate::PacketProtocol::Edonkey, $opcode)?;
                 ::core::result::Result::Ok(Self)
             }
 
@@ -214,23 +278,11 @@ macro_rules! empty_body_codec {
             /// Decode the packet, checking it is this protocol and opcode.
             ///
             /// # Errors
-            /// `InvalidPayload` if the protocol byte, the opcode, or (where
-            /// this codec checks it) the empty body does not match.
+            /// The crate error's reading of a wrong frame, or `InvalidPayload`
+            /// if this codec checks the empty body and it is not.
             pub fn decode_packet(packet: &$crate::Packet) -> ::core::result::Result<Self, $err> {
                 let opcode = $opcode;
-                if packet.protocol() != $crate::PacketProtocol::Edonkey {
-                    return ::core::result::Result::Err($err::InvalidPayload {
-                        opcode,
-                        reason: "unsupported packet protocol",
-                    });
-                }
-                if packet.opcode() != opcode {
-                    return ::core::result::Result::Err($err::InvalidPayload {
-                        opcode,
-                        reason: ::core::concat!("wrong opcode for ", $label),
-                    });
-                }
-                if !packet.payload().is_empty() {
+                if !packet.body_of($crate::PacketProtocol::Edonkey, opcode)?.is_empty() {
                     return ::core::result::Result::Err($err::InvalidPayload {
                         opcode,
                         reason: ::core::concat!($label, " must have empty payload"),
@@ -258,6 +310,7 @@ macro_rules! empty_body_codec {
 /// Wider than the eD2k hashes and written in base32 rather than hex, because
 /// that is the form eMule's `ed2k://` link carries.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct AichRootHash([u8; 20]);
 
 impl AichRootHash {
@@ -305,22 +358,60 @@ impl AichRootHash {
     }
 }
 
+/// Part hashes one `OP_HASHSETANSWER` can carry: the wire counts them in a
+/// `u16`, and the count is taken once here, so encoding one cannot overflow.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct PartHashList {
+    hashes: Box<[PartHash]>,
+    count: u16,
+}
+
+impl PartHashList {
+    /// Take `hashes` as a list the wire can count.
+    ///
+    /// # Errors
+    /// [`PrimitiveError::TooManyPartHashes`] past `u16::MAX` hashes.
+    pub fn new(hashes: Vec<PartHash>) -> Result<Self> {
+        let count = u16::try_from(hashes.len()).map_err(|_| PrimitiveError::TooManyPartHashes {
+            count: hashes.len(),
+        })?;
+        Ok(Self {
+            hashes: hashes.into_boxed_slice(),
+            count,
+        })
+    }
+
+    /// The count the wire carries.
+    #[must_use]
+    pub const fn count(&self) -> u16 {
+        self.count
+    }
+
+    /// The part hashes, in part order.
+    #[must_use]
+    pub fn hashes(&self) -> &[PartHash] {
+        &self.hashes
+    }
+}
+
 /// A file's complete part hash set, with the size it was derived from.
 ///
 /// The pair is kept together because neither half is checkable alone: the
 /// count of hashes a file must have follows from its size, so a set that
 /// travelled without its size could be silently mismatched against a
-/// different file.
+/// different file. A set exists only for a size eD2k addresses, so it always
+/// fits one answer.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PartHashSet {
     file_size: u64,
-    hashes: Vec<PartHash>,
+    hashes: PartHashList,
 }
 
 impl PartHashSet {
     /// Build a set, checking the hash count against what `file_size` implies.
     ///
     /// # Errors
+    /// [`PrimitiveError::FileSizeAboveLimit`] past [`MAX_ED2K_FILE_SIZE`];
     /// [`PrimitiveError::InvalidPartHashSetCount`] if the count disagrees —
     /// the set belongs to some other file.
     pub fn from_hashes(file_size: u64, hashes: Vec<PartHash>) -> Result<Self> {
@@ -333,7 +424,10 @@ impl PartHashSet {
                 actual,
             });
         }
-        Ok(Self { file_size, hashes })
+        Ok(Self {
+            file_size,
+            hashes: PartHashList::new(hashes)?,
+        })
     }
 
     /// How many part hashes a file of `file_size` bytes must carry.
@@ -343,16 +437,17 @@ impl PartHashSet {
     /// part plus the trailing hash of the final (possibly empty) remainder.
     ///
     /// # Errors
-    /// [`PrimitiveError::FileTooLarge`] if the count overflows.
+    /// [`PrimitiveError::FileSizeAboveLimit`] past [`MAX_ED2K_FILE_SIZE`]:
+    /// eD2k addresses no such file.
     pub fn expected_hash_count(file_size: u64) -> Result<usize> {
+        if file_size > MAX_ED2K_FILE_SIZE {
+            return Err(PrimitiveError::FileSizeAboveLimit { file_size });
+        }
         if file_size < ED2K_PART_SIZE {
             return Ok(0);
         }
-
-        let count = (file_size / ED2K_PART_SIZE)
-            .checked_add(1)
-            .ok_or(PrimitiveError::FileTooLarge { file_size })?;
-        usize::try_from(count).map_err(|_| PrimitiveError::FileTooLarge { file_size })
+        usize::try_from(file_size / ED2K_PART_SIZE + 1)
+            .map_err(|_| PrimitiveError::FileSizeAboveLimit { file_size })
     }
 
     /// The file size this set was built against.
@@ -364,7 +459,13 @@ impl PartHashSet {
     /// The part hashes, in part order.
     #[must_use]
     pub fn hashes(&self) -> &[PartHash] {
-        &self.hashes
+        self.hashes.hashes()
+    }
+
+    /// The set as the list one answer carries.
+    #[must_use]
+    pub fn into_list(self) -> PartHashList {
+        self.hashes
     }
 
     /// Whether this is `file_hash`'s own set: the MD4 of its part hashes laid
@@ -373,18 +474,28 @@ impl PartHashSet {
     /// empty and has nothing to contradict.
     #[must_use]
     pub fn belongs_to(&self, file_hash: FileHash) -> bool {
-        if self.hashes.is_empty() {
+        if self.hashes().is_empty() {
             return true;
         }
-        let listed: Vec<u8> = self.hashes.iter().flat_map(|h| *h.as_bytes()).collect();
+        let listed: Vec<u8> = self.hashes().iter().flat_map(|h| *h.as_bytes()).collect();
         // A 16-byte-per-part list is far below one ED2K part, where the ED2K
         // hash is the plain MD4 of its input.
         FileHash::from_bytes(ed2k::Ed2kBlue::digest(&listed).into()) == file_hash
     }
+
+    /// Whether `hashes` is the set of the file `file_hash` and `file_size`
+    /// name: the count the size implies, and [`Self::belongs_to`]. aMule's rule
+    /// for a received set, `CKnownFile::LoadHashsetFromFile(.., checkhash =
+    /// true)` (2.3.3 `src/KnownFile.cpp:522-542`). A set that fails it is
+    /// proven wrong by the file hash alone, no peer's word needed.
+    #[must_use]
+    pub fn proves_file(file_hash: FileHash, file_size: u64, hashes: &[PartHash]) -> bool {
+        Self::from_hashes(file_size, hashes.to_vec()).is_ok_and(|set| set.belongs_to(file_hash))
+    }
 }
 
 /// Everything hashing a file yields: its size, its eD2k file hash, and its
-/// part hash set when it has one.
+/// part hash set when eD2k gives it one.
 ///
 /// The three facts are produced by one pass and travel together, so a caller
 /// publishing or verifying a file never has to re-read its bytes to recover
@@ -434,17 +545,13 @@ impl FileHashSummary {
                 break;
             }
         }
-        let part_hash_set = (file_size >= ED2K_PART_SIZE).then(|| {
-            if file_size.is_multiple_of(ED2K_PART_SIZE) {
-                hashes.push(PartHash::from_bytes(ed2k::Ed2kBlue::digest([]).into()));
-            }
-            PartHashSet::from_hashes(file_size, hashes)
-                .expect("one hash per part, plus the empty one on an exact multiple")
-        });
+        if file_size.is_multiple_of(ED2K_PART_SIZE) {
+            hashes.push(PartHash::from_bytes(ed2k::Ed2kBlue::digest([]).into()));
+        }
         Ok(Self {
             file_size,
             file_hash: FileHash::from_bytes(file.finalize().into()),
-            part_hash_set,
+            part_hash_set: part_hash_set_of(file_size, hashes),
         })
     }
 
@@ -460,8 +567,8 @@ impl FileHashSummary {
         self.file_hash
     }
 
-    /// The part hash set, or `None` for a file below one part size, which has
-    /// none.
+    /// The part hash set, or `None` for a file with none: one below one part
+    /// size, or one past [`MAX_ED2K_FILE_SIZE`], which eD2k does not address.
     #[must_use]
     pub fn part_hash_set(&self) -> Option<&PartHashSet> {
         self.part_hash_set.as_ref()
@@ -483,10 +590,6 @@ fn fill(reader: &mut impl std::io::Read, buf: &mut [u8]) -> std::io::Result<usiz
 }
 
 fn digest_part_hash_set(bytes: &[u8], file_size: u64) -> Option<PartHashSet> {
-    if file_size < ED2K_PART_SIZE {
-        return None;
-    }
-
     let mut hashes = bytes
         .chunks(ED2K_PART_SIZE_USIZE)
         .map(|part| PartHash::from_bytes(ed2k::Ed2kBlue::digest(part).into()))
@@ -496,15 +599,16 @@ fn digest_part_hash_set(bytes: &[u8], file_size: u64) -> Option<PartHashSet> {
         hashes.push(PartHash::from_bytes(ed2k::Ed2kBlue::digest([]).into()));
     }
 
-    // The hash count produced above mirrors
-    // `PartHashSet::expected_hash_count(file_size)` exactly (one entry
-    // per `chunks(ED2K_PART_SIZE)` slice plus the trailing empty hash
-    // on exact-multiple sizes), so the validation in `from_hashes`
-    // cannot fail. The `expect` documents this dead panic path.
-    Some(
-        PartHashSet::from_hashes(file_size, hashes)
-            .expect("digest_part_hash_set produces the exact aMule hashset count by construction"),
-    )
+    part_hash_set_of(file_size, hashes)
+}
+
+/// The set of a digested file: one hash per part, plus the empty one on an
+/// exact multiple, is the count its size implies, so the only refusals are
+/// the two sizes that have no set.
+fn part_hash_set_of(file_size: u64, hashes: Vec<PartHash>) -> Option<PartHashSet> {
+    (file_size >= ED2K_PART_SIZE)
+        .then(|| PartHashSet::from_hashes(file_size, hashes).ok())
+        .flatten()
 }
 
 fn decode_fixed_hex<const N: usize>(input: &str, kind: &'static str) -> Result<[u8; N]> {
@@ -518,4 +622,21 @@ fn decode_fixed_hex<const N: usize>(input: &str, kind: &'static str) -> Result<[
             expected: N,
             actual: bytes.len(),
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use std::hash::BuildHasher;
+
+    use super::*;
+
+    /// The key's own bytes decide, not the array length hashed before them.
+    #[test]
+    fn an_own_file_hasher_reads_the_key_past_its_length() {
+        let build = BuildHasherDefault::<OwnFileHasher>::default();
+        let mut bytes = [0; 16];
+        let first = build.hash_one(FileHash::from_bytes(bytes));
+        bytes[15] = 1;
+        assert_ne!(first, build.hash_one(FileHash::from_bytes(bytes)));
+    }
 }

@@ -4,6 +4,7 @@
 //! unshare of a gone file joins and a completed download leaves, and the
 //! refusal that withholds a download completed under a refused folder until
 //! the refusal lifts.
+use rmule_peer::PartIndex;
 use rmule_testkit::HANG_GUARD;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -20,8 +21,8 @@ use rmule_core::{
 };
 use rmule_peer::PeerHandshakeContext;
 use rmule_primitives::{
-    ClientId, Ed2kFileLink, Ed2kText, FileHashSummary, PeerEndpoint, PeerSource, ServerEndpoint,
-    SourceLookupTarget, SourceSighting,
+    ClientId, Ed2kFileLink, Ed2kText, FileHashSummary, Informant, PeerEndpoint, PeerSource,
+    ServerEndpoint, SourceLookupTarget, SourceSighting,
 };
 use rmule_testkit::{StaticPeerTransfer, file_link_without_part_hash_set, source_with_high_id};
 use tokio::time::timeout;
@@ -202,40 +203,25 @@ impl PeerTransferService for ScriptedPeerTransfer {
         &mut self,
         peer: PeerEndpoint,
         _ctx: PeerHandshakeContext,
-        _file: Ed2kFileLink,
+        file: Ed2kFileLink,
     ) -> Result<PeerWorker, DownloadFailure> {
+        let advertised = rmule_testkit::every_part(file.size());
         assert_eq!(peer, self.expected_peer);
         let (command_tx, mut command_rx) = tokio::sync::mpsc::channel(8);
         let (event_tx, event_rx) = tokio::sync::mpsc::channel(16);
         let outcome = self.outcome.clone();
         tokio::spawn(async move {
             let _ = event_tx.send(PeerWorkerEvent::Connected).await;
+            let _ = event_tx.send(advertised).await;
             while let Some(command) = command_rx.recv().await {
                 match command {
-                    PeerWorkerCommand::RequestPart {
-                        plan,
-                        resume_offset,
-                    } => {
-                        if let Some(part) = outcome
-                            .parts
-                            .iter()
-                            .find(|part| part.part_index == plan.part_index)
-                        {
-                            let start = (resume_offset.saturating_sub(part.offset) as usize)
-                                .min(part.bytes.len());
-                            let _ = event_tx
-                                .send(PeerWorkerEvent::BlockReceived {
-                                    part_index: part.part_index,
-                                    offset: resume_offset,
-                                    bytes: part.bytes[start..].to_vec(),
-                                })
-                                .await;
-                            let _ = event_tx
-                                .send(PeerWorkerEvent::PartStreamed {
-                                    part_index: part.part_index,
-                                })
-                                .await;
-                        }
+                    PeerWorkerCommand::AskSlot | PeerWorkerCommand::TakeGrant => {
+                        let _ = event_tx.send(PeerWorkerEvent::SlotGranted).await;
+                    }
+                    PeerWorkerCommand::RequestHashSet => {}
+                    PeerWorkerCommand::RequestBlocks { blocks, handout } => {
+                        rmule_testkit::emit_blocks(&event_tx, &outcome.parts, &blocks, handout)
+                            .await;
                     }
                     PeerWorkerCommand::RequestAich { .. } => {}
                     PeerWorkerCommand::RequestAichFileHash => {}
@@ -257,7 +243,7 @@ async fn completed_download_auto_registers_into_the_shared_file_registry() {
     let source = ScriptedSourceLookup {
         outcome: SourceLookupOutcome {
             client_id: ClientId::from_u32(0x0100_007F),
-            sources: vec![SourceSighting::plain(high)],
+            sources: vec![SourceSighting::plain(high, Informant::Own)],
         },
     };
     let transfer = ScriptedPeerTransfer {
@@ -265,7 +251,7 @@ async fn completed_download_auto_registers_into_the_shared_file_registry() {
         outcome: PeerDownloadOutcome {
             peer_hashes: Vec::new(),
             parts: vec![DownloadedPart {
-                part_index: 0,
+                part_index: PartIndex::new(0),
                 offset: 0,
                 bytes: bytes.clone(),
             }],
@@ -287,6 +273,7 @@ async fn completed_download_auto_registers_into_the_shared_file_registry() {
         source_hint: Some(ServerEndpoint::new("127.0.0.1", 4661).unwrap()),
         name: rmule_testkit::file_name("autoshare.bin"),
         if_taken: rmule_core::NameTaken::Refuse,
+        kad_aich_root: None,
     }))
     .await
     .unwrap();
@@ -325,15 +312,13 @@ async fn auto_share_persists_the_link_authority_part_hash_set() {
     let part = 9_728_000_usize;
     let bytes = vec![0xE7_u8; part * 2];
     let summary = FileHashSummary::digest_bytes(&bytes);
-    let link = Ed2kFileLink {
-        name: Ed2kText::from_utf8("two-parts.bin"),
-        size: bytes.len() as u64,
-        file_hash: summary.file_hash(),
-        part_hash_set: summary.part_hash_set().cloned(),
-        aich_root: None,
-        ipv6_sources: Vec::new(),
-        sources: Default::default(),
-    };
+    let link = Ed2kFileLink::new(
+        Ed2kText::from_utf8("two-parts.bin"),
+        bytes.len() as u64,
+        summary.file_hash(),
+    )
+    .expect("a size eD2k addresses")
+    .with_part_hash_set(summary.part_hash_set().cloned());
     let expected = summary
         .part_hash_set()
         .expect("two-part file has a hash set")
@@ -345,7 +330,7 @@ async fn auto_share_persists_the_link_authority_part_hash_set() {
     let source = ScriptedSourceLookup {
         outcome: SourceLookupOutcome {
             client_id: ClientId::from_u32(0x0100_007F),
-            sources: vec![SourceSighting::plain(high)],
+            sources: vec![SourceSighting::plain(high, Informant::Own)],
         },
     };
     let transfer = ScriptedPeerTransfer {
@@ -354,12 +339,12 @@ async fn auto_share_persists_the_link_authority_part_hash_set() {
             peer_hashes: Vec::new(), // peer sends no hash set -> LinkPartHashSet authority
             parts: vec![
                 DownloadedPart {
-                    part_index: 0,
+                    part_index: PartIndex::new(0),
                     offset: 0,
                     bytes: bytes[..part].to_vec(),
                 },
                 DownloadedPart {
-                    part_index: 1,
+                    part_index: PartIndex::new(1),
                     offset: part as u64,
                     bytes: bytes[part..].to_vec(),
                 },
@@ -383,6 +368,7 @@ async fn auto_share_persists_the_link_authority_part_hash_set() {
         source_hint: Some(ServerEndpoint::new("127.0.0.1", 4661).unwrap()),
         name: rmule_testkit::file_name("auto-share-link-authority.bin"),
         if_taken: rmule_core::NameTaken::Refuse,
+        kad_aich_root: None,
     }))
     .await
     .unwrap();
@@ -443,7 +429,7 @@ async fn a_had_file_downloaded_again_leaves_the_had_set_when_it_is_whole() {
     let source = ScriptedSourceLookup {
         outcome: SourceLookupOutcome {
             client_id: ClientId::from_u32(0x0100_007F),
-            sources: vec![SourceSighting::plain(high)],
+            sources: vec![SourceSighting::plain(high, Informant::Own)],
         },
     };
     let transfer = ScriptedPeerTransfer {
@@ -451,7 +437,7 @@ async fn a_had_file_downloaded_again_leaves_the_had_set_when_it_is_whole() {
         outcome: PeerDownloadOutcome {
             peer_hashes: Vec::new(),
             parts: vec![DownloadedPart {
-                part_index: 0,
+                part_index: PartIndex::new(0),
                 offset: 0,
                 bytes: bytes.clone(),
             }],
@@ -465,7 +451,7 @@ async fn a_had_file_downloaded_again_leaves_the_had_set_when_it_is_whole() {
     registry
         .share(rmule_core::SharedFileEntry {
             file_hash: link.file_hash,
-            file_size: link.size,
+            file_size: link.size(),
             path: old_path.clone(),
             name: "had.bin".into(),
             source: ShareSource::DownloadDirectory,
@@ -489,6 +475,7 @@ async fn a_had_file_downloaded_again_leaves_the_had_set_when_it_is_whole() {
         source_hint: Some(ServerEndpoint::new("127.0.0.1", 4661).unwrap()),
         name: rmule_testkit::file_name("had (1).bin"),
         if_taken: rmule_core::NameTaken::Refuse,
+        kad_aich_root: None,
     }))
     .await
     .unwrap();
@@ -535,7 +522,7 @@ fn refused_home_core(
             outcome: PeerDownloadOutcome {
                 peer_hashes: Vec::new(),
                 parts: vec![DownloadedPart {
-                    part_index: 0,
+                    part_index: PartIndex::new(0),
                     offset: 0,
                     bytes: bytes.to_vec(),
                 }],
@@ -558,7 +545,7 @@ async fn complete_withheld(
     let store = rmule_testkit::memory_store();
     let repo = DurableDownloadRepository::new(Arc::clone(&store));
     let record = repo
-        .create_download(link, None, &DownloadPaths::from_final_path(output))
+        .create_download(link, None, &DownloadPaths::from_final_path(output), None)
         .unwrap();
     repo.set_lifecycle(record.id(), DownloadLifecycle::Paused)
         .unwrap();

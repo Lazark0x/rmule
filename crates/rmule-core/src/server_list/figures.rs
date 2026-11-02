@@ -9,15 +9,25 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use rmule_ed2k::{ServerMetFigures, ServerUdpFlags};
 
-/// What a server last reported, and when it last answered. The time is wall
-/// time, because it must mean the same thing after a restart; every figure is
-/// `None` until an answer carried it.
+/// What a server last reported, and when (ADR-0080). The times are wall
+/// time, because they must mean the same thing after a restart; every figure
+/// is `None` until a report carried it.
+///
+/// Two dates, because two different reports land here: a status answer
+/// dates everything it carries, while a login's `OP_SERVERSTATUS` carries
+/// only the counts and dates only them — aMule's `ST_LASTPING` is the status
+/// ping's (`ServerUDPSocket.cpp:191`), and `OP_SERVERSTATUS` never moves it
+/// (`ServerSocket.cpp:465-479`).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ServerFigures {
-    /// When the server last answered, in seconds since the Unix epoch (aMule's
-    /// `ST_LASTPING`): a status ping's `0x97`, the connected server's
-    /// `OP_SERVERSTATUS`, or the import's own last-ping time.
-    pub answered_at: u64,
+    /// When the server last gave a **status answer**, in seconds since the
+    /// Unix epoch: a challenge-matched `0x97`, or an import's `ST_LASTPING`.
+    /// `None` for figures only a login reported.
+    pub answered_at: Option<u64>,
+    /// When the user and file counts were last reported — by a status
+    /// answer, a login's `OP_SERVERSTATUS` or an import — in seconds since
+    /// the Unix epoch; `None` while none has been.
+    pub counted_at: Option<u64>,
     /// The last measured round trip to its UDP port.
     pub ping: Option<Duration>,
     /// Users it last reported online.
@@ -36,11 +46,22 @@ pub struct ServerFigures {
 }
 
 impl ServerFigures {
-    /// Figures answered at `at` and carrying nothing yet.
+    /// Figures of a status answer at `at`, which dates the counts it carries
+    /// too, and carrying nothing yet.
     #[must_use]
     pub const fn answered(at: u64) -> Self {
+        let mut figures = Self::reported(at);
+        figures.answered_at = Some(at);
+        figures
+    }
+
+    /// Figures of counts a login reported at `at`, with no status answer
+    /// behind them, and carrying nothing yet.
+    #[must_use]
+    pub const fn reported(at: u64) -> Self {
         Self {
-            answered_at: at,
+            answered_at: None,
+            counted_at: Some(at),
             ping: None,
             users: None,
             files: None,
@@ -51,17 +72,30 @@ impl ServerFigures {
         }
     }
 
-    /// How long ago the server last answered, as of `now`; zero for a time
-    /// ahead of `now` (a clock stepped back).
+    /// The later of the two dates: how fresh the figures are as a whole.
     #[must_use]
-    pub fn age(&self, now: SystemTime) -> Duration {
-        now.duration_since(UNIX_EPOCH + Duration::from_secs(self.answered_at))
-            .unwrap_or_default()
+    pub fn dated(&self) -> Option<u64> {
+        self.answered_at.max(self.counted_at)
     }
 
-    /// The figures a server.met row carried, dated by its own last-ping time.
-    /// `None` when the row names no last answer, or one of `0`, or
-    /// one after `now` — aMule's load rejects a future time too
+    /// How long ago the figures were last dated, by the later of the two
+    /// dates, as of `now`; `None` for figures nothing dated.
+    #[must_use]
+    pub fn age(&self, now: SystemTime) -> Option<Duration> {
+        self.dated().map(|at| since(at, now))
+    }
+
+    /// How long ago the server last gave a status answer, as of `now`;
+    /// `None` for one that never has.
+    #[must_use]
+    pub fn status_age(&self, now: SystemTime) -> Option<Duration> {
+        self.answered_at.map(|at| since(at, now))
+    }
+
+    /// The figures a server.met row carried, dated by its own last-ping time,
+    /// which is a status answer's: the counts take it too when the row
+    /// carried one. `None` when the row names no last answer, or one of `0`,
+    /// or one after `now` — aMule's load rejects a future time too
     /// (`Server.cpp:196-200`): a figure with no time behind it cannot say how
     /// old it is, and aMule writes zeros for a server it never pinged.
     #[must_use]
@@ -71,7 +105,8 @@ impl ServerFigures {
             return None;
         }
         Some(Self {
-            answered_at: at,
+            answered_at: Some(at),
+            counted_at: (met.users.is_some() || met.files.is_some()).then_some(at),
             ping: met.ping_ms.map(|ms| Duration::from_millis(u64::from(ms))),
             users: met.users,
             files: met.files,
@@ -81,6 +116,13 @@ impl ServerFigures {
             udp_flags: None,
         })
     }
+}
+
+/// How long ago `at` (seconds since the Unix epoch) was, as of `now`; zero
+/// for a time ahead of `now` (a clock stepped back).
+fn since(at: u64, now: SystemTime) -> Duration {
+    now.duration_since(UNIX_EPOCH + Duration::from_secs(at))
+        .unwrap_or_default()
 }
 
 /// `now` as whole seconds since the Unix epoch.
@@ -109,7 +151,8 @@ mod tests {
         let now = UNIX_EPOCH + Duration::from_secs(10_000);
         let kept = ServerFigures::from_met(&met(Some(6_400)), now).expect("dated figures");
         assert_eq!(kept.users, Some(9));
-        assert_eq!(kept.age(now), Duration::from_secs(3_600));
+        assert_eq!(kept.status_age(now), Some(Duration::from_secs(3_600)));
+        assert_eq!(kept.age(now), Some(Duration::from_secs(3_600)));
         assert_eq!(
             ServerFigures::from_met(&met(Some(0)), now),
             None,

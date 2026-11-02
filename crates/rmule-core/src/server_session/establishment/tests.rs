@@ -88,7 +88,7 @@ async fn connect_refuses_a_filtered_server_without_dialing() {
         true,
     );
     let shared_filter = SharedIpFilter::default();
-    *shared_filter.write().expect("ip filter lock") = filter;
+    *shared_filter.write() = filter;
 
     let refused = connect_to_server(
         &SharedServerSession::default(),
@@ -110,7 +110,7 @@ async fn connect_refuses_a_filtered_server_without_dialing() {
         true,
         false,
     );
-    *shared_filter.write().expect("ip filter lock") = servers_off;
+    *shared_filter.write() = servers_off;
     let dialed = connect_to_server(
         &SharedServerSession::default(),
         ServerEndpoint::new("127.0.0.1", 1).unwrap(),
@@ -137,7 +137,7 @@ async fn connect_refuses_a_dns_named_server_whose_resolved_ip_is_filtered() {
         true,
     );
     let shared_filter = SharedIpFilter::default();
-    *shared_filter.write().expect("ip filter lock") = filter;
+    *shared_filter.write() = filter;
 
     let refused = connect_to_server(
         &SharedServerSession::default(),
@@ -150,6 +150,74 @@ async fn connect_refuses_a_dns_named_server_whose_resolved_ip_is_filtered() {
         matches!(refused, Err(DownloadFailure::ServerFiltered)),
         "the resolved address is checked, not just a literal host"
     );
+}
+
+/// The name goes through the seam and its bound: a resolver that answers a
+/// blocked address is the one a named server's dial is refused by.
+#[tokio::test]
+async fn a_named_server_is_resolved_through_the_name_resolver() {
+    let (filter, _) = crate::ip_filter::IpFilter::from_texts(
+        &[b"203.0.113.0-203.0.113.255,0,blocked\n".as_slice()],
+        127,
+        true,
+        true,
+    );
+    let shared_filter = SharedIpFilter::default();
+    *shared_filter.write() = filter;
+    let shared = SharedServerSession::default();
+    let resolver = crate::name_resolver::FakeNameResolver::knowing(&[(
+        "srv.example.invalid",
+        Ipv4Addr::new(203, 0, 113, 9),
+    )]);
+    shared.install_resolver(resolver.clone());
+
+    let refused = connect_to_server(
+        &shared,
+        ServerEndpoint::new("srv.example.invalid", 4661).unwrap(),
+        identity(),
+        &shared_filter,
+    )
+    .await;
+
+    assert!(matches!(refused, Err(DownloadFailure::ServerFiltered)));
+    assert_eq!(resolver.asked(), ["srv.example.invalid"]);
+}
+
+/// A server that takes the TCP link and says nothing: the dial sits out its
+/// login. Every reader of the slot answers meanwhile, the operator's
+/// Disconnect above all, and the Disconnect ends the dial.
+#[tokio::test]
+async fn a_dial_holds_no_slot_and_a_cancel_ends_it() {
+    let silent = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = silent.local_addr().unwrap().port();
+    let shared = SharedServerSession::default();
+    shared.install_login_timeout(std::time::Duration::from_secs(120));
+    let claim = shared.claim_connect();
+    let dialing = {
+        let shared = shared.clone();
+        tokio::spawn(async move {
+            connect_to_server(
+                &shared,
+                ServerEndpoint::new("127.0.0.1", port).unwrap(),
+                identity(),
+                &SharedIpFilter::default(),
+            )
+            .await
+        })
+    };
+    let (_link, _) = silent.accept().await.unwrap();
+    let bound = std::time::Duration::from_secs(2);
+
+    let read = tokio::time::timeout(bound, shared.session_in_slot()).await;
+    assert!(matches!(read, Ok(None)), "the slot waits on a dial");
+
+    shared.cancel_dial();
+    let ended = tokio::time::timeout(bound, dialing).await;
+    assert!(
+        matches!(ended, Ok(Ok(Err(_)))),
+        "a cancelled dial ends in its bound"
+    );
+    drop(claim);
 }
 
 #[test]
@@ -310,8 +378,8 @@ fn facts_listing(
     server: &ServerEndpoint,
 ) -> (
     crate::server_list::ServerFacts,
-    mpsc::Sender<crate::CoreEvent>,
-    mpsc::Receiver<crate::CoreEvent>,
+    crate::service::Outbox,
+    crate::service::EventStream,
 ) {
     use crate::server_list::ServerListStore;
     let store = crate::DurableAppConfig::new(
@@ -320,7 +388,7 @@ fn facts_listing(
     store
         .merge_server(crate::server_list::ManagedServer::listed(server.clone()))
         .expect("seed the list");
-    let (events_tx, events_rx) = mpsc::channel(64);
+    let (events_tx, events_rx) = crate::service::outbox(Default::default());
     let facts = crate::server_list::ServerFacts::new(
         std::sync::Arc::new(store),
         crate::diagnostics::DiagnosticsState::new(),
@@ -337,8 +405,8 @@ async fn facts_saying_obfuscated(
     obfuscation_port: u16,
 ) -> (
     crate::server_list::ServerFacts,
-    mpsc::Sender<crate::CoreEvent>,
-    mpsc::Receiver<crate::CoreEvent>,
+    crate::service::Outbox,
+    crate::service::EventStream,
 ) {
     let (facts, events_tx, events_rx) = facts_listing(server);
     let mut datagram = vec![0xE3, rmule_ed2k::Opcode::GlobServStatRes.as_u8()];
@@ -358,7 +426,7 @@ async fn facts_saying_obfuscated(
 }
 
 /// Every login step reported so far, in order.
-fn login_steps(events: &mut mpsc::Receiver<crate::CoreEvent>) -> Vec<LoginStep> {
+fn login_steps(events: &mut crate::service::EventStream) -> Vec<LoginStep> {
     std::iter::from_fn(|| events.try_recv().ok())
         .filter_map(|event| match event {
             crate::CoreEvent::ServerLogin { step, .. } => Some(step),
@@ -376,6 +444,48 @@ fn session_under(
     shared.install_facts(facts);
     shared.obfuscation().set(policy);
     shared
+}
+
+/// `0x20000` is the whole gate (ADR-0091): the same login, on a server that
+/// did not set it, starts no keepalive and tells the chooser nothing, so an
+/// attempt falls past this server at once instead of sending it an opcode it
+/// may close the link on.
+#[tokio::test]
+async fn only_a_server_that_set_the_punch_bit_becomes_the_coordinator() {
+    for (flags, coordinates) in [
+        (0, false),
+        (rmule_ed2k::ServerTcpFlags::LOWID_HOLEPUNCH, true),
+    ] {
+        let fake = rmule_testkit::FakeEd2kServer::start().await;
+        fake.set_tcp_flags(Some(rmule_ed2k::ServerTcpFlags::from_bits(flags)))
+            .await;
+        let (facts, _events_tx, _events) = facts_listing(&fake.endpoint());
+        let shared = session_under(None, facts);
+        let (udp_tx, mut udp_rx) = tokio::sync::mpsc::channel(8);
+        shared.server_punch().install_client_udp(udp_tx);
+        shared.own_identity().addresses().record_bind(
+            SocketRole::Udp,
+            &rmule_net::family::FamilyBinds {
+                bound: vec![AddressFamily::V4],
+                refused: Vec::new(),
+            },
+            4672,
+        );
+
+        connect_to_server(
+            &shared,
+            fake.endpoint(),
+            identity(),
+            &SharedIpFilter::default(),
+        )
+        .await
+        .expect("the login is answered");
+
+        assert_eq!(shared.server_punch().is_live(), coordinates, "{flags:#x}");
+        let keepalive =
+            tokio::time::timeout(std::time::Duration::from_millis(200), udp_rx.recv()).await;
+        assert_eq!(keepalive.is_ok(), coordinates, "{flags:#x}");
+    }
 }
 
 /// Under `Requested`, a server whose status answer named an obfuscation port

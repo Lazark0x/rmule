@@ -10,9 +10,14 @@
 //!
 //! - **`portmap-highid`** — the mapping lands on the **exact** port, the
 //!   gateway renews it, and every row rmule publishes is `Mapped`.
+//! - **`portmap-natpmp`** — `portmap-highid` over NAT-PMP, the IPv4 protocol
+//!   rmule speaks through `crab_nat`.
 //! - **`portmap-mismatch`** — a second container pre-claims the ports, so the
 //!   grant comes back shifted: the TCP row must read `Degraded` and must not be
 //!   advertised, while the UDP rows carry the shifted port.
+//! - **`portmap-moved`** — a second host takes the exact port between grant
+//!   and renewal, so the renewal comes back on another port and the release
+//!   at quit must name it.
 //! - **`portmap-ipv6-pinhole`** — a PCP MAP on the `3fff` address.
 //! - **`portmap-ipv6-pinhole-link-local`** — the same MAP with the gateway
 //!   reached through its `fe80::` address, the shape every SLAAC default route
@@ -28,6 +33,7 @@ pub(crate) mod bench;
 pub(crate) mod gateway;
 pub(crate) mod helper;
 pub(crate) mod link_local;
+pub(crate) mod moved;
 pub(crate) mod row;
 pub(crate) mod verdict;
 
@@ -48,8 +54,12 @@ use crate::nat::NatType;
 pub enum PortMapFlow {
     /// The mapping lands on the exact port and is renewed.
     HighId,
+    /// [`HighId`](Self::HighId) over NAT-PMP.
+    NatPmp,
     /// The ports are pre-claimed, so the grant shifts.
     Mismatch,
+    /// The exact port is taken between grant and renewal, so it moves.
+    Moved,
     /// A PCP MAP on the **Fake-Public v6 Plan** address.
     Ipv6Pinhole,
     /// [`Ipv6Pinhole`](Self::Ipv6Pinhole) through a link-local next hop.
@@ -58,9 +68,11 @@ pub enum PortMapFlow {
 
 impl PortMapFlow {
     /// Every flow, in the order the README lists them.
-    pub const ALL: [Self; 4] = [
+    pub const ALL: [Self; 6] = [
         Self::HighId,
+        Self::NatPmp,
         Self::Mismatch,
+        Self::Moved,
         Self::Ipv6Pinhole,
         Self::Ipv6PinholeLinkLocal,
     ];
@@ -70,7 +82,9 @@ impl PortMapFlow {
     pub const fn name(self) -> &'static str {
         match self {
             Self::HighId => "portmap-highid",
+            Self::NatPmp => "portmap-natpmp",
             Self::Mismatch => "portmap-mismatch",
+            Self::Moved => "portmap-moved",
             Self::Ipv6Pinhole => "portmap-ipv6-pinhole",
             Self::Ipv6PinholeLinkLocal => "portmap-ipv6-pinhole-link-local",
         }
@@ -106,7 +120,8 @@ impl PortMapFlow {
     /// renewal observable inside a bounded window at all.
     pub(crate) const fn protocol(self) -> &'static str {
         match self {
-            Self::HighId | Self::Mismatch => "upnp",
+            Self::HighId | Self::Mismatch | Self::Moved => "upnp",
+            Self::NatPmp => "nat-pmp",
             Self::Ipv6Pinhole | Self::Ipv6PinholeLinkLocal => "pcp",
         }
     }
@@ -120,20 +135,21 @@ impl PortMapFlow {
     /// could then never produce an `Exact` install.
     pub(crate) const fn families(self) -> &'static str {
         match self {
-            Self::HighId | Self::Mismatch => "v4",
+            Self::HighId | Self::NatPmp | Self::Mismatch | Self::Moved => "v4",
             Self::Ipv6Pinhole | Self::Ipv6PinholeLinkLocal => "both",
         }
     }
 
     /// The lifetime the driver asks the gateway for.
+    ///
+    /// rmule raises any ask under 120 s to 120 s (core's `MIN_ASKED_LEASE`),
+    /// so every flow below that floor is asked for 120 s and renews at about
+    /// 60 s; a window that must hold a renewal outlasts that.
     pub(crate) const fn lease_secs(self) -> u64 {
         match self {
-            // Short enough that the renewal ladder's first rung (L/2) fires
-            // several times inside the window.
-            Self::HighId => 12,
-            // Longer: this flow is about the shifted grant, and a fast renewal
-            // cadence would only add rows to read.
+            Self::HighId | Self::NatPmp => 12,
             Self::Mismatch => 20,
+            Self::Moved => 120,
             Self::Ipv6Pinhole | Self::Ipv6PinholeLinkLocal => 12,
         }
     }
@@ -146,7 +162,7 @@ impl PortMapFlow {
     /// to be *known* (so a pre-claim can target it). Off for the pinhole flow,
     /// whose Kad half is IPv4-only and says nothing about the v6 question.
     pub(crate) const fn kad(self) -> bool {
-        matches!(self, Self::HighId | Self::Mismatch)
+        matches!(self, Self::HighId | Self::NatPmp | Self::Mismatch)
     }
 
     /// How many stock-aMule **Kad helpers** stand on the WAN.
@@ -161,8 +177,8 @@ impl PortMapFlow {
     /// about silence; the pinhole flow runs no Kad node at all.
     pub(crate) const fn kad_helpers(self) -> usize {
         match self {
-            Self::HighId => 2,
-            Self::Mismatch | Self::Ipv6Pinhole | Self::Ipv6PinholeLinkLocal => 0,
+            Self::HighId | Self::NatPmp => 2,
+            Self::Mismatch | Self::Moved | Self::Ipv6Pinhole | Self::Ipv6PinholeLinkLocal => 0,
         }
     }
 
@@ -171,8 +187,18 @@ impl PortMapFlow {
     pub(crate) const fn preclaims(self) -> &'static [(&'static str, u16)] {
         match self {
             Self::Mismatch => &[("TCP", PEER_TCP_PORT), ("UDP", UDP_PORT)],
-            Self::HighId | Self::Ipv6Pinhole | Self::Ipv6PinholeLinkLocal => &[],
+            Self::HighId
+            | Self::NatPmp
+            | Self::Moved
+            | Self::Ipv6Pinhole
+            | Self::Ipv6PinholeLinkLocal => &[],
         }
+    }
+
+    /// Whether a second host takes the exact TCP port once rmule holds it,
+    /// on a gateway that lets one LAN host delete another's mapping.
+    pub(crate) const fn takes_the_port(self) -> bool {
+        matches!(self, Self::Moved)
     }
 
     /// How long the driver watches before writing its row.
@@ -182,8 +208,10 @@ impl PortMapFlow {
             // firewall-check round trip the Exact grant triggers — rmule's
             // hello probes, the helpers' `0x58`s, their connect-backs through
             // the fresh redirect, and the acks that land on it.
-            Self::HighId => 75,
+            Self::HighId | Self::NatPmp => 75,
             Self::Mismatch => 40,
+            // The take-over, the renewal at about 60 s and its settling.
+            Self::Moved => 90,
             Self::Ipv6Pinhole | Self::Ipv6PinholeLinkLocal => 45,
         }
     }

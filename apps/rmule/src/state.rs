@@ -7,22 +7,27 @@
 //! rows, levels, rates, the status-bar info feed); each view extends the fold
 //! with its own vocabulary.
 
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet};
 use std::time::Instant;
 
-use rmule_core::diagnostics::DiagnosticsSnapshot;
+use rmule_core::diagnostics::{DiagnosticsSnapshot, SharedFileCounters};
 use rmule_core::{CoreEvent, DownloadId, RelatedSearchRefusal, SearchId};
 use rmule_primitives::{FileHash, PeerEndpoint, ServerEndpoint};
 
 use crate::action::Action;
 use crate::bridge::BridgeSnapshot;
 use crate::rates::TransferRates;
+use crate::words::severity::Severity;
 use crate::words::{Sentence, app as app_words, reach};
 
 mod download;
+#[cfg(test)]
+pub(crate) use download::STALL_AFTER;
 mod known_file;
 mod log;
+mod note;
 mod rate_history;
+mod revised;
 mod search;
 mod serve;
 mod server;
@@ -36,27 +41,31 @@ pub use crate::words::serve::withheld_words;
 pub use crate::words::units::seconds;
 pub(crate) use crate::words::units::server_label;
 pub use download::{
-    DownloadRow, DownloadStatus, FAILURE_NOT_RECORDED, NO_NETWORK_WAIT, download_failure_words,
-    integrity_fault_words, lifecycle_words, part_fault_words, release_words, restart_failed_again,
-    retirement_words,
+    DownloadRow, DownloadStatus, FAILURE_NOT_RECORDED, NO_NETWORK_WAIT, Tally, TallyPart,
+    VolumeStopped, download_failure_words, integrity_fault_words, lifecycle_words,
+    part_fault_words, release_words, restart_failed_again, retirement_words,
 };
 pub use known_file::{KnownFileMark, KnownFileMarks};
-pub use log::LogLine;
-pub use rate_history::RateSample;
-pub use search::{MoreEnded, SearchPane, SearchStatus};
-pub use serve::{ScanConsent, SharedRow, SharedUnder, UploadPeer, UploadState, withheld_rank};
+pub use log::{Log, LogLine};
+pub use note::{NOTE_AGE_SHOWN, NOTE_STANDS, Note};
+pub use rate_history::{RateColumn, RateHistory, RateWindow, Rates};
+pub use revised::Revised;
+pub use search::{MoreEnded, SearchPane, SearchRows, SearchStatus};
+pub use serve::{
+    PARTIAL_RANK, ScanConsent, SharedRow, SharedUnder, UploadPeer, UploadState, withheld_rank,
+};
 pub use server::{Ed2kConnection, Reconnect};
 pub use session::SessionConfig;
 
-/// Which step of attaching the core failed — why a run is UI-only. What the
+/// Which step of attaching the core failed — why a run ended before it began. What the
 /// store or the web client said is for the Run Log; the operator reads the
 /// step, worded by [`crate::words::app`].
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum AttachFailure {
     /// Neither `RMULE_DATA` nor `HOME` names a data directory.
     NoDataDir,
-    /// The Durable Store would not open.
-    OpenStore,
+    /// The Durable Store in the directory would not open, and why.
+    OpenStore(rmule_core::OpenRefusal, std::path::PathBuf),
     /// The port-mapping secret could not be read or made.
     PortMapSecret,
     /// The server list could not be read.
@@ -85,12 +94,18 @@ pub struct UiState {
     pub reconnect: Option<Reconnect>,
     /// Every download core has told us about, in id order — the Transfers
     /// table's rows.
-    pub downloads: BTreeMap<DownloadId, DownloadRow>,
+    pub downloads: Revised<BTreeMap<DownloadId, DownloadRow>>,
     /// Shared-file registry as the UI knows it (spec §3.5), folded from the
     /// serve share-set and upload events.
-    pub shared: BTreeMap<FileHash, SharedRow>,
+    pub shared: Revised<BTreeMap<FileHash, SharedRow>>,
+    /// What each shared file served: this run's and every run's figures,
+    /// taken off the data tick's levels, moved only when a figure did.
+    pub shared_counters: Revised<BTreeMap<FileHash, SharedFileCounters>>,
+    /// The **Partial Shares** core says are offered now (ADR-0113): a
+    /// download's own offer, never a registry row, named by its download.
+    pub partial_shares: Revised<BTreeSet<FileHash>>,
     /// Upload-side peers (slot holders + queue waiters), keyed by endpoint.
-    pub upload_peers: BTreeMap<PeerEndpoint, UploadPeer>,
+    pub upload_peers: Revised<BTreeMap<PeerEndpoint, UploadPeer>>,
     /// The **File History** as core last answered it — the registry's entries
     /// and the cancelled downloads, the Known-File Marks' durable half.
     /// `None` until the first answer: no mark is drawn from what has not been
@@ -98,34 +113,48 @@ pub struct UiState {
     pub file_history: Option<rmule_core::file_history::FileHistory>,
     /// Every search of the run keyed by [`SearchId`] — the results and status
     /// of each **Held Search**; the Searches view keeps the rest.
-    pub searches: BTreeMap<SearchId, SearchPane>,
+    pub searches: Revised<BTreeMap<SearchId, SearchPane>>,
     /// Every **Related-Files Search** core refused before it started, by the
     /// id the Search tab gave it: a refused search has no pane.
     pub refused_searches: BTreeMap<SearchId, RelatedSearchRefusal>,
-    /// Latest levels wholesale; superseded, never merged.
+    /// The last directory the share guards refused to add, and how many
+    /// refusals came before it, so an answer is told from an older one.
+    pub directory_refusal: (
+        u64,
+        Option<(std::path::PathBuf, rmule_core::DirectoryRefusal)>,
+    ),
+    /// The results of the search closed last, for its one undo.
+    pub closed_search: Option<(SearchId, SearchPane)>,
+    /// Latest levels wholesale; superseded, never merged. The tick's
+    /// `shared_files` is held in [`Self::shared_counters`], and is empty here.
     pub diagnostics: DiagnosticsSnapshot,
     /// Bridge-synthesized rates from the same tick as `diagnostics`.
     pub rates: TransferRates,
-    /// Session-rate history for the Statistics graphs: one
-    /// [`RateSample`] per data tick, capped at 600 samples — ten minutes at
-    /// the 1 Hz tick — with the oldest dropped. A stopped core simply stops appending — the graph freezes on
-    /// what was actually observed instead of inventing a tail.
-    pub rate_history: VecDeque<RateSample>,
+    /// Session-rate history for the Statistics graphs, in tiers: a stopped
+    /// core simply stops appending, so the graph freezes on what was actually
+    /// observed instead of inventing a tail.
+    pub rate_history: RateHistory,
+    /// When this run's first action landed; uptime counts from here.
+    pub started_at: Option<Instant>,
     /// When the last data tick was folded in; `None` before the first one,
     /// which is how the views tell "idle" from "nothing observed yet".
     pub last_snapshot_at: Option<Instant>,
     /// Status-bar info feed (spec §3.1 segment 1): the last notable core
-    /// fact, newest wins. Flash timing is chrome's concern, not state's.
-    pub notable: Option<Sentence>,
+    /// fact, newest wins, until it ages out of the bar. Flash timing is
+    /// chrome's concern, not state's.
+    pub notable: Option<Note>,
+    /// Kad ended on its own: its node stopped without the operator asking, or
+    /// its socket never bound. Lowered when a node runs again.
+    pub kad_lost: bool,
     /// Flips false when the core's event stream ends, so the UI renders a
     /// stopped core honestly instead of freezing silently.
     pub core_alive: bool,
     /// The Networks log pane feed (spec §3.4): every core event, rendered
     /// compact by `log::line` in [`UiState::apply`] *before* the fold, capped
     /// at 200 lines (oldest drops). `CoreClosed` appends "core stopped".
-    pub log: VecDeque<LogLine>,
-    /// Session config for real command construction; `None` degrades.
-    pub session: Option<SessionConfig>,
+    pub log: Log,
+    /// Session config for real command construction.
+    pub session: SessionConfig,
     /// The durable preferences as the config store holds them: what the
     /// Settings tab renders, and where the Networks list-update form reads its
     /// `server.met` mirror. Loaded at startup and folded forward by each
@@ -150,9 +179,6 @@ pub struct UiState {
     pub scan_consents: Vec<ScanConsent>,
     /// How many disclosure questions core has raised this run.
     pub scan_questions: u64,
-    /// Why this run has no core: `Some` on a UI-only run, where the core
-    /// failed to attach and nothing the operator asks for can be sent.
-    pub ui_only: Option<AttachFailure>,
 }
 
 impl Default for UiState {
@@ -161,25 +187,30 @@ impl Default for UiState {
             ed2k: Ed2kConnection::Disconnected,
             connected_server: None,
             reconnect: None,
-            downloads: BTreeMap::new(),
-            shared: BTreeMap::new(),
-            upload_peers: BTreeMap::new(),
-            searches: BTreeMap::new(),
+            downloads: Revised::default(),
+            shared: Revised::default(),
+            shared_counters: Revised::default(),
+            partial_shares: Revised::default(),
+            upload_peers: Revised::default(),
+            searches: Revised::default(),
             refused_searches: BTreeMap::new(),
+            directory_refusal: (0, None),
+            closed_search: None,
             file_history: None,
             diagnostics: DiagnosticsSnapshot::default(),
             rates: TransferRates::default(),
-            rate_history: VecDeque::new(),
+            rate_history: RateHistory::default(),
+            started_at: None,
             last_snapshot_at: None,
             notable: None,
+            kad_lost: false,
             core_alive: true,
-            log: VecDeque::new(),
-            session: None,
+            log: Log::default(),
+            session: SessionConfig::default(),
             preferences: crate::config::Preferences::default(),
             server_list_updating: false,
             scan_consents: Vec::new(),
             scan_questions: 0,
-            ui_only: None,
         }
     }
 }
@@ -188,6 +219,13 @@ impl UiState {
     /// The one write path: route a bus action into the pure fold/apply pair.
     /// Returns whether anything visible changed (the render dirty hint).
     pub fn apply(&mut self, action: Action, now: Instant) -> bool {
+        let changed = self.fold_action(action, now);
+        self.stamp_note(now);
+        changed
+    }
+
+    fn fold_action(&mut self, action: Action, now: Instant) -> bool {
+        self.started_at.get_or_insert(now);
         match action {
             Action::Core(event) => {
                 // Spec §3.4: log every core event (compact) before folding it.
@@ -202,37 +240,60 @@ impl UiState {
                     CoreEvent::FileHistory { .. }
                         | CoreEvent::Download(rmule_core::DownloadEvent::SeedsDialled { .. })
                 ) {
-                    self.push_log(crate::words::event::log_line(&event), now);
+                    self.push_log(
+                        crate::words::severity::of(&event),
+                        crate::words::event::log_line(&event),
+                        now,
+                    );
                 }
                 fold(self, event);
                 // The log pane repaints on any core event, so the frame is
                 // dirty regardless of the fold's finer spine-level hint.
                 true
             }
-            Action::Snapshot(frame) => self.apply_snapshot(frame, now),
+            Action::Snapshot(frame) => self.apply_snapshot(*frame, now),
             Action::CoreClosed => {
-                self.push_log(app_words::CORE_STOPPED, now);
+                self.push_log(Severity::Failure, app_words::CORE_STOPPED, now);
                 self.core_alive = false;
                 self.connected_server = None;
                 self.reconnect = None;
+                // No snapshot follows: a stopped core claims nothing.
+                self.ed2k = Ed2kConnection::Disconnected;
+                self.diagnostics.kad = None;
+                self.rates = TransferRates::default();
                 note(self, app_words::CORE_STOPPED)
             }
             // An app-learned fact: same two surfaces a core event's
             // would reach, since the app owns no log of its own.
-            Action::Note(text) => {
-                self.push_log(text.clone(), now);
+            Action::Note(severity, text) => {
+                self.push_log(severity, text.clone(), now);
                 note(self, text)
             }
             Action::ForgetSearch(search_id) => {
-                let pane = self.searches.remove(&search_id).is_some();
-                self.refused_searches.remove(&search_id).is_some() || pane
+                let pane = self.searches.remove(&search_id);
+                let held = pane.is_some();
+                self.closed_search = pane.map(|pane| (search_id, pane));
+                self.refused_searches.remove(&search_id).is_some() || held
+            }
+            Action::RestoreSearch(search_id) => {
+                match self.closed_search.take() {
+                    Some((closed, pane)) if closed == search_id => {
+                        self.searches.entry(closed).or_insert(pane);
+                    }
+                    other => self.closed_search = other,
+                }
+                true
             }
             // Chrome/input/outbound arms belong to `ChromeState`/the app
             // loop, never to the core-facing state.
             Action::Input(_)
+            | Action::Repaint
+            | Action::Suspend
+            | Action::Continued
             | Action::SwitchView(_)
             | Action::CycleView(_)
             | Action::ToggleHelp
+            | Action::HelpKey(_)
             | Action::DismissOverlay
             | Action::ScrollHelp(_)
             | Action::Flash(_)
@@ -241,9 +302,12 @@ impl UiState {
             | Action::Actions(_)
             | Action::CopyLink(_)
             | Action::Preference(_)
+            | Action::SettingsEdit(_)
             | Action::ConfirmDownloadDir(_)
             | Action::SearchRelated(_)
             | Action::StartKad
+            | Action::Preview(_)
+            | Action::AskQuit
             | Action::Quit => false,
         }
     }
@@ -251,17 +315,28 @@ impl UiState {
     /// Replace the level set (latest-state-wins) and stamp the injected
     /// observation time. `diagnostics.kad` arrives here too: the sync
     /// accessor reports it in full (ADR-0028).
-    pub fn apply_snapshot(&mut self, frame: BridgeSnapshot, now: Instant) -> bool {
+    pub fn apply_snapshot(&mut self, mut frame: BridgeSnapshot, now: Instant) -> bool {
         self.push_rate_sample(&frame.rates, now);
         server_health::log_edges(self, &frame.diagnostics, now);
         let more_before = self.diagnostics.search_more_results;
         let more_after = frame.diagnostics.search_more_results;
+        self.shared_counters
+            .settle(std::mem::take(&mut frame.diagnostics.shared_files));
         self.diagnostics = frame.diagnostics;
         search::fold_more(self, more_before, more_after);
         self.rates = frame.rates;
+        if self.diagnostics.kad_state != rmule_core::diagnostics::KadState::Off {
+            self.kad_lost = false;
+        }
         self.last_snapshot_at = Some(now);
         server::count_down(self, now);
         true
+    }
+
+    /// Keep a flash's whole sentence: the status bar may shorten it, and it
+    /// is gone in seconds.
+    pub fn log_flash(&mut self, text: Sentence, now: Instant) {
+        self.push_log(Severity::Info, text, now);
     }
 
     /// The server an activity command should name: the live connection's
@@ -271,11 +346,9 @@ impl UiState {
     /// or waits for one, so the name is only what the download row records.
     #[must_use]
     pub fn active_server(&self) -> Option<ServerEndpoint> {
-        self.connected_server.clone().or_else(|| {
-            self.session
-                .as_ref()
-                .and_then(|session| session.server.clone())
-        })
+        self.connected_server
+            .clone()
+            .or_else(|| self.session.server.clone())
     }
 }
 
@@ -296,13 +369,14 @@ pub fn fold(state: &mut UiState, event: CoreEvent) -> bool {
         // A refused peer hello (ADR-0050): one peer's frame, not a state of
         // this node — its log line is its whole footprint, and the count
         // rides the diagnostics tick.
-        CoreEvent::PeerHelloRefused { .. } => false,
+        CoreEvent::PeerHelloRefused { .. } | CoreEvent::PeerLinkBroken { .. } => false,
         // The one client-UDP socket never bound at core start (ADR-0057):
         // Kad, the reask surface and NAT-T are all off for the
         // rest of this session. Named plainly rather than left to the log
         // pane's compact line, since it is the answer to "why is Kad off"
         // an operator who never scrolled back would otherwise never see.
         CoreEvent::ClientUdpBindFailed { port, kind } => {
+            state.kad_lost = true;
             note(state, reach::client_udp_bind_failed(port, kind))
         }
         // A pair that came up without a family it selected. The
@@ -323,9 +397,15 @@ pub fn fold(state: &mut UiState, event: CoreEvent) -> bool {
         // The Kad node died mid-session — an operator-relevant
         // "why is Kad off" fact, the same posture as the two socket notes
         // above, not something the data-tick snapshot alone would explain.
-        CoreEvent::KadStopped { reason } => note(state, crate::words::kad::stopped(reason)),
+        CoreEvent::KadStopped { reason } => {
+            state.kad_lost = reason != rmule_core::KadStopReason::Stopped;
+            note(state, crate::words::kad::stopped(reason))
+        }
         // Quit's progress is the status bar's, reduced by the app.
         CoreEvent::Quitting { .. } => false,
+        // What stopped working for the rest of the run: a fact the operator
+        // is owed in the status line, whose level no snapshot shows.
+        CoreEvent::TaskDied { task } => note(state, app_words::task_died(task)),
         // A login step is evidence for the log pane and the Run Log; no
         // level moves with it.
         CoreEvent::ServerLogin { .. } => false,
@@ -335,6 +415,12 @@ pub fn fold(state: &mut UiState, event: CoreEvent) -> bool {
         // So is a late Kad helper test: the TCP verdict is the level, and a
         // test that no longer counts leaves it where it was.
         CoreEvent::KadHelperTestLate { .. } => false,
+        // So is a release that left a router port standing: the mapping rows
+        // are the level, and the log pane says why the port was left alone.
+        CoreEvent::MappingReleaseKept { .. } => false,
+        // The app fell behind the node: said once per shed, in the log pane
+        // too, so stale peer rows have a reason on the screen.
+        CoreEvent::EventsShed { count } => note(state, crate::words::app::events_shed(count)),
         // Our own posture: the Settings tab holds the value, the log pane the
         // line `apply` pushed.
         CoreEvent::ObfuscationPolicyAtStart { .. } | CoreEvent::ObfuscationPolicyChanged { .. } => {
@@ -344,7 +430,7 @@ pub fn fold(state: &mut UiState, event: CoreEvent) -> bool {
 }
 
 fn note(state: &mut UiState, text: Sentence) -> bool {
-    state.notable = Some(text);
+    state.notable = Some(text.into());
     true
 }
 

@@ -7,7 +7,8 @@
 //! A real aMule storer's answers are captured beside them
 //! (`captured_source_result.rs`, `captured_keyword_answers.rs`); these tests
 //! pin rmule to the documented shape and to round-trip consistency with the
-//! sealed `decode_source_result` projection.
+//! sealed `decode_source_result` projection. The one exception is the publish
+//! past 4 GiB, which is a stock aMule's captured frame.
 
 use std::net::Ipv4Addr;
 
@@ -86,58 +87,39 @@ fn publish_source_req_decodes_back_to_the_projected_fields() {
     );
 }
 
-/// Above `u32::MAX`; aMule's `CTagVarInt` narrowing ladder (`Tag.h:186-195`,
-/// Fork Pin `ab483654`) widens `TAG_FILESIZE` to `UINT64` here instead of the
-/// `UINT32` the rest of this file's vectors carry.
+/// A stock aMule 2.3.3's own `0x44` for a 5,000,000,000-byte file, shared as
+/// one sparse hole by a firewalled node holding rmule as its buddy (interop
+/// flow M `kad-core-buddy --publish-source --file-content sparse`, run
+/// `1792364377`; provenance in `meta.toml` beside the frame). Past
+/// `OLD_MAX_FILE_SIZE` the buddy row is type 5 (`Search.cpp:613`), and
+/// `CTagVarInt` widens `TAG_FILESIZE` to `UINT64` above `u32::MAX`
+/// (`Tag.h:176-182`).
+const LARGE_PUBLISH_DIR: &str =
+    "fixtures/buddy/captured/amule-233-publish-source-req-large-20261019/";
 const LARGE_FILE_SIZE: u64 = 5_000_000_000;
-
-/// Same shape as [`documented_publish_source_req`], `TAG_FILESIZE` widened to
-/// `UINT64`. No aMule capture of a >4 GiB publish exists yet (ADR-0061,
-/// "Kad source-publish `TAG_FILESIZE` past 4 GiB", `[capture pending]`); this
-/// vector is handwritten from `Tag.h`'s documented layout, like the rest of
-/// this file's vectors are from the framing note.
-fn documented_publish_source_req_large() -> Vec<u8> {
-    let mut datagram = vec![0xE4, 0x44];
-    datagram.extend_from_slice(&FILE_KEY);
-    datagram.extend_from_slice(&SOURCE_ID);
-    datagram.push(5); // tag count
-    // TAG_SOURCETYPE (0xFF) u8 = 1 (HighID direct source)
-    datagram.extend_from_slice(&[0x09, 0x01, 0x00, 0xFF, 0x01]);
-    // TAG_SOURCEPORT (0xFD) u16 = 4662
-    datagram.extend_from_slice(&[0x08, 0x01, 0x00, 0xFD, 0x36, 0x12]);
-    // TAG_SOURCEUPORT (0xFC) u16 = 4672
-    datagram.extend_from_slice(&[0x08, 0x01, 0x00, 0xFC, 0x40, 0x12]);
-    // TAG_FILESIZE (0x02) u64 = LARGE_FILE_SIZE
-    datagram.extend_from_slice(&[0x0B, 0x01, 0x00, 0x02]);
-    datagram.extend_from_slice(&LARGE_FILE_SIZE.to_le_bytes());
-    // TAG_ENCRYPTION (0xF3) u8 = 0x0B
-    datagram.extend_from_slice(&[0x09, 0x01, 0x00, 0xF3, 0x0B]);
-    datagram
-}
-
-fn full_published_source_large() -> KadPublishedSource {
-    KadPublishedSource {
-        source_type: Some(1),
-        tcp_port: Some(4662),
-        udp_port_tag: Some(4672),
-        file_size: Some(LARGE_FILE_SIZE),
-        encryption: Some(0x0B),
-        ..KadPublishedSource::default()
-    }
-}
 
 #[test]
 fn publish_source_req_widens_filesize_to_uint64_past_4_gib() {
-    let message = Kad2Message::PublishSourceReq {
-        file: KadId::from_bytes(FILE_KEY),
-        source_id: SOURCE_ID,
-        source: full_published_source_large(),
+    let frame = crate::fixture::captured(LARGE_PUBLISH_DIR, "publish_source_req_0x44.bin");
+    let message = decode(&frame).expect("rmule reads aMule's large-file publish");
+    let Kad2Message::PublishSourceReq { source, .. } = &message else {
+        panic!("0x44 decodes to a publish");
     };
+    assert_eq!(source.source_type, Some(5), "the large-file buddy row");
+    assert_eq!(source.file_size, Some(LARGE_FILE_SIZE));
+    let filesize = frame
+        .windows(4)
+        .position(|tag| tag == [0x0B, 0x01, 0x00, 0x02])
+        .expect("TAG_FILESIZE rides as UINT64");
+    assert_eq!(
+        frame[filesize + 4..filesize + 12],
+        LARGE_FILE_SIZE.to_le_bytes(),
+    );
     assert_eq!(
         message.encode().encode(),
-        documented_publish_source_req_large()
+        frame,
+        "rmule writes the row back byte for byte",
     );
-    assert_eq!(decode(&documented_publish_source_req_large()), Ok(message));
 }
 
 #[test]

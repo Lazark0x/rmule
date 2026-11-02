@@ -6,13 +6,12 @@
 //! A focused form swallows the global binding letters — typing `q` into a
 //! hostname must not quit.
 
+use std::cell::Cell;
 use std::net::Ipv4Addr;
 
 use ratatui::Frame;
 use ratatui::crossterm::event::KeyEvent;
-use ratatui::layout::Rect;
-use ratatui::style::Style;
-use ratatui::text::{Line, Span};
+use ratatui::layout::{Position, Rect};
 
 use rmule_core::{CoreCommand, ManagedServer, ServerListCommand};
 use rmule_primitives::{Ed2kText, ServerEndpoint};
@@ -20,17 +19,19 @@ use rmule_primitives::{Ed2kText, ServerEndpoint};
 use super::NetworksView;
 use crate::action::Action;
 use crate::form::{Field, Form, FormKey, validate_port, validate_url};
+use crate::row_selection::viewport::Viewport;
 use crate::state::UiState;
 use crate::theme::Theme;
 use crate::views::ViewOutcome;
-use crate::views::modal::Modal;
+use crate::views::modal::{Modal, legend, release_form, scroll_form};
+use crate::words::Sentence;
+use crate::words::app as words;
+use crate::words::forms;
+use crate::words::hints::{self, Hint};
 use crate::wrap::clamp_u16;
 
 /// Floor width of a modal form; a longer entry grows it (see [`draw_form`]).
 pub(super) const FORM_W: u16 = 58;
-
-/// Greyed-menu reason: the run has no core to log in with.
-pub(super) const NOT_ATTACHED: &str = "(core not attached — UI-only run)";
 
 /// Which form is up. Both are the same machine — labelled text fields, one
 /// focused, `Enter` commits — so the add form and the update-URL prompt cannot
@@ -44,16 +45,16 @@ enum FormKind {
 impl FormKind {
     fn title(self) -> &'static str {
         match self {
-            FormKind::AddServer => " Add server ",
-            FormKind::UpdateFromUrl => " Update server list from URL ",
+            FormKind::AddServer => forms::ADD_SERVER_TITLE,
+            FormKind::UpdateFromUrl => forms::UPDATE_LIST_TITLE,
         }
     }
 
     /// What `Enter` does here, for the modal's key legend.
-    fn commit_verb(self) -> &'static str {
+    fn commit(self) -> Hint {
         match self {
-            FormKind::AddServer => "add",
-            FormKind::UpdateFromUrl => "fetch",
+            FormKind::AddServer => hints::COMMIT,
+            FormKind::UpdateFromUrl => hints::COMMIT.doing(forms::FETCH),
         }
     }
 }
@@ -63,6 +64,8 @@ impl FormKind {
 pub(super) struct ServerForm {
     kind: FormKind,
     form: Form,
+    /// What part of the form is on screen, in a frame too short for it.
+    viewport: Cell<Viewport>,
 }
 
 impl ServerForm {
@@ -70,12 +73,13 @@ impl ServerForm {
         Self {
             kind: FormKind::AddServer,
             form: Form::new(vec![
-                Field::text("Name", ""),
-                Field::text("Address", "").with_placeholder("IPv4 or hostname"),
-                Field::text("Port", "").with_placeholder("1–65535"),
+                Field::text(forms::SERVER_NAME, ""),
+                Field::text(forms::SERVER_ADDRESS, "").with_placeholder(forms::SERVER_ADDRESS_HINT),
+                Field::text(forms::SERVER_PORT, "").with_placeholder("1–65535"),
             ])
             // Address: the only field with no sane default.
             .focused_on(1),
+            viewport: Cell::default(),
         }
     }
 
@@ -85,19 +89,20 @@ impl ServerForm {
     fn update_url(url: &str) -> Self {
         Self {
             kind: FormKind::UpdateFromUrl,
-            form: Form::new(vec![Field::text("URL", url)]),
+            form: Form::new(vec![Field::text(forms::LIST_URL, url)]),
+            viewport: Cell::default(),
         }
     }
 
     /// Validate the typed fields into the command they name, or the reason
     /// they do not (rendered in the form, never as a vanished modal).
-    fn commit(&self) -> Result<CoreCommand, String> {
+    fn commit(&self) -> Result<CoreCommand, Sentence> {
         match self.kind {
             FormKind::AddServer => {
                 let host = validate_host(self.form.text(1))?;
                 let port = validate_port(self.form.text(2))?;
                 let endpoint = ServerEndpoint::new(host, port)
-                    .map_err(|_| crate::words::server::INVALID_ADDRESS.to_string())?;
+                    .map_err(|_| words::host_refusal(&words::HostRefusal::NoServerThere))?;
                 let mut server = ManagedServer::listed(endpoint);
                 server.name = Ed2kText::from_utf8(self.form.text(0));
                 Ok(CoreCommand::ServerList(ServerListCommand::AddServer {
@@ -118,9 +123,9 @@ impl ServerForm {
 /// A dotted-quad shape must actually *be* one — `999.1.2.3` is a typo, not a
 /// hostname — while anything else is left to the endpoint primitive, because
 /// the managed list keys DNS-named rows in their own right (ADR-0080).
-fn validate_host(host: &str) -> Result<&str, String> {
+fn validate_host(host: &str) -> Result<&str, Sentence> {
     if host.is_empty() {
-        return Err("address is required (IPv4 or hostname)".to_string());
+        return Err(words::host_refusal(&words::HostRefusal::Required));
     }
     let labels: Vec<&str> = host.split('.').collect();
     let dotted_quad = labels.len() == 4
@@ -129,7 +134,7 @@ fn validate_host(host: &str) -> Result<&str, String> {
             .all(|part| !part.is_empty() && part.chars().all(|c| c.is_ascii_digit()));
     if dotted_quad {
         host.parse::<Ipv4Addr>()
-            .map_err(|_| format!("'{host}' is not a valid IPv4 address"))?;
+            .map_err(|_| words::host_refusal(&words::HostRefusal::NotIpv4(host.to_string())))?;
         return Ok(host);
     }
     let hostname = !host.is_empty()
@@ -140,36 +145,41 @@ fn validate_host(host: &str) -> Result<&str, String> {
     if hostname {
         Ok(host)
     } else {
-        Err(format!("'{host}' is not an IPv4 address or a hostname"))
+        Err(words::host_refusal(&words::HostRefusal::NotIpv4OrHostname(
+            host.to_string(),
+        )))
     }
 }
 
-/// The add-server / update-URL modal: labelled fields with a trailing caret on
-/// the focused one, the last rejection under them, and the key legend.
-pub(super) fn draw_form(frame: &mut Frame, area: Rect, entry: &ServerForm, theme: &Theme) {
+/// The add-server / update-URL modal: labelled fields, the last rejection
+/// under them, and the key legend. Returns where the caret is.
+pub(super) fn draw_form(
+    frame: &mut Frame,
+    area: Rect,
+    entry: &ServerForm,
+    theme: &Theme,
+) -> Option<Position> {
     // Greedy width: at least the house 58, and as much more as the
     // longest entry needs to read on one line — a pre-filled `server.met` URL
     // is longer than the add-server fields ever are.
     let width = clamp_u16(entry.form.natural_width() + 2)
         .max(FORM_W)
         .min(area.width);
-    let inner_w = usize::from(width).saturating_sub(2).max(1);
-
-    let mut lines = entry.form.render(inner_w, theme, true).lines;
-    lines.push(Line::raw(""));
-    lines.push(Line::from(vec![
-        Span::styled(" Tab", Style::new().fg(theme.accent)),
-        Span::styled(" field    ", Style::new().fg(theme.fg)),
-        Span::styled("Enter", Style::new().fg(theme.accent)),
-        Span::styled(
-            format!(" {}    ", entry.kind.commit_verb()),
-            Style::new().fg(theme.fg),
-        ),
-        Span::styled("Esc", Style::new().fg(theme.accent)),
-        Span::styled(" cancel", Style::new().fg(theme.fg)),
-    ]));
-
-    Modal::new(entry.kind.title(), theme).draw(frame, area, width, theme, lines);
+    Modal::new(entry.kind.title(), theme).draw_form(
+        frame,
+        area,
+        width,
+        theme,
+        &entry.viewport,
+        |width| {
+            let inner_w = usize::from(width).saturating_sub(2).max(1);
+            let legend = legend(
+                &[hints::NEXT_FIELD, entry.kind.commit(), hints::ESC_CANCEL],
+                theme,
+            );
+            entry.form.render_modal(inner_w, theme, vec![legend])
+        },
+    )
 }
 
 impl NetworksView {
@@ -180,7 +190,28 @@ impl NetworksView {
         if state.server_list_updating {
             return ViewOutcome::Emit(Action::Flash(crate::words::server::LIST_UPDATE_RUNNING));
         }
-        self.form = Some(ServerForm::update_url(&state.preferences.server_met_url));
+        self.form = Some(ServerForm::update_url(
+            &state.preferences.core.server_met_url,
+        ));
+        ViewOutcome::Redraw
+    }
+
+    /// A paste into an open form; nothing else on this tab takes text.
+    pub(super) fn paste(&mut self, text: &str) -> ViewOutcome {
+        let filter = match self.focus {
+            super::Pane::Servers => &mut self.filter,
+            super::Pane::Log => &mut self.log_filter,
+        };
+        if self.form.is_none()
+            && let Some(outcome) = filter.paste(text)
+        {
+            return outcome;
+        }
+        let Some(entry) = self.form.as_mut() else {
+            return ViewOutcome::Ignored;
+        };
+        entry.form.paste(text);
+        release_form(&mut entry.viewport);
         ViewOutcome::Redraw
     }
 
@@ -188,6 +219,10 @@ impl NetworksView {
         let Some(entry) = self.form.as_mut() else {
             return ViewOutcome::Ignored;
         };
+        if scroll_form(&mut entry.viewport, key.code) {
+            return ViewOutcome::Redraw;
+        }
+        release_form(&mut entry.viewport);
         match entry.form.handle_key(key) {
             FormKey::Cancel => {
                 self.form = None;
@@ -217,7 +252,7 @@ mod tests {
 
     use rmule_core::CoreEvent;
 
-    use crate::golden::assert_golden;
+    use crate::golden::{assert_golden, assert_golden_caret};
 
     use crate::views::networks::*;
 
@@ -374,7 +409,7 @@ mod tests {
             .iter()
             .find(|item| item.label.starts_with("Update"))
             .expect("update item");
-        assert_eq!(update.disabled.as_deref(), Some("(update in flight)"));
+        assert_eq!(update.reason.as_deref(), Some("update in flight"));
     }
 
     #[test]
@@ -385,9 +420,9 @@ mod tests {
         typed(&mut view, &state, "10.0.0.300");
         view.handle_key(press(KeyCode::Enter), &state); // surfaces the validation error
         let now = Instant::now();
-        assert_golden("networks_add_form", 78, 21, |frame| {
+        assert_golden_caret("networks_add_form", 78, 21, |frame| {
             let area = frame.area();
-            view.draw(frame, area, &state, &Theme::default_dark(), now);
+            view.draw(frame, area, &state, &Theme::default_dark(), now)
         });
     }
 
@@ -397,9 +432,9 @@ mod tests {
         let mut view = NetworksView::new();
         view.handle_key(press(KeyCode::Char('U')), &state);
         let now = Instant::now();
-        assert_golden("networks_update_form", 78, 21, |frame| {
+        assert_golden_caret("networks_update_form", 78, 21, |frame| {
             let area = frame.area();
-            view.draw(frame, area, &state, &Theme::default_dark(), now);
+            view.draw(frame, area, &state, &Theme::default_dark(), now)
         });
     }
 
@@ -429,5 +464,33 @@ mod tests {
                 base + Duration::from_secs(2),
             );
         });
+    }
+
+    /// Tab to the last field of a form taller than the frame keeps that
+    /// field, and the legend under it, on screen; `Home` reaches the top.
+    #[test]
+    fn golden_networks_add_form_scrolls_in_a_short_frame() {
+        let state = listed_servers();
+        let mut view = NetworksView::new();
+        view.handle_key(press(KeyCode::Char('a')), &state);
+        let now = Instant::now();
+        let shown = |view: &mut NetworksView| {
+            crate::golden::render_to_lines(70, 6, |frame| {
+                let area = frame.area();
+                view.draw(frame, area, &state, &Theme::default_dark(), now);
+            })
+        };
+        assert_golden_caret("networks_add_form_short", 70, 6, |frame| {
+            let area = frame.area();
+            view.draw(frame, area, &state, &Theme::default_dark(), now)
+        });
+        view.handle_key(press(KeyCode::Tab), &state);
+        let last = shown(&mut view);
+        assert!(
+            last.contains("Port") && last.contains("Esc cancel"),
+            "{last}"
+        );
+        view.handle_key(press(KeyCode::PageUp), &state);
+        assert!(shown(&mut view).contains("Name"));
     }
 }

@@ -9,35 +9,52 @@
 //! peer sees a silent FIN before it ever sent its hello (a stock aMule then
 //! dead-lists the source). The pump's only cancellation point is serve
 //! shutdown.
+//!
+//! The pump is also where a TCP accept meets the **Accept Gates**, before the
+//! channel: what reaches the serve loop is a peer it will take, so its
+//! receive is the only await the loop's `select!` can cancel.
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use rmule_net::driver::SendSide;
 use rmule_net::peer::{
-    Admitted, ConnectOptions as PeerConnectOptions, Connection as PeerConnection, PeerListener,
-    PeerNetError, PeerStreamRole,
+    Admitted, ConnectOptions as PeerConnectOptions, Connection as PeerConnection,
+    PEER_SOCKET_TIMEOUT, PeerListener, PeerNetError, PeerStreamRole,
 };
 use rmule_primitives::{PeerCrypt, PeerEndpoint, UserHash};
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::mpsc;
 
 use crate::adapters::HelloAdverts;
+use crate::adapters::peer_link::{MetHello, SharedPeerLinks};
 use crate::awaited_testers::{AwaitedServer, SharedAwaitedTesters};
 use crate::server_session::HelloSource;
 use crate::service::{LoginStep, PortTestAdmission, PortTestLateAdmission};
 
-/// How long a callback dial-back's TCP connect is given. A requester that
-/// asked to be dialed is waiting for it, so a connect that does not come up
-/// quickly is a requester that is gone.
-const DIAL_BACK_TIMEOUT: Duration = Duration::from_secs(15);
+mod gates;
+mod limit;
+
+pub(super) use gates::AcceptGates;
+use gates::Arrival;
 
 /// Per-accept connect options, built fresh for every accept from the one
 /// [`HelloAdverts`] read every hello starts from — SUI with a
 /// fresh challenge per accepted connection among them (ADR-0041).
 /// The peer's crypt side is unknown here and unused: a responder keys from its
 /// own User Hash.
-fn build_accept_options(adverts: &HelloAdverts) -> PeerConnectOptions {
-    adverts.connect_options(PeerCrypt::unknown())
+///
+/// The session answers the peer's hello through a gate on `links`: what the
+/// hello meets among rmule's dials is settled in the step that reads it
+/// (ADR-0107 invariant 7).
+fn build_accept_options(
+    adverts: &HelloAdverts,
+    links: &SharedPeerLinks,
+    own: UserHash,
+) -> PeerConnectOptions {
+    let mut options = adverts.connect_options(PeerCrypt::unknown());
+    options.hello_gate = Some(MetHello::gate(links.clone(), own));
+    options
 }
 
 /// Where a stream core opened or raised elsewhere enters the serve pipeline:
@@ -45,21 +62,21 @@ fn build_accept_options(adverts: &HelloAdverts) -> PeerConnectOptions {
 ///
 /// Both carry an ordinary inbound peer — a punched path because it is one, a
 /// dial-back because the requester asked us to connect precisely so that *it*
-/// could ask *us* for a file — so both must meet the ordinary inbound gates:
-/// the IP filter, the ban store, `inbound_triage`'s callback adoption. The one
-/// place all three already apply is the channel this pump feeds. So neither
-/// gets a pipeline of its own: the stream is wrapped in a `PeerConnection`
-/// with the very handshake context and per-accept options the pump builds, and
-/// pushed down the pump's own channel. Nothing above that line can tell a
-/// punched path, a dialed-back socket and an accepted one apart — which is why
-/// `role` is a parameter: a dial-back's hello goes first.
+/// could ask *us* for a file — so both must meet what an accepted socket
+/// meets: the **Accept Gates** and `inbound_triage`'s callback adoption. So
+/// neither gets a pipeline of its own: the stream is wrapped in a
+/// `PeerConnection` with the very handshake context and per-accept options the
+/// pump builds, passed through the pump's own gates, and pushed down the
+/// pump's own channel. Nothing past the gates can tell a punched path, a
+/// dialed-back socket and an accepted one apart — which is why `role` is a
+/// parameter: a dial-back's hello goes first.
 ///
 /// The sender is **weak** on purpose. The pump ends when the serve activity
 /// drops the receiver (`accept_tx.closed()`), and a strong clone parked in
 /// this cell would keep that signal from ever firing — so serving could never
 /// release its port.
 #[derive(Clone, Default)]
-pub(crate) struct SharedTunnelAdmit(Arc<std::sync::Mutex<Option<TunnelAdmit>>>);
+pub(crate) struct SharedTunnelAdmit(Arc<parking_lot::Mutex<Option<TunnelAdmit>>>);
 
 /// Why a tunnel could not enter the serve pipeline. Both arms mean the same
 /// thing to the caller — close the tunnel — and differ only in what they say
@@ -73,28 +90,33 @@ pub(crate) enum TunnelAdmitRefusal {
     PipelineClosed,
 }
 
-/// One connection the serve pipeline is about to triage, and the one thing a
-/// socket cannot say about itself.
+/// One connection past the **Accept Gates**, which the serve pipeline is about
+/// to triage, and the one thing a socket cannot say about itself.
 ///
-/// `dialed_toward` is the target **User Hash** a NAT-T punch raised this
-/// stream toward (ADR-0091). It is `None` for every road but one — a TCP
-/// accept, an accepted (Responder) tunnel, a callback dial-back — because none
-/// of them was opened toward a hash *this* node named. Only the NAT-T front
-/// knows it, and only for a tunnel it dialed, so it travels with the
-/// connection rather than being re-derived from the stream's role: a Dialer
-/// role alone says who spoke first, not who was aimed at.
+/// `origin` says what the NAT-T front knows about the stream (ADR-0091). Only
+/// the front knows it, so it travels with the connection rather than being
+/// re-derived from the stream's role: a Dialer role alone says who spoke
+/// first, not who was aimed at.
 pub(crate) struct AdmittedPeer {
     pub(crate) conn: PeerConnection,
-    pub(crate) dialed_toward: Option<UserHash>,
-    /// A **Test Connection** (ADR-0046): a plain dial the listener admitted
-    /// under `Required` only because a reachability test is awaited from its
-    /// address. It meets the same gates, then is answered by
-    /// [`answer_test_connection`](super::test_connection::answer_test_connection)
-    /// and never reaches the triage — no serving, no adoption.
-    pub(crate) test_connection: bool,
+    pub(crate) origin: InboundOrigin,
     /// The awaited server, when this connection came from its address inside
     /// its port test's window: where the test's end is reported.
     pub(crate) awaited_server: Option<AwaitedServer>,
+}
+
+/// Where an inbound stream came from, as far as the NAT-T front is concerned.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum InboundOrigin {
+    /// Not a Tunnel, or none the front raised: a TCP accept, a callback
+    /// dial-back.
+    Socket,
+    /// A Tunnel a peer opened. It names nobody until its hello does, and that
+    /// hello is reported back to the front (ADR-0091, security rule 12).
+    AcceptedTunnel,
+    /// A Tunnel this node dialed toward the named User Hash, which is what it
+    /// was aimed at and no more: its hello is reported the same way.
+    DialedTunnel(UserHash),
 }
 
 /// The live half of [`SharedTunnelAdmit`] — everything the pump reads per
@@ -103,12 +125,16 @@ struct TunnelAdmit {
     accept_tx: mpsc::WeakSender<AdmittedPeer>,
     hello: HelloSource,
     adverts: HelloAdverts,
+    gates: AcceptGates,
+    links: SharedPeerLinks,
 }
 
 impl SharedTunnelAdmit {
     /// Hand one open stream to the serve pipeline as `role`'s side of a peer
     /// conversation. The ordinary road: nothing in this node aimed the stream
-    /// at a named peer, so no download can claim it.
+    /// at a named peer, so no download can claim it. `Ok` means the pipeline
+    /// took the stream: queued for the serve loop, or refused at its gates
+    /// and closed.
     ///
     /// # Errors
     /// [`TunnelAdmitRefusal`] when this node is not serving, or its pipeline
@@ -120,9 +146,29 @@ impl SharedTunnelAdmit {
         role: PeerStreamRole,
     ) -> Result<(), TunnelAdmitRefusal>
     where
-        S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+        S: AsyncRead + AsyncWrite + SendSide + Unpin + Send + 'static,
     {
-        self.push(stream, peer, role, None).await
+        self.push(stream, peer, role, InboundOrigin::Socket).await
+    }
+
+    /// Hand a Tunnel a peer opened to the serve pipeline. The same road as
+    /// [`admit`](Self::admit), except that its hello is reported to the NAT-T
+    /// front (ADR-0091, security rule 12).
+    ///
+    /// # Errors
+    /// [`TunnelAdmitRefusal`] when this node is not serving, or its pipeline
+    /// has closed.
+    pub(crate) async fn admit_accepted_tunnel<S>(
+        &self,
+        stream: S,
+        peer: PeerEndpoint,
+        role: PeerStreamRole,
+    ) -> Result<(), TunnelAdmitRefusal>
+    where
+        S: AsyncRead + AsyncWrite + SendSide + Unpin + Send + 'static,
+    {
+        self.push(stream, peer, role, InboundOrigin::AcceptedTunnel)
+            .await
     }
 
     /// Hand one open stream to the serve pipeline, saying which target's punch
@@ -142,9 +188,10 @@ impl SharedTunnelAdmit {
         target: UserHash,
     ) -> Result<(), TunnelAdmitRefusal>
     where
-        S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+        S: AsyncRead + AsyncWrite + SendSide + Unpin + Send + 'static,
     {
-        self.push(stream, peer, role, Some(target)).await
+        self.push(stream, peer, role, InboundOrigin::DialedTunnel(target))
+            .await
     }
 
     async fn push<S>(
@@ -152,81 +199,110 @@ impl SharedTunnelAdmit {
         stream: S,
         peer: PeerEndpoint,
         role: PeerStreamRole,
-        dialed_toward: Option<UserHash>,
+        origin: InboundOrigin,
     ) -> Result<(), TunnelAdmitRefusal>
     where
-        S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+        S: AsyncRead + AsyncWrite + SendSide + Unpin + Send + 'static,
     {
-        // The guard never crosses the send await: it holds the pump's cell.
-        let (accept_tx, connection) = {
-            let held = self.0.lock().expect("tunnel admit cell");
+        // The guard never crosses an await: it holds the pump's cell.
+        let (accept_tx, gates, conn) = {
+            let held = self.0.lock();
             let admit = held.as_ref().ok_or(TunnelAdmitRefusal::NotServing)?;
             let accept_tx = admit
                 .accept_tx
                 .upgrade()
                 .ok_or(TunnelAdmitRefusal::PipelineClosed)?;
-            let options = build_accept_options(&admit.adverts);
             let handshake = admit.hello.now();
+            let own = handshake.identity.user_hash();
+            let options = build_accept_options(&admit.adverts, &admit.links, own);
             (
                 accept_tx,
+                admit.gates.clone(),
                 PeerConnection::over_stream(stream, peer, role, handshake, options),
             )
         };
+        // Neither a Tunnel nor a dial-back is ever a Test Connection or a
+        // server's port test: those are TCP accepts the listener classed.
+        let arrival = Arrival {
+            conn,
+            origin,
+            test_connection: false,
+            awaited_server: None,
+        };
+        let Some(admitted) = gates.pass(arrival).await else {
+            return Ok(());
+        };
         accept_tx
-            .send(AdmittedPeer {
-                conn: connection,
-                dialed_toward,
-                test_connection: false,
-                awaited_server: None,
-            })
+            .send(admitted)
             .await
             .map_err(|_| TunnelAdmitRefusal::PipelineClosed)
     }
 
-    /// Enact one callback dial-back (ADR-0061 routes 2/4): open the stream
-    /// toward `requester` — obfuscated toward `obfuscate_toward` when the
-    /// verdict named a key — and admit it as the dialer's side, so the peer
-    /// that asked us to connect meets the IP filter, the ban store and the
-    /// triage exactly as if it had dialed us. Every dial-back — the firewalled
-    /// front's `0x99`/`0x95` and a served link's `0x99` — goes
-    /// through here.
-    ///
-    /// Fire-and-forget on its own task: aMule treats a refused callback dial
-    /// as silent and the requester's own timeout is what notices. A crypt
-    /// handshake that does not complete lands in the same place, because to
-    /// the requester the two are the same silence.
+    /// Enact one callback dial-back (ADR-0061 routes 2/4) on its own task:
+    /// [`callback_dial_back`](Self::callback_dial_back), fire-and-forget.
+    /// Every dial-back — the firewalled front's `0x99`/`0x95` and a served
+    /// link's `0x99` — goes through here; a server-relayed one awaits
+    /// [`callback_dial_back`](Self::callback_dial_back) on a task that holds
+    /// its in-flight claim.
     pub(crate) fn spawn_callback_dial_back(
         &self,
         requester: PeerEndpoint,
         obfuscate_toward: Option<UserHash>,
     ) {
         let admit = self.clone();
-        tokio::spawn(async move {
-            let stream =
-                match PeerConnection::dial_stream(requester, DIAL_BACK_TIMEOUT, obfuscate_toward)
-                    .await
-                {
-                    Ok(stream) => stream,
-                    Err(error) => {
-                        tracing::debug!(?requester, %error, "callback dial-back refused; silent");
-                        return;
-                    }
-                };
-            if let Err(refusal) = admit.admit(stream, requester, PeerStreamRole::Dialer).await {
-                tracing::debug!(
-                    ?requester,
-                    ?refusal,
-                    "callback dial-back opened but the serve pipeline would not take it"
-                );
-            }
-        });
+        tokio::spawn(async move { admit.callback_dial_back(requester, obfuscate_toward).await });
+    }
+
+    /// One callback dial-back: open the stream toward `requester` —
+    /// obfuscated toward `obfuscate_toward` when the verdict named a key —
+    /// and admit it as the dialer's side, so the peer that asked us to
+    /// connect meets the IP filter, the ban store and the triage exactly as
+    /// if it had dialed us. Ends once the pipeline took the link or the dial
+    /// failed.
+    ///
+    /// Silent either way: aMule treats a refused callback dial as silent and
+    /// the requester's own timeout is what notices. A crypt handshake that
+    /// does not complete lands in the same place, because to the requester the
+    /// two are the same silence. The connect is given what aMule's socket
+    /// gives it (ADR-0107 invariant 7).
+    pub(crate) async fn callback_dial_back(
+        &self,
+        requester: PeerEndpoint,
+        obfuscate_toward: Option<UserHash>,
+    ) {
+        let stream =
+            match PeerConnection::dial_stream(requester, PEER_SOCKET_TIMEOUT, obfuscate_toward)
+                .await
+            {
+                Ok(stream) => stream,
+                Err(error) => {
+                    tracing::debug!(?requester, %error, "callback dial-back refused; silent");
+                    return;
+                }
+            };
+        if let Err(refusal) = self.admit(stream, requester, PeerStreamRole::Dialer).await {
+            tracing::debug!(
+                ?requester,
+                ?refusal,
+                "callback dial-back opened but the serve pipeline would not take it"
+            );
+        }
+    }
+
+    /// Whether a stream admitted now would be taken: a pump filled the cell,
+    /// so there is a hello to write, and its pipeline is still open.
+    pub(crate) fn is_serving(&self) -> bool {
+        self.0
+            .lock()
+            .as_ref()
+            .is_some_and(|admit| admit.accept_tx.strong_count() > 0)
     }
 
     /// Empty the cell: this node is not serving any more. Called
     /// by the adapter's release, so the refusal a tunnel meets between two
     /// serve activities names the node's state rather than the last pump's.
     pub(crate) fn clear(&self) {
-        *self.0.lock().expect("tunnel admit cell") = None;
+        *self.0.lock() = None;
     }
 
     /// Fill the cell without a listener — the wiring seam the NAT-T leg needs
@@ -235,7 +311,7 @@ impl SharedTunnelAdmit {
     ///
     /// It changes no policy: the options are the pump's own, built by the same
     /// function from `adverts`, and the tunnel still becomes an ordinary
-    /// `PeerConnection`.
+    /// `PeerConnection`. The gates are empty: nothing is filtered or banned.
     #[cfg(test)]
     pub(crate) fn install_for_test(
         &self,
@@ -243,10 +319,12 @@ impl SharedTunnelAdmit {
         ctx: rmule_peer::PeerHandshakeContext,
         adverts: HelloAdverts,
     ) {
-        *self.0.lock().expect("tunnel admit cell") = Some(TunnelAdmit {
+        *self.0.lock() = Some(TunnelAdmit {
             accept_tx: accept_tx.downgrade(),
             hello: HelloSource::Fixed(ctx),
             adverts,
+            gates: AcceptGates::default(),
+            links: SharedPeerLinks::default(),
         });
     }
 }
@@ -292,36 +370,41 @@ const ACCEPT_RETRY_BACKOFF: Duration = Duration::from_millis(100);
 const ACCEPT_FATAL_AFTER: usize = 5;
 
 /// Spawn the accept pump: a dedicated task that owns the bound listener and
-/// feeds ready connections through a small channel. Ownership is the point
-/// `PeerListener::accept` with obfuscation armed holds an
-/// accepted `TcpStream` across the byte-0 peek await, so it must never run
-/// inside a future a caller's `select!` can cancel — a cancelled mid-peek
-/// accept drops the socket and the peer sees a silent FIN before it ever sent
-/// its hello (a stock aMule then dead-lists the source). That holds for the
-/// serve runner's loop *and* for `start`'s own during-login select, which is
-/// why `start` spawns the pump before awaiting the login and `hello` is read
-/// live — client id 0 and no server until a login lands, then that session's
-/// server and its current id, which a mid-session `OP_IDCHANGE` moves. Inside the
-/// pump the only cancellation point is serve shutdown (`tx.closed()`), where
-/// dropping a mid-handshake stream is the intended teardown.
+/// feeds ready connections through a small channel. A stream the listener has
+/// taken stays with it, and a socket not heard from yet waits beside the
+/// accept, so one silent connect holds nothing up (`rmule_net::peer::
+/// UNIDENTIFIED_SOCKET_BOUND`). What must not be cancelled is this pump's own
+/// work on an admitted connection: `start`'s during-login select would drop it
+/// and the peer would see a silent FIN before its hello was answered (a stock
+/// aMule then dead-lists the source), so `start` spawns the pump before
+/// awaiting the login and `hello` is read live — client id 0 and no server
+/// until a login lands, then that session's server and its current id, which a
+/// mid-session `OP_IDCHANGE` moves. Inside the pump the only cancellation point
+/// is serve shutdown (`tx.closed()`), where dropping a mid-handshake stream is
+/// the intended teardown.
 ///
 /// `awaited` is the **Awaited Testers** level (ADR-0046 "Test Connections"):
 /// under `Required`, a plain dial from an address in it is admitted as a
-/// Test Connection rather than refused.
+/// Test Connection rather than refused. Every accept then meets `gates` before
+/// the channel, and so does every stream the admit seam pushes.
 pub(super) fn spawn_accept_pump(
     listener: PeerListener,
     hello: HelloSource,
     adverts: HelloAdverts,
     tunnel_admit: &SharedTunnelAdmit,
     awaited: SharedAwaitedTesters,
+    gates: AcceptGates,
+    links: SharedPeerLinks,
 ) -> AcceptPump {
     let (accept_tx, accept_rx) = mpsc::channel(16);
     // A risen NAT-T Tunnel joins this same channel (ADR-0091), answered with
     // this same context and these same per-accept options.
-    *tunnel_admit.0.lock().expect("tunnel admit cell") = Some(TunnelAdmit {
+    *tunnel_admit.0.lock() = Some(TunnelAdmit {
         accept_tx: accept_tx.downgrade(),
         hello: hello.clone(),
         adverts: adverts.clone(),
+        gates: gates.clone(),
+        links: links.clone(),
     });
     let task = tokio::spawn(async move {
         // Errno-agnostic fatal detection (see [`ACCEPT_RETRY_BACKOFF`]):
@@ -332,7 +415,12 @@ pub(super) fn spawn_accept_pump(
             // Both are read once the peer has arrived, not when the wait began:
             // the listener can sit idle for as long as it likes, and a hello
             // must answer with what is true now.
-            let fresh = || (hello.now(), build_accept_options(&adverts));
+            let fresh = || {
+                let handshake = hello.now();
+                let own = handshake.identity.user_hash();
+                let options = build_accept_options(&adverts, &links, own);
+                (handshake, options)
+            };
             tokio::select! {
                 // Serve stopped (receiver dropped): exit, releasing the port.
                 _ = accept_tx.closed() => break,
@@ -366,13 +454,19 @@ pub(super) fn spawn_accept_pump(
                         };
                         // A TCP accept was aimed at nobody: this node did not
                         // dial it, so no download may claim it (ADR-0091).
-                        let accepted = AdmittedPeer {
+                        let arrival = Arrival {
                             conn,
-                            dialed_toward: None,
+                            origin: InboundOrigin::Socket,
                             test_connection,
                             awaited_server,
                         };
-                        if accept_tx.send(accepted).await.is_err() {
+                        // Gated here, in this branch's body, where serve
+                        // shutdown cannot cancel it; the serve loop receives
+                        // only what passed.
+                        let Some(admitted) = gates.pass(arrival).await else {
+                            continue;
+                        };
+                        if accept_tx.send(admitted).await.is_err() {
                             break;
                         }
                     }

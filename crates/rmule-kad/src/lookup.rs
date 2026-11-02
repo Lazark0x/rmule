@@ -3,7 +3,7 @@
 //! sources and diagnostics a finished walk reports.
 
 use rmule_primitives::{
-    ClientId, Ipv4Endpoint, Ipv6Endpoint, PeerSource, SightedBuddy, SourceCryptOptions,
+    ClientId, Informant, Ipv4Endpoint, Ipv6Endpoint, PeerSource, SightedBuddy, SourceCryptOptions,
     SourceLookupTarget, SourceRoad, SourceSighting, UserHash,
 };
 
@@ -97,25 +97,24 @@ impl KadPublishRequest {
 /// - `TAG_BUDDYHASH` (`0xF8`, eMuleAI's `TAG_SERVINGBUDDYHASH`, same byte) —
 ///   32 hex characters of `~publisherKadID`.
 ///
-/// The hash's byte order is **capture-pinned** to aMule's
+/// The hash has two layouts, a per-word byte swap apart, and a row does not say
+/// which it holds. eMule 0.70b, eMuleAI, aMule from 3.2.0 and emule-qt from
+/// `3ba9a4d4e0` print `CUInt128::GetData()` (`md4str(uBuddyID.GetData())`),
+/// the ID's wire order on a little-endian host. aMule through 3.1.0, kno and
+/// older emule-qt print `ToByteArray`'s big-endian bytes, which is **captured**
 /// (`tests/fixtures/buddy/captured/amule-233-publish-source-req-20260922`): a
 /// firewalled aMule whose buddy ID spells `FFEEDDCC…` on the wire wrote
-/// `CCDDEEFF8899AABB4455667700112233`, which is `CUInt128::ToByteArray`'s true
-/// big-endian order (`src/kademlia/utils/UInt128.cpp`) in **upper-case** hex,
-/// not the wire order. eMule 0.70b and eMuleAI encode the same tag from
-/// `CUInt128::GetData()` (the raw word-ordered bytes,
-/// `md4str(uBuddyID.GetData())`), which on a little-endian host is the other
-/// string — so the two families disagree on this tag and cannot address each
-/// other's buddies. That half stays a source reading: neither client is on the
-/// bench. rmule reads and writes aMule's form, converting to [`KadId`]'s wire
-/// order with the same self-inverse word swap the row's source ID uses.
+/// `CCDDEEFF8899AABB4455667700112233`, upper-case. No eMule-layout row has been
+/// captured. rmule writes the eMule layout and takes [`Self::buddy_id`] from it,
+/// so the hex is [`KadId`]'s bytes unconverted; the other reading is
+/// [`Self::fallback_buddy_id`] (ADR-0061).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct KadBuddyContact {
     /// The buddy relationship ID: `~publisherKadID`, in [`KadId`] wire order.
     pub buddy_id: KadId,
     /// The buddy's UDP endpoint, when the row carried both `TAG_SERVERIP` and
-    /// a non-zero `TAG_SERVERPORT`, and the address can be a remote unicast
-    /// host: both readers refuse `0.0.0.0`, loopback, link-local, multicast
+    /// a non-zero `TAG_SERVERPORT`, and the address lies in no Reserved Range
+    /// (ADR-0085): both readers refuse `0/8`, loopback, link-local, multicast
     /// and `240/4` (which holds `255.255.255.255`). `None` leaves a Kad walk
     /// toward [`Self::buddy_id`] as the only way to find it. That is where
     /// eMuleAI's IPv6-buddy row lands, since its `TAG_SERVERIP` is
@@ -136,7 +135,7 @@ pub struct KadBuddyContact {
     /// publisher leaves it `None`. A stored row whose IPv4 half was refused
     /// re-serves this port beside `bi6`, so an eMuleAI searcher still gets
     /// the endpoint its publisher wrote. No rmule road dials it, because the
-    /// buddy roads are IPv4 (ADR-0087: "`bi6` never decides a road").
+    /// buddy roads are IPv4 (ADR-0087).
     pub buddy_udp_ipv6: Option<Ipv6Endpoint>,
 }
 
@@ -165,13 +164,12 @@ pub enum KadPublishPosture {
 }
 
 impl KadBuddyContact {
-    /// The same `TAG_BUDDYHASH` read in the eMule 0.70b / eMuleAI spelling —
-    /// `md4str(GetData())`, eMuleAI `srchybrid/kademlia/kademlia/Search.cpp:888`
-    /// — which is [`Self::buddy_id`] one per-word swap away
-    /// ([`KadId::word_swapped`]). A requester tries it only after the primary
-    /// drew no dial-back. **Source-derived**: no eMule-family row
-    /// has been captured. `None` when the swap is a no-op, so both spellings
-    /// already name the one ID.
+    /// The same `TAG_BUDDYHASH` read the way aMule through 3.1.0 wrote it —
+    /// `ToByteArray`, captured off stock 2.3.3 — which is [`Self::buddy_id`]
+    /// one per-word swap away ([`KadId::word_swapped`]). A requester tries it
+    /// only after the primary drew no dial-back, the order aMule 3.2.0 tries
+    /// them in. `None` when the swap is a no-op, so both layouts already name
+    /// the one ID.
     #[must_use]
     pub fn fallback_buddy_id(&self) -> Option<KadId> {
         let swapped = self.buddy_id.word_swapped();
@@ -374,11 +372,14 @@ impl KadSourceCandidate {
     /// from the bytes: a direct row is its record, a buddy row reaches its
     /// buddy, a type-6 row takes the `0x95` at its observed endpoint.
     ///
+    /// The row is `informant`'s word: the storer whose `0x3B` carried it
+    /// (ADR-0085).
+    ///
     /// `None` for a refusal, and for a buddy row whose publisher's Kad UDP
     /// endpoint the storer did not observe: that address is the one value that
     /// tells two firewalled publishers apart, so nothing could hold the row.
     #[must_use]
-    pub fn sighting(self) -> Option<SourceSighting> {
+    pub fn sighting(self, informant: Informant) -> Option<SourceSighting> {
         let facts = self.facts;
         let road = match self.repr {
             Repr::Direct(source) => SourceRoad::Record(source),
@@ -401,6 +402,7 @@ impl KadSourceCandidate {
                 road,
                 facts.map(|facts| facts.user_hash),
                 facts.and_then(|facts| facts.connect_options),
+                informant,
             )
             .with_ipv6_half(facts.and_then(|facts| facts.ipv6)),
         )

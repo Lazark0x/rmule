@@ -19,6 +19,7 @@ fn punchable(n: u32) -> SourceSighting {
         rmule_primitives::PeerSource::new(low(n), 4662),
         Some(UserHash::from_bytes([0xAB; UserHash::BYTE_LEN])),
         None,
+        rmule_primitives::Informant::Own,
     )
 }
 
@@ -74,7 +75,7 @@ fn a_low_id_downloader_punches_its_low_id_candidate_at_once() {
         decisions.iter().any(|d| matches!(
             d,
             Decision::FallToNatTraversal { candidate, silence, .. }
-                if candidate.low_id == low(7)
+                if candidate.key().low_id() == Some(low(7))
                     && *silence == CallbackSilence::NoCallbackPossible
         )),
         "the first candidate falls to NAT traversal on admission: {decisions:?}"
@@ -112,7 +113,7 @@ fn a_punch_road_slot_waits_on_the_attempt_not_the_30_s_release() {
     assert!(
         lapsed.iter().any(|d| matches!(
             d,
-            Decision::FallToNatTraversal { candidate, .. } if candidate.low_id == low(8)
+            Decision::FallToNatTraversal { candidate, .. } if candidate.key().low_id() == Some(low(8))
         )),
         "the attempt's bound releases the slot to the next candidate: {lapsed:?}"
     );
@@ -130,7 +131,7 @@ fn a_candidate_with_neither_callback_nor_coordinator_still_starves_the_download(
     // one behind it.
     let mut state = callback_state(vec![peer(1)], Vec::new(), false, 1);
     let _ = state.start(t0());
-    let _ = state.on_worker_event(t0(), peer(1), PeerWorkerEvent::Connected);
+    let _ = probed(&mut state, t0(), peer(1));
 
     let discovered = via_global(
         &mut state,
@@ -140,7 +141,7 @@ fn a_candidate_with_neither_callback_nor_coordinator_still_starves_the_download(
     assert!(
         !discovered.iter().any(|d| matches!(
             d,
-            Decision::RequestGlobalCallback { .. } | Decision::FallToNatTraversal { .. }
+            Decision::RequestCallback { .. } | Decision::FallToNatTraversal { .. }
         )),
         "no road is open to it, so neither road is taken: {discovered:?}"
     );
@@ -157,12 +158,12 @@ fn a_candidate_with_neither_callback_nor_coordinator_still_starves_the_download(
 fn an_adopted_global_callback_peer_binds_then_its_connected_event_assigns_it() {
     use rmule_primitives::PeerSource;
     let server = source_server(9);
-    let key = CallbackKey {
+    let key = CallbackKey::Server {
         server: Some(server),
         low_id: low(7),
     };
-    let mut state = callback_state(Vec::new(), Vec::new(), true, 1);
-    // Requests a per-server callback for low(7), holding slot 0.
+    let mut state = logged_into(server, 1);
+    // Requests a callback for low(7), holding slot 0.
     let _ = via_global(&mut state, server, vec![PeerSource::new(low(7), 4662)]);
 
     let adopted = state.on_callback_connected(t0(), key, peer(9)).decisions;
@@ -186,55 +187,55 @@ fn an_adopted_global_callback_peer_binds_then_its_connected_event_assigns_it() {
         "not assigned until the adopted worker's own Connected arrives"
     );
 
-    let _ = state.on_worker_event(t0(), peer(9), PeerWorkerEvent::Connected);
+    let _ = connect(&mut state, t0(), peer(9));
     assert!(
         state.is_working(peer(9)),
         "the adopted global peer holds a part once its Connected flows the normal path"
     );
 }
 
+/// A source that stayed silent keeps its clock past its record (stock 2.3.3
+/// `PartFile.cpp:1470-1484`, `FILEREASKTIME`): the next sighting of its id,
+/// a server answer's or a UDP round's, does not call it again until the
+/// block has run out.
 #[test]
-fn a_lapsed_global_callback_frees_its_slot_for_the_next_candidate() {
+fn a_silent_low_id_is_not_called_back_again_until_its_block_runs_out() {
     use rmule_primitives::PeerSource;
-    // One slot, two Low-ID globals from the same server: the first callback is
-    // requested; on timeout the freed slot drives a callback for the second.
     let server = source_server(9);
-    let key = CallbackKey {
+    let row = || vec![PeerSource::new(low(7), 4662)];
+    let calls = |decisions: &[Decision]| {
+        decisions
+            .iter()
+            .any(|d| matches!(d, Decision::RequestCallback { low_id, .. } if *low_id == low(7)))
+    };
+    let key = CallbackKey::Server {
         server: Some(server),
         low_id: low(7),
     };
-    let mut state = callback_state(Vec::new(), Vec::new(), true, 1);
-    let first = via_global(
-        &mut state,
-        server,
-        vec![PeerSource::new(low(7), 4662), PeerSource::new(low(8), 4662)],
+    let mut state = logged_into(server, 1);
+    assert!(calls(&via_global(&mut state, server, row())));
+    let _ = state.on_tick(t0() + CALLBACK_SILENCE_FALLBACK);
+    let _ = state.on_traversal_retired(
+        t0() + CALLBACK_SILENCE_FALLBACK,
+        key,
+        crate::diagnostics::NattRetirement::NotEnactable,
     );
+    let ended = state.on_tick(t0() + CALLBACK_TIMEOUT);
     assert!(
-        first.iter().any(|d| matches!(
-            d,
-            Decision::RequestGlobalCallback { low_id, .. } if *low_id == low(7)
-        )),
-        "the first Low-ID global is called back: {first:?}"
+        ended
+            .iter()
+            .any(|d| matches!(d, Decision::EndCallback { key: k } if *k == key)),
+        "{ended:?}"
     );
 
-    let next = state.on_tick(t0() + CALLBACK_TIMEOUT);
+    let again = via_global(&mut state, server, row());
+    assert!(!calls(&again), "the road went silent: {again:?}");
 
-    // The lapse retracts the routing entry (EndCallback) and the freed
-    // slot drives a callback for the next candidate.
-    assert!(
-        next.iter().any(|d| matches!(
-            d,
-            Decision::EndCallback { key: k } if *k == key
-        )),
-        "a lapsed global callback retracts its routing entry: {next:?}"
-    );
-    assert!(
-        next.iter().any(|d| matches!(
-            d,
-            Decision::RequestGlobalCallback { low_id, .. } if *low_id == low(8)
-        )),
-        "a lapsed global callback frees the slot for the next candidate: {next:?}"
-    );
+    for period in 1..=3 {
+        let _ = state.on_tick(t0() + CALLBACK_TIMEOUT + FILE_REASK_TIME * period);
+    }
+    let after = via_global(&mut state, server, row());
+    assert!(calls(&after), "the block ran out: {after:?}");
 }
 
 #[test]
@@ -285,7 +286,7 @@ fn an_adopted_callback_peer_binds_then_its_connected_event_assigns_it() {
         "not assigned until the adopted worker's own Connected arrives"
     );
 
-    let _ = state.on_worker_event(t0(), peer(9), PeerWorkerEvent::Connected);
+    let _ = connect(&mut state, t0(), peer(9));
     assert!(
         state.is_working(peer(9)),
         "the adopted peer holds a part once its Connected flows the normal path"
@@ -306,7 +307,7 @@ fn a_callback_landing_on_a_worked_endpoint_names_no_slot() {
             .any(|d| matches!(d, Decision::RequestCallback { low_id, .. } if *low_id == low(7))),
         "the second slot calls low(7) back beside the dial: {started:?}"
     );
-    let _ = state.on_worker_event(t0(), peer(9), PeerWorkerEvent::Connected);
+    let _ = connect(&mut state, t0(), peer(9));
     assert!(state.is_working(peer(9)));
 
     let landing = state.on_callback_connected(t0(), connected_key(low(7)), peer(9));
@@ -341,7 +342,7 @@ fn a_called_back_source_whose_worker_ends_without_a_rank_is_called_back_again() 
     let mut state = callback_state(Vec::new(), vec![low_candidate(7)], true, 1);
     let _ = state.start(t0());
     let _ = state.on_callback_connected(t0(), connected_key(low(7)), peer(9));
-    let _ = state.on_worker_event(t0(), peer(9), PeerWorkerEvent::Connected);
+    let _ = probed(&mut state, t0(), peer(9));
 
     let ended = state.on_worker_event(t0(), peer(9), PeerWorkerEvent::Disconnected);
 
@@ -431,38 +432,23 @@ fn a_callback_silent_for_twelve_seconds_falls_to_nat_traversal_with_the_records_
     );
 }
 
-/// A legacy candidate — one no coordinator could introduce us to — arms
-/// nothing extra and waits out its thirty seconds exactly as before. A global
-/// source is the shape that can be one: its server is not ours to ask.
+/// Twelve seconds of nothing is evidence only once the ask has left: a held
+/// `0x52` moves the silence with the wait, and a punch does not start beside a
+/// callback nobody has been sent.
 #[test]
-fn a_legacy_candidate_arms_no_fallback_and_lapses_at_its_own_deadline() {
-    use rmule_primitives::PeerSource;
-    let server = source_server(9);
-    let key = CallbackKey {
-        server: Some(server),
-        low_id: low(7),
-    };
-    let mut state = callback_state(Vec::new(), Vec::new(), true, 1);
-    let requested = via_global(&mut state, server, vec![PeerSource::new(low(7), 4662)]);
-    assert!(
-        requested
-            .iter()
-            .any(|d| matches!(d, Decision::RequestGlobalCallback { .. })),
-        "{requested:?}"
-    );
+fn a_held_callback_starts_its_silence_when_it_leaves() {
+    let candidate =
+        LowIdCandidate::from_sighting(punchable(7), None).expect("a Low-ID source is a candidate");
+    let mut state = callback_state(Vec::new(), vec![punchable(7)], true, 1);
+    state.start(t0());
+
+    let leaves_in = Duration::from_secs(40);
+    state.on_callback_held(t0(), candidate.key(), leaves_in);
+
+    assert!(state.on_tick(t0() + CALLBACK_SILENCE_FALLBACK).is_empty());
     assert_eq!(
         state.next_wake(),
-        Some(t0() + CALLBACK_TIMEOUT),
-        "no coordinator can introduce us, so nothing fires at 12 s"
-    );
-
-    // And the lapse it does have behaves exactly as it did before rung 1.
-    let lapsed = state.on_tick(t0() + CALLBACK_TIMEOUT);
-    assert!(
-        lapsed
-            .iter()
-            .any(|d| matches!(d, Decision::EndCallback { key: k } if *k == key)),
-        "the lapse retracts its routing entry: {lapsed:?}"
+        Some(t0() + leaves_in + CALLBACK_SILENCE_FALLBACK),
     );
 }
 
@@ -486,11 +472,7 @@ fn a_callback_that_lands_first_emits_no_fallback() {
         state.on_tick(t0() + CALLBACK_SILENCE_FALLBACK).is_empty(),
         "an adopted callback has nothing to fall back from"
     );
-    assert_eq!(
-        state.next_wake(),
-        Some(t0() + FILE_REASK_TIME),
-        "no deadline is left"
-    );
+    assert_eq!(state.next_wake(), None, "no deadline is left");
 }
 
 /// ADR-0091: the **Traversal Attempt** the fallback began has
@@ -574,7 +556,7 @@ fn a_punch_that_was_the_only_road_ends_the_candidate_when_it_retires() {
     assert!(
         retired.iter().any(|d| matches!(
             d,
-            Decision::FallToNatTraversal { candidate, .. } if candidate.low_id == low(8)
+            Decision::FallToNatTraversal { candidate, .. } if candidate.key().low_id() == Some(low(8))
         )),
         "the released slot punches the next candidate: {retired:?}"
     );
@@ -597,5 +579,52 @@ fn a_punch_that_was_the_only_road_ends_the_candidate_when_it_retires() {
             .on_traversal_retired(t0(), connected_key(low(8)), reason)
             .is_empty(),
         "the candidate is gone; a second retirement ends nothing twice"
+    );
+}
+
+/// A server relay that never left — no live session, no requester endpoint,
+/// a send nothing took — ends its road when the runner says so, not at the
+/// callback deadline: the candidate takes its next road at once (here the
+/// punch its facts admit), and once that has nothing either, the slot goes to
+/// the next candidate — all before the callback's thirty seconds.
+#[test]
+fn a_server_callback_that_never_left_moves_on_at_once() {
+    use crate::diagnostics::NattRetirement;
+
+    let mut state = callback_state(
+        Vec::new(),
+        vec![low_candidate(7), low_candidate(8)],
+        true,
+        1,
+    );
+    let opened = state.start(t0());
+    assert!(
+        opened
+            .iter()
+            .any(|d| matches!(d, Decision::RequestCallback { low_id, .. } if *low_id == low(7))),
+        "{opened:?}"
+    );
+    let key = connected_key(low(7));
+    let next_road = state.on_traversal_retired(t0(), key, NattRetirement::CallbackNotSent);
+    assert!(
+        next_road.iter().any(|d| matches!(
+            d,
+            Decision::FallToNatTraversal { candidate, silence, .. }
+                if candidate.key().low_id() == Some(low(7)) && *silence == CallbackSilence::NoCallbackPossible
+        )),
+        "the unsent road hands the candidate to the punch now: {next_road:?}"
+    );
+    let freed = state.on_traversal_retired(t0(), key, NattRetirement::NotEnactable);
+    assert!(
+        freed
+            .iter()
+            .any(|d| matches!(d, Decision::EndCallback { key: ended } if *ended == key)),
+        "{freed:?}"
+    );
+    assert!(
+        freed
+            .iter()
+            .any(|d| matches!(d, Decision::RequestCallback { low_id, .. } if *low_id == low(8))),
+        "the slot goes to the next candidate: {freed:?}"
     );
 }

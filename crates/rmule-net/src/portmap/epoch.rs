@@ -134,13 +134,16 @@ impl EpochTracker {
     }
 }
 
-/// RFC 6887 §8.5: a backwards epoch, or client and server clocks that drifted
-/// apart by more than 1/16 plus 2 s in either direction, means lost state.
+/// RFC 6887 §8.5: an epoch more than one second behind the previous one, or
+/// client and server clocks that drifted apart by more than 1/16 plus 2 s in
+/// either direction, means lost state. One second back is the rule's own
+/// tolerance — two answers that overtook each other — and reads as no time
+/// passed on the server.
 fn pcp_verdict(previous: u32, current: u32, elapsed: Duration) -> EpochVerdict {
-    if current < previous {
+    if current.saturating_add(1) < previous {
         return EpochVerdict::Reset;
     }
-    let server_delta = u64::from(current - previous);
+    let server_delta = u64::from(current.saturating_sub(previous));
     let client_delta = elapsed.as_secs();
     let drifted = |slow: u64, fast: u64| {
         slow + EpochTracker::PCP_REORDERING_ALLOWANCE
@@ -240,6 +243,17 @@ mod tests {
             fast_server.observe(3_600, t0 + secs(3_000)),
             EpochVerdict::Reset
         );
+    }
+
+    #[test]
+    fn a_pcp_epoch_one_second_behind_is_inside_the_rule() {
+        // §8.5 rule 1 reads "less than ... by more than one second": a reply
+        // overtaken by an older one can name the previous second.
+        let t0 = Instant::now();
+        let mut pcp = EpochTracker::pcp();
+        pcp.observe(500, t0);
+        assert_eq!(pcp.observe(499, t0 + secs(1)), EpochVerdict::Consistent);
+        assert_eq!(pcp.observe(497, t0 + secs(1)), EpochVerdict::Reset);
     }
 
     #[test]

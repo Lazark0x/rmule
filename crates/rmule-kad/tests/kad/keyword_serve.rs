@@ -5,13 +5,13 @@
 use std::net::Ipv4Addr;
 
 use rmule_kad::keyword_store::{
-    KEYWORD_RESULT_ROWS_PER_DATAGRAM, KeywordStore, encode_search_key_res,
+    KEYWORD_RESULT_ROWS_PER_DATAGRAM, KeywordStore, decode_search_key_res, encode_search_key_res,
 };
-use rmule_kad::{KadEnvelope, KadId, KadInstant};
+use rmule_kad::{KadEnvelope, KadId, KadInstant, KadNode};
 use rmule_primitives::{Ed2kText, TagValue};
 use rmule_testkit::kad_keyword::{
     decode_publish_file_from_tags, decode_publish_file_with_id, file_id, keyword, lan_ip, name_tag,
-    own_id, publish, publish_file, verbatim_tag, wan_ip,
+    own_id, publish, publish_file, size_tag, verbatim_tag, wan_ip,
 };
 
 #[test]
@@ -50,7 +50,7 @@ fn serve_synthesizes_filename_and_filesize_and_preserves_the_rest_verbatim() {
         "TAG_PUBLISHINFO trails the row"
     );
 
-    let projected = rows[0].project();
+    let projected = rows[0].project(KadNode::KAD_VERSION);
     assert_eq!(
         projected.file_type.as_deref(),
         Some("Video"),
@@ -89,7 +89,7 @@ fn a_file_past_four_gib_is_stored_and_served_with_its_uint64_size() {
     assert_eq!(rows.len(), 1, "the entry is indexed, not refused size-less");
     assert_eq!(rows[0].tags[1].name().id(), Some(0x02));
     assert_eq!(rows[0].tags[1].value(), &TagValue::U64(FIVE_GIB));
-    assert_eq!(rows[0].project().size, Some(FIVE_GIB));
+    assert_eq!(rows[0].project(KadNode::KAD_VERSION).size, Some(FIVE_GIB));
 }
 
 #[test]
@@ -213,3 +213,60 @@ fn zero_matching_rows_serve_zero_envelopes() {
 // ---------------------------------------------------------------------------
 // Search-expression tree evaluation
 // ---------------------------------------------------------------------------
+
+/// A publish's one-byte tag count leaves room for 253 verbatim tags beside the
+/// name and size, three more than the served count byte can add to.
+#[test]
+fn a_publish_full_of_tags_serves_with_its_publish_info_in_a_counted_row() {
+    let mut store = KeywordStore::new();
+    let now = KadInstant::EPOCH;
+    let padding = vec![verbatim_tag(0x20, TagValue::U8(7)); 253];
+    publish(
+        &mut store,
+        now,
+        lan_ip(1),
+        vec![publish_file(1, "full.bin", 4_096, padding)],
+    );
+
+    let rows = store.lookup(now, keyword(), 0, None).unwrap();
+    let envelopes = encode_search_key_res(own_id(), keyword(), &rows);
+    let decoded = decode_search_key_res(&envelopes[0]).unwrap();
+
+    assert_eq!(decoded[0].tags.len(), 255);
+    assert_eq!(
+        decoded[0].tags.last().unwrap().name().id(),
+        Some(0x33),
+        "TAG_PUBLISHINFO still trails the row"
+    );
+}
+
+/// Bytes that are not UTF-8 widen threefold as the stored display name: the cap
+/// holds the widened name, so what is served fits however the bytes came in.
+#[test]
+fn a_name_that_widens_when_rendered_serves_within_the_name_cap() {
+    let mut store = KeywordStore::new();
+    let now = KadInstant::EPOCH;
+    let raw_name = rmule_primitives::Tag::new(
+        rmule_primitives::TagName::length_prefixed_id(0x01),
+        TagValue::String(Ed2kText::from_bytes(vec![0xFF; 30_000])),
+    );
+    publish(
+        &mut store,
+        now,
+        lan_ip(1),
+        vec![decode_publish_file_from_tags(
+            1,
+            vec![raw_name, size_tag(4_096)],
+        )],
+    );
+
+    let rows = store.lookup(now, keyword(), 0, None).unwrap();
+    let envelopes = encode_search_key_res(own_id(), keyword(), &rows);
+    let decoded = decode_search_key_res(&envelopes[0]).unwrap();
+
+    let TagValue::String(name) = decoded[0].tags[0].value() else {
+        panic!("the served name is a string tag");
+    };
+    // Three bytes a replacement character, cut on a character at 1,024.
+    assert_eq!(name.as_bytes().len(), 1_023);
+}

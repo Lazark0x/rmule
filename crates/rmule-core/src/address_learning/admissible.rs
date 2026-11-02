@@ -51,15 +51,3 @@ pub(super) fn is_carrier_grade_nat(address: IpAddr) -> bool {
         IpAddr::V6(_) => false,
     }
 }
-
-/// Whether the address is one a host can only hold inside its own site —
-/// RFC 1918 / link-local for IPv4, unique-local / link-local for IPv6.
-pub(super) fn is_site_local(address: IpAddr) -> bool {
-    match address {
-        IpAddr::V4(ip) => ip.is_private() || ip.is_link_local(),
-        IpAddr::V6(ip) => {
-            let leading = ip.segments()[0];
-            (leading & 0xfe00) == 0xfc00 || (leading & 0xffc0) == 0xfe80
-        }
-    }
-}

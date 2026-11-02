@@ -25,6 +25,7 @@ mod ip_filter_ingest;
 mod join_cold_start_fixture;
 mod join_sequence_e2e;
 mod listen_before_login;
+mod no_reader;
 mod port_mapping_wiring;
 mod runtime_adapters;
 mod server_list_commands;
@@ -43,12 +44,15 @@ mod standing_session_search;
 
 // Download: part assignment, verification, and the peer pool feeding them.
 mod content_files;
+mod download_arrived;
 mod download_attach;
 mod download_clear;
+mod download_completion;
 mod download_connection_wait;
 mod download_cross_peer_assembly;
 mod download_damaged_parts;
 mod download_hello_port;
+mod download_kad_aich_root;
 mod download_loopback;
 mod download_multipacket_negotiation;
 mod download_part_assignment;
@@ -58,7 +62,6 @@ mod download_pause_and_cancel;
 mod download_peer_failover;
 mod download_placement;
 mod download_resume;
-mod download_scheduler;
 mod download_second_link;
 mod download_slot_negotiation;
 mod download_source_pool;
@@ -71,7 +74,9 @@ mod live_part_file_guard;
 mod credit_accounting;
 mod credit_store;
 mod download_directory_scan;
+mod partial_share;
 mod registry_against_disk;
+mod serve_dial_back;
 mod serve_lifecycle;
 mod serve_loopback;
 mod serve_registry;
@@ -84,7 +89,7 @@ mod upload_slot_queue;
 // Callback: reaching a Low-ID source through the server, directly and globally.
 mod callback_loopback;
 mod direct_callback_route;
-mod global_callback_loopback;
+mod server_callback_serve;
 
 // Kad: source discovery without a server in the loop.
 mod kad_disable;
@@ -108,3 +113,4 @@ mod store_repository;
 
 // Diagnostics: what a front-end reads while a session runs.
 mod diagnostics_snapshot;
+mod panic_cost;

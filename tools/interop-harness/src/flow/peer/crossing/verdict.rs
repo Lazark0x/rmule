@@ -1,0 +1,574 @@
+//! The crossing flow's verdict: every TCP link between rmule and the aMule
+//! the leg races (W on the serve side, S on the download side), read off the
+//! tap in rmule's namespace as a ledger — who opened it, when, who closed
+//! it, and the frames each side wrote — and the leg's claims as predicates
+//! over that ledger, rmule's stamped Run Log and its copy.
+//!
+//! A segment an `iptables` hold dropped in rmule's namespace never reached
+//! the tap; the ledger holds what crossed the wire, and the Run Log says what
+//! rmule did meanwhile.
+
+use crate::flow::evidence::read_toml;
+use crate::verdict::Verdict;
+use std::fs;
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::path::Path;
+
+use anyhow::{Context, Result};
+use serde::{Deserialize, Serialize};
+
+use super::{CrossingLeg, CrossingShape};
+use crate::flow::nat::claims::{Claim, Evidence, label};
+use crate::flow::pcap::{TcpCapture, records, tcp_capture, udp4_datagrams};
+
+mod dead_dial;
+mod first_dial;
+mod session_cap;
+
+/// The flow's own dir under the run dir.
+pub(crate) const ROOT_DIR: &str = "peer-crossing";
+/// The tap in rmule's namespace.
+pub(crate) const RMULE_PCAP: &str = "rmule.pcap";
+const TOPOLOGY: &str = "topology.toml";
+const VERDICT: &str = "peer-crossing-verdict.toml";
+
+const OP_HELLO: u8 = 0x01;
+const OP_HELLOANSWER: u8 = 0x4C;
+const OP_SENDINGPART: u8 = 0x46;
+const OP_ACCEPTUPLOADREQ: u8 = 0x55;
+const OP_PUBLICKEY: u8 = 0x85;
+const OP_SIGNATURE: u8 = 0x86;
+const OP_SECIDENTSTATE: u8 = 0x87;
+/// How soon after a returning waiter's hello its grant must follow.
+const GRANT_AFTER_HELLO_SECS: f64 = 1.0;
+
+/// The instants the flow marked.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+pub(crate) struct Marks {
+    /// Serve legs: when X, holding rmule's slot, was stopped.
+    pub(crate) holder_stopped_at: Option<f64>,
+    /// The session-cap leg: X's address, whose link the kick crosses.
+    pub(crate) holder: Option<Ipv4Addr>,
+    /// When the raced aMule was told to open its own link (its `Add`).
+    pub(crate) returned_at: Option<f64>,
+    /// When each hold was lifted, in lifting order.
+    pub(crate) lifted_at: Vec<f64>,
+    /// When the watch after the last lift ended: the teardown that follows
+    /// closes every link, so a link still up at this instant stayed up.
+    pub(crate) watch_ended_at: Option<f64>,
+}
+
+/// The wall clock now, unix seconds, as the tap and rmule's stamps read it.
+pub(crate) fn unix_now() -> f64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0.0, |since| since.as_secs_f64())
+}
+
+/// What the flow stood up and marked, read back by the scorer.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub(crate) struct Topology {
+    /// rmule's address.
+    pub(crate) rmule: Ipv4Addr,
+    /// The raced aMule's address: W, or S on the download side.
+    pub(crate) peer: Ipv4Addr,
+    /// The leg and its timings.
+    pub(crate) shape: CrossingShape,
+    /// The instants it marked.
+    pub(crate) marks: Marks,
+}
+
+impl Topology {
+    /// Write it under the flow's dir `dir`.
+    pub(crate) fn write(&self, dir: &Path) -> Result<()> {
+        let path = dir.join(TOPOLOGY);
+        fs::write(
+            &path,
+            toml::to_string(self).context("serialize the topology")?,
+        )
+        .with_context(|| format!("write {}", path.display()))
+    }
+}
+
+/// One TCP link between rmule and the raced aMule.
+#[derive(Clone, Debug, Default, Serialize, PartialEq)]
+struct Link {
+    /// rmule's end and the aMule's end.
+    rmule_end: String,
+    peer_end: String,
+    /// Whether rmule dialed it.
+    rmule_opened: bool,
+    /// The first SYN's capture time.
+    opened_at: f64,
+    /// The first FIN or RST's capture time and who sent it (`-1`, empty while open).
+    closed_at: f64,
+    closed_by: String,
+    /// The capture time of each side's first hello, of rmule's first
+    /// `OP_ACCEPTUPLOADREQ` (`-1` without one), and the `OP_SENDINGPART`
+    /// frames each side wrote.
+    hello_from_rmule: f64,
+    hello_from_peer: f64,
+    /// When each side first answered a hello on it (`-1` without one).
+    answer_from_rmule: f64,
+    answer_from_peer: f64,
+    first_grant: f64,
+    /// How many `OP_ACCEPTUPLOADREQ` rmule wrote on it.
+    grants_from_rmule: usize,
+    parts_from_rmule: usize,
+    parts_from_peer: usize,
+    /// rmule's `OP_SECIDENTSTATE` frames, and the aMule's `OP_SIGNATURE`.
+    sui_asks_from_rmule: usize,
+    proofs_from_peer: usize,
+}
+
+/// Every link between `rmule` and `peer` the tap saw a SYN for, in opening order.
+fn ledger(capture: &TcpCapture, rmule: IpAddr, peer: IpAddr) -> Vec<Link> {
+    let mut links: Vec<Link> = Vec::new();
+    for open in &capture.opens {
+        let rmule_opened = open.source.ip() == rmule && open.destination.ip() == peer;
+        let peer_opened = open.source.ip() == peer && open.destination.ip() == rmule;
+        if !(rmule_opened || peer_opened) {
+            continue;
+        }
+        let (rmule_end, peer_end) = if rmule_opened {
+            (open.source, open.destination)
+        } else {
+            (open.destination, open.source)
+        };
+        if links.iter().any(|link| {
+            link.rmule_end == rmule_end.to_string() && link.peer_end == peer_end.to_string()
+        }) {
+            continue;
+        }
+        let close = capture.closes.iter().find(|close| {
+            (close.source == rmule_end && close.destination == peer_end)
+                || (close.source == peer_end && close.destination == rmule_end)
+        });
+        let frames = |from: SocketAddr, to: SocketAddr| {
+            capture
+                .streams
+                .iter()
+                .filter(|stream| stream.source == from && stream.destination == to)
+                .flat_map(|stream| stream.ed2k_frames())
+                .map(|frame| (frame.at, frame.opcode))
+                .collect::<Vec<_>>()
+        };
+        let out = frames(rmule_end, peer_end);
+        let back = frames(peer_end, rmule_end);
+        let first = |frames: &[(f64, u8)], opcode: u8| {
+            frames
+                .iter()
+                .find(|(_, op)| *op == opcode)
+                .map_or(-1.0, |(at, _)| *at)
+        };
+        let count = |frames: &[(f64, u8)], opcode: u8| {
+            frames.iter().filter(|(_, op)| *op == opcode).count()
+        };
+        let parts = |frames: &[(f64, u8)]| count(frames, OP_SENDINGPART);
+        links.push(Link {
+            rmule_end: rmule_end.to_string(),
+            peer_end: peer_end.to_string(),
+            rmule_opened,
+            opened_at: open.at,
+            closed_at: close.map_or(-1.0, |close| close.at),
+            closed_by: close.map_or_else(String::new, |close| {
+                if close.source == rmule_end {
+                    "rmule"
+                } else {
+                    "peer"
+                }
+                .to_owned()
+            }),
+            hello_from_rmule: first(&out, OP_HELLO),
+            hello_from_peer: first(&back, OP_HELLO),
+            answer_from_rmule: first(&out, OP_HELLOANSWER),
+            answer_from_peer: first(&back, OP_HELLOANSWER),
+            first_grant: first(&out, OP_ACCEPTUPLOADREQ),
+            grants_from_rmule: out
+                .iter()
+                .filter(|(_, op)| *op == OP_ACCEPTUPLOADREQ)
+                .count(),
+            parts_from_rmule: parts(&out),
+            parts_from_peer: parts(&back),
+            sui_asks_from_rmule: count(&out, OP_SECIDENTSTATE),
+            proofs_from_peer: count(&back, OP_SIGNATURE),
+        });
+    }
+    links
+}
+
+/// The rows beside the claims.
+#[derive(Debug, Serialize)]
+struct Rows {
+    links: Vec<Link>,
+    /// The Run Log records the leg turns on, as they were logged.
+    records: Vec<String>,
+    /// Links opened after the race began and still up when the watch ended.
+    left_open: usize,
+    copy_equal: bool,
+    /// Seconds from the aMule's close of its own link to its answer on
+    /// rmule's dial, where it closed that link: its attach, timed on the tap.
+    close_to_answer_secs: Option<f64>,
+    /// Seconds from the aMule's answer on rmule's dial to rmule's answer on
+    /// the aMule's own link, where rmule answered: the close bound as it ran.
+    answer_to_answer_secs: Option<f64>,
+}
+
+/// The verdict file.
+#[derive(Debug, Serialize)]
+struct VerdictFile<'a> {
+    #[serde(rename = "scenario")]
+    flow: &'static str,
+    verdict: Verdict,
+    detail: String,
+    shape: CrossingShape,
+    marks: &'a Marks,
+    rows: &'a Rows,
+    claim: &'a [Claim],
+}
+
+/// The Run Log lines that name the raced aMule, or a crossing record.
+fn records_about(log: &str, peer: Ipv4Addr) -> Vec<String> {
+    let peer = format!("={peer}:");
+    log.lines()
+        .filter(|line| {
+            (line.starts_with("serve.") || line.starts_with("download.dial_ended"))
+                && (line.contains(&peer)
+                    || line.starts_with("serve.crossed_hello_held")
+                    || line.starts_with("serve.crossed_dial_kept")
+                    || line.starts_with("serve.crossed_dial_refused"))
+        })
+        .map(str::to_owned)
+        .collect()
+}
+
+/// Score the run under `run_dir` and write its verdict; the verdict.
+///
+/// # Errors
+/// If the topology, the tap, the staged file or rmule's log cannot be read.
+pub fn score_run_dir(run_dir: &Path) -> Result<Verdict> {
+    let root = run_dir.join(ROOT_DIR);
+    let at: Topology = read_toml(&root.join(TOPOLOGY))?;
+    let capture = tcp_capture(&records(&root.join(RMULE_PCAP))?)?;
+    let log_path = run_dir.join("rmule").join("stdout.log");
+    let log =
+        fs::read_to_string(&log_path).with_context(|| format!("read {}", log_path.display()))?;
+    let staged_path = run_dir.join("synthetic").join("shared.bin");
+    let staged =
+        fs::read(&staged_path).with_context(|| format!("read {}", staged_path.display()))?;
+    let copy_equal =
+        fs::read(run_dir.join("rmule").join("output.bin")).is_ok_and(|copy| copy == staged);
+
+    let links = ledger(&capture, IpAddr::V4(at.rmule), IpAddr::V4(at.peer));
+    // On the download side rmule's dial is out before S is told to open its
+    // link, and every link with S belongs to the race.
+    let race_began = if at.shape.leg.serves() {
+        at.marks.holder_stopped_at.unwrap_or(0.0)
+    } else {
+        0.0
+    };
+    let watch_ended = at.marks.watch_ended_at.unwrap_or(f64::MAX);
+    let raced: Vec<&Link> = links
+        .iter()
+        .filter(|link| link.opened_at >= race_began)
+        .collect();
+    let returned = at.marks.returned_at.unwrap_or(f64::MAX);
+    // The aMule's own link, opened at its `Add` or its reask, and rmule's dial
+    // raced against it.
+    let own = raced
+        .iter()
+        .find(|link| !link.rmule_opened && link.opened_at >= returned)
+        .copied();
+    let dial = raced.iter().find(|link| link.rmule_opened).copied();
+    let spans = own.zip(dial);
+    let rows = Rows {
+        left_open: raced
+            .iter()
+            .filter(|link| link.closed_at < 0.0 || link.closed_at > watch_ended)
+            .count(),
+        records: records_about(&log, at.peer),
+        links: links.clone(),
+        copy_equal,
+        close_to_answer_secs: spans
+            .filter(|(own, dial)| {
+                own.closed_by == "peer"
+                    && own.answer_from_rmule < 0.0
+                    && dial.answer_from_peer > 0.0
+            })
+            .map(|(own, dial)| dial.answer_from_peer - own.closed_at),
+        answer_to_answer_secs: spans
+            .filter(|(own, dial)| own.answer_from_rmule > 0.0 && dial.answer_from_peer > 0.0)
+            .map(|(own, dial)| own.answer_from_rmule - dial.answer_from_peer),
+    };
+    let granted_on = raced
+        .iter()
+        .filter(|link| link.first_grant > 0.0)
+        .min_by(|a, b| a.first_grant.total_cmp(&b.first_grant))
+        .copied();
+    let one_left = Claim::about(
+        "no-second-link-stayed-up",
+        rows.left_open <= 1,
+        Evidence::Captured,
+        format!(
+            "links opened after the race began and still up when the watch ended: {} of {}",
+            rows.left_open,
+            raced.len()
+        ),
+    );
+    let describe = |link: Option<&Link>| {
+        link.map_or("none".to_owned(), |link| {
+            format!(
+                "{} -> {} opened by {} at {:.3}",
+                link.rmule_end,
+                link.peer_end,
+                if link.rmule_opened {
+                    "rmule"
+                } else {
+                    "the aMule"
+                },
+                link.opened_at
+            )
+        })
+    };
+    let logged = |record: &str| rows.records.iter().any(|line| line.starts_with(record));
+    let held = logged("serve.crossed_hello_held");
+    // The far end answered the dial, and rmule answered its own link only
+    // past that, the dial let go with no grant on it.
+    let refused = {
+        let answered_past = spans.is_some_and(|(own, dial)| {
+            dial.answer_from_peer > 0.0 && own.answer_from_rmule > dial.answer_from_peer
+        });
+        Claim::about(
+            "its-hello-was-held-past-the-dials-answer-and-answered-then",
+            held && logged("serve.crossed_dial_refused") && answered_past,
+            Evidence::Captured,
+            format!(
+                "serve.crossed_hello_held: {held}; rmule's answer on the aMule's own link {:?} s after the aMule's answer on the dial; its own link: {}",
+                rows.answer_to_answer_secs,
+                describe(own)
+            ),
+        )
+    };
+    let dial_let_go = Claim::about(
+        "the-dial-carried-no-grant-and-rmule-let-it-go",
+        dial.is_some_and(|link| link.grants_from_rmule == 0 && link.closed_by == "rmule"),
+        Evidence::Captured,
+        format!("rmule's dial: {}", describe(dial)),
+    );
+    // A returning waiter drops the grant that follows its hello and asks, so
+    // the wire carries two; the Run Log writes the one slot once (ADR-0057).
+    let one_slot = |link: Option<&Link>| {
+        let wire = link.map_or(0, |link| link.grants_from_rmule);
+        let logged = rows
+            .records
+            .iter()
+            .filter(|line| line.starts_with("serve.upload_slot_granted"))
+            .count();
+        Claim::about(
+            "two-grants-on-the-wire-one-slot-in-the-log",
+            wire == 2 && logged == 1,
+            Evidence::Captured,
+            format!(
+                "OP_ACCEPTUPLOADREQ on that link: {wire}; serve.upload_slot_granted for the waiter: {logged}"
+            ),
+        )
+    };
+    let claims = match at.shape.leg {
+        CrossingLeg::ServeSessionCap => {
+            session_cap::claims(&capture, at.rmule, at.marks.holder, &links)
+        }
+        CrossingLeg::ServeDeadDial => dead_dial::dead_dial_claims(&rows, dial, own),
+        CrossingLeg::KnoDialsFirst => first_dial::claims(
+            &rows,
+            &udp4_datagrams(&root.join(RMULE_PCAP))?,
+            (IpAddr::V4(at.rmule), IpAddr::V4(at.peer)),
+            returned,
+            own,
+        ),
+        CrossingLeg::ServeIdentifying => dead_dial::identity_claims(
+            &capture,
+            &log,
+            &run_dir.join("rmule"),
+            dial,
+            links.iter().find(|link| !link.rmule_opened),
+        ),
+        _ if at.shape.unheld() => {
+            let carrier = raced
+                .iter()
+                .max_by_key(|link| link.parts_from_rmule + link.parts_from_peer)
+                .copied();
+            let parts = carrier.map_or(0, |link| link.parts_from_rmule + link.parts_from_peer);
+            vec![
+                Claim::about(
+                    "the-transfer-ran-whichever-order-landed",
+                    parts > 0,
+                    Evidence::Captured,
+                    format!(
+                        "OP_SENDINGPART frames on {}: {parts}; held: {held}; dial: {}; own link: {}",
+                        describe(carrier),
+                        describe(dial),
+                        describe(own)
+                    ),
+                ),
+                one_left,
+            ]
+        }
+        CrossingLeg::ServeCalledOff | CrossingLeg::ServeCrossed | CrossingLeg::ServeReask => {
+            let on_dial = at.shape.leg == CrossingLeg::ServeReask;
+            let mut claims = vec![
+                Claim::about(
+                    if on_dial {
+                        "the-slot-landed-on-the-dial-back"
+                    } else {
+                        "the-slot-landed-on-the-waiters-own-link"
+                    },
+                    granted_on.is_some_and(|link| link.rmule_opened == on_dial),
+                    Evidence::Captured,
+                    format!(
+                        "rmule's first OP_ACCEPTUPLOADREQ after X stopped went on {}",
+                        describe(granted_on)
+                    ),
+                ),
+                Claim::about(
+                    "the-transfer-ran-on-it",
+                    granted_on.is_some_and(|link| link.parts_from_rmule > 0),
+                    Evidence::Captured,
+                    format!(
+                        "OP_SENDINGPART frames rmule wrote on that link: {}",
+                        granted_on.map_or(0, |link| link.parts_from_rmule)
+                    ),
+                ),
+                one_left,
+            ];
+            if !on_dial {
+                claims.push(one_slot(granted_on));
+            }
+            if at.shape.leg == CrossingLeg::ServeCrossed {
+                claims.push(refused);
+                claims.push(dial_let_go);
+            }
+            if on_dial {
+                let closed = own.is_some_and(|link| link.closed_by == "peer");
+                claims.push(Claim::about(
+                    "the-waiter-closed-its-own-link-unanswered",
+                    held && closed && own.is_some_and(|link| link.answer_from_rmule < 0.0),
+                    Evidence::Captured,
+                    format!(
+                        "serve.crossed_hello_held in the Run Log: {held}; the waiter's own link: {}",
+                        describe(own)
+                    ),
+                ));
+                claims.push(Claim::about(
+                    "rmule-answered-its-hello-on-the-dial",
+                    dial.is_some_and(|link| link.answer_from_rmule > 0.0),
+                    Evidence::Captured,
+                    format!("rmule's dial: {}", describe(dial)),
+                ));
+                claims.push(Claim::about(
+                    "no-grant-went-before-that-close",
+                    spans.is_some_and(|(own, dial)| dial.first_grant > own.closed_at),
+                    Evidence::Captured,
+                    format!(
+                        "the aMule's close to its answer on the dial: {:?} s; first OP_ACCEPTUPLOADREQ on the dial at {:.3}",
+                        rows.close_to_answer_secs,
+                        dial.map_or(-1.0, |link| link.first_grant)
+                    ),
+                ));
+            }
+            claims
+        }
+        CrossingLeg::LowIdReturn => {
+            let free_before = raced
+                .iter()
+                .all(|link| link.first_grant < 0.0 || link.first_grant >= returned);
+            let gap = own
+                .filter(|link| link.first_grant > 0.0 && link.hello_from_peer > 0.0)
+                .map_or(-1.0, |link| link.first_grant - link.hello_from_peer);
+            vec![
+                Claim::about(
+                    "the-slot-sat-free-until-the-waiter-came-back",
+                    free_before,
+                    Evidence::Captured,
+                    format!(
+                        "no OP_ACCEPTUPLOADREQ to the waiter between X's stop and its return: {free_before}"
+                    ),
+                ),
+                Claim::about(
+                    "granted-within-a-second-of-the-returning-hello",
+                    (0.0..=GRANT_AFTER_HELLO_SECS).contains(&gap),
+                    Evidence::Captured,
+                    format!(
+                        "on the returning link ({}), OP_ACCEPTUPLOADREQ {gap:.3} s after the waiter's hello",
+                        describe(own)
+                    ),
+                ),
+                Claim::about(
+                    "the-transfer-ran-on-it",
+                    own.is_some_and(|link| link.parts_from_rmule > 0),
+                    Evidence::Captured,
+                    format!(
+                        "OP_SENDINGPART frames rmule wrote on the returning link: {}",
+                        own.map_or(0, |link| link.parts_from_rmule)
+                    ),
+                ),
+                one_slot(own),
+            ]
+        }
+        CrossingLeg::DownloadYield | CrossingLeg::DownloadCrossed => {
+            let on_dial = at.shape.leg == CrossingLeg::DownloadCrossed;
+            let carrier = raced
+                .iter()
+                .filter(|link| link.parts_from_peer > 0)
+                .max_by_key(|link| link.parts_from_peer)
+                .copied();
+            let mut claims = vec![
+                Claim::about(
+                    "the-download-rode-the-seeds-own-link",
+                    carrier.is_some_and(|link| !link.rmule_opened),
+                    Evidence::Captured,
+                    format!(
+                        "the link that carried most of S's OP_SENDINGPART: {} ({} frames); rmule's dial: {}",
+                        describe(carrier),
+                        carrier.map_or(0, |link| link.parts_from_peer),
+                        describe(dial)
+                    ),
+                ),
+                Claim::about(
+                    "the-download-completed-byte-equal",
+                    copy_equal,
+                    Evidence::Captured,
+                    format!("output.bin equal to the staged file: {copy_equal}"),
+                ),
+                one_left,
+            ];
+            if on_dial {
+                claims.push(refused);
+                claims.push(dial_let_go);
+                claims.push(Claim::about(
+                    "the-seeds-own-ask-ran-on-its-own-link",
+                    own.is_some_and(|link| link.parts_from_rmule > 0),
+                    Evidence::Captured,
+                    format!(
+                        "OP_SENDINGPART rmule wrote on S's own link: {}",
+                        own.map_or(0, |link| link.parts_from_rmule)
+                    ),
+                ));
+            }
+            claims
+        }
+    };
+    let (verdict, detail) = label(&claims);
+    let text = toml::to_string_pretty(&VerdictFile {
+        flow: "peer-crossing",
+        verdict,
+        detail,
+        shape: at.shape,
+        marks: &at.marks,
+        rows: &rows,
+        claim: &claims,
+    })
+    .context("serialize the crossing verdict")?;
+    crate::verdict::write(&run_dir.join(VERDICT), &text)?;
+    println!("{text}");
+    Ok(verdict)
+}

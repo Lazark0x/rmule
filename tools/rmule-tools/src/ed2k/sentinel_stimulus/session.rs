@@ -8,9 +8,10 @@
 //! counterparty behaved is the harness flow's verdict to reach, from the
 //! counterparty's own rows.
 
+use parking_lot::Mutex;
 use std::net::{IpAddr, SocketAddr};
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
@@ -76,10 +77,7 @@ impl Stimulus {
     /// a no-op, so the trigger file and the backstop cannot double-fire.
     async fn emit(&self, stream: &mut TcpStream, peer: SocketAddr, trigger: &str) {
         {
-            let mut emitted_at = self
-                .emitted_at
-                .lock()
-                .expect("sentinel stimulus emit guard");
+            let mut emitted_at = self.emitted_at.lock();
             if emitted_at.is_some() {
                 return;
             }
@@ -116,7 +114,7 @@ impl Stimulus {
     /// endpoint when it has spoken from one, else its address at the configured
     /// port.
     fn packed_target(&self, peer: SocketAddr) -> SocketAddr {
-        let heard = *self.heard_udp.lock().expect("sentinel stimulus heard udp");
+        let heard = *self.heard_udp.lock();
         match heard {
             Some(endpoint) if endpoint.ip() == peer.ip() => endpoint,
             _ => SocketAddr::new(peer.ip(), self.peer_udp_port),
@@ -125,10 +123,7 @@ impl Stimulus {
 
     /// How long ago the scripted emission fired, if it has.
     pub(crate) fn emitted_elapsed(&self) -> Option<Duration> {
-        self.emitted_at
-            .lock()
-            .expect("sentinel stimulus emit guard")
-            .map(|at| at.elapsed())
+        self.emitted_at.lock().map(|at| at.elapsed())
     }
 
     /// Whether the harness has released the emission.
@@ -275,10 +270,7 @@ pub(crate) async fn serve_udp(stimulus: Arc<Stimulus>) {
             return;
         };
         let opcode = buf.get(1).copied().unwrap_or(0);
-        *stimulus
-            .heard_udp
-            .lock()
-            .expect("sentinel stimulus heard udp") = Some(peer);
+        *stimulus.heard_udp.lock() = Some(peer);
         stimulus.journal.push(Entry::Received {
             transport: "udp",
             peer: peer.to_string(),

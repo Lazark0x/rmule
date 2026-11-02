@@ -14,7 +14,8 @@ use crate::address_learning::{
 };
 use crate::port_mapping::desired::DesiredMappingSet;
 use crate::port_mapping::{
-    MappingCommand, MappingGrade, MappingStatus, PortMapper, PortMappingConfig,
+    MappingCommand, MappingGrade, MappingResult, MappingStatus, PortMapper, PortMappingConfig,
+    ProbeAnswer,
 };
 
 use super::{
@@ -27,7 +28,7 @@ fn probes(mapper: &mut PortMapper) -> Vec<MappingProtocol> {
     drain(mapper)
         .into_iter()
         .filter_map(|command| match command {
-            MappingCommand::Probe { protocol } => Some(protocol),
+            MappingCommand::Probe { protocol, .. } => Some(protocol),
             _ => None,
         })
         .collect()
@@ -472,5 +473,72 @@ fn a_learned_method_that_stops_granting_is_forgotten_so_the_others_get_a_turn() 
         probes(&mut mapper),
         MappingProtocol::ALL.to_vec(),
         "the retry is a full race"
+    );
+}
+
+#[test]
+fn an_answer_from_an_earlier_round_does_not_count_in_this_one() {
+    // UPnP and PCP are out when a second bind opens a new round: the old
+    // UPnP answer lands in it, then the new one, with PCP still working.
+    let t0 = Instant::now();
+    let store = bound_v4_store();
+    let mut mapper = PortMapper::new(
+        PortMappingConfig {
+            protocols: MappingProtocol::Pcp.mask_bit() | MappingProtocol::Upnp.mask_bit(),
+            ..PortMappingConfig::default()
+        },
+        store.clone(),
+        7,
+    );
+    mapper.start(t0);
+    let _ = drain(&mut mapper);
+    let earlier = mapper.round;
+    let v4 = rmule_net::family::FamilyBinds {
+        bound: vec![AddressFamily::V4],
+        refused: Vec::new(),
+    };
+    store.record_bind(SocketRole::Tcp, &v4, TCP_PORT + 1);
+    mapper.start(t0);
+    assert_eq!(probes(&mut mapper).len(), 2, "the new round asks both");
+    let upnp_answer = |round| MappingResult::Probed {
+        protocol: MappingProtocol::Upnp,
+        round,
+        outcome: Ok(ProbeAnswer {
+            families: vec![AddressFamily::V4],
+            epoch_reset: false,
+        }),
+    };
+
+    // Alone, the old answer closes nothing: PCP's absence must not end a round
+    // UPnP has not answered in.
+    mapper.on_result(upnp_answer(earlier), t0);
+    probe_absent(MappingProtocol::Pcp, t0, &mut mapper);
+    assert!(
+        drain(&mut mapper).is_empty(),
+        "no trial on an answer the round never asked for"
+    );
+
+    // The round's own answer: UPnP is trialled once, its short TCP grant ends
+    // the race, and its grant is not released by a second trial of itself.
+    mapper.on_result(upnp_answer(mapper.round), t0);
+    answer_maps(&mut mapper, t0, |mapping| {
+        if mapping.role == SocketRole::Tcp {
+            granted(mapping.internal_port + 1)
+        } else {
+            granted(mapping.internal_port)
+        }
+    });
+    let after = drain(&mut mapper);
+    assert!(
+        !after
+            .iter()
+            .any(|command| matches!(command, MappingCommand::Map { .. })),
+        "one protocol is trialled once: {after:?}"
+    );
+    assert!(
+        !after
+            .iter()
+            .any(|command| matches!(command, MappingCommand::Release { .. })),
+        "the winner's mapping stands: {after:?}"
     );
 }

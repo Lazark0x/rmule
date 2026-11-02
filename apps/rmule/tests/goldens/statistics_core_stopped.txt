@@ -1,4 +1,4 @@
-┌ ▼ Download · now 225.0 KB/s · peak 475.0 KB/s ─────────────────────────────┐
+┌ ▼ Download · now 225.0 KB/s · peak 475.0 KB/s ───────────── w 1 s a column ┐
 │ ▁▃▅▆█               ▁▃▅▆█               ▁▃▅▆█               ▁▃▅▆█          │
 │██████          ▁▃▅▆██████          ▁▃▅▆██████          ▁▃▅▆██████          │
 │██████     ▁▃▄▆███████████     ▁▃▄▆███████████     ▁▃▄▆███████████     ▁▃▄▆█│
@@ -11,11 +11,11 @@
 │ ▁▄▇██████   ▁▄▇██████   ▁▄▇██████   ▁▄▇██████   ▁▄▇██████   ▁▄▇██████   ▁▄▇│
 │▇█████████▁▄▇█████████▁▄▇█████████▁▄▇█████████▁▄▇█████████▁▄▇█████████▁▄▇███│
 └ 1m ago ─────────────────────────────────────────────────────────── stopped ┘
-┌ Session · core stopped ─────────────┐┌ Activity ───────────────────────────┐
-│Downloaded   19.7 MB                 ││Downloads    2 (1 active)            │
-│Uploaded     3.7 MB                  ││Uploads      1 active · 1 queued     │
-│Down now     225.0 KB/s              ││Peer hellos  3 refused               │
-│Up now       40.0 KB/s               ││Shared files 2                       │
-│Kad in       5.2/s · 840             ││eD2k         connected (HighID)      │
-│Kad out      3.1/s · 612             ││Kad          on · joined             │
+┌ Session · engine stopped ───────────┐┌ Activity ───────────────────────────┐
+│Downloaded 19.7 MB                   ││Downloads    2 (1 active)            │
+│Uploaded   3.7 MB                    ││Uploads      1 active · 1 queued     │
+│Down now   0.0 KB/s                  ││Peer hellos  3 refused               │
+│Up now     0.0 KB/s                  ││Shared files 2                       │
+│Kad in     not running               ││eD2k         not connected           │
+│Kad out    not running               ││Kad          off                     │
 └─────────────────────────────────────┘└─────────────────────────────────────┘

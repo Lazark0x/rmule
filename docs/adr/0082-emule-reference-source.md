@@ -91,7 +91,9 @@ no new opcodes, tags, bits or framing; against that drift rate a cadence decays 
 ignored chore. Whoever needs newer behaviour bumps the pin and re-runs
 `scripts/audit-reference-constants.py`, which proves nothing moved underneath the bump. A
 re-pin changes which source text the Reference Source speaks for; no version of it ever
-closes a parity row.
+closes a parity row. The audit itself never rots: CI's `reference-constants` job fetches
+the pinned commit and runs it on every change, and `scripts/guards.sh` runs it locally
+whenever the tree is present, saying in one line when it is not.
 
 ## Consequences
 

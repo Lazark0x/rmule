@@ -3,6 +3,7 @@
 
 use super::*;
 use crate::flow::nat::claims::label;
+use crate::verdict::Verdict;
 
 /// The target row a run that reached every step writes.
 const HELD_ROW: &str = r#"
@@ -86,7 +87,7 @@ fn a_run_that_reaches_every_step_passes() {
         &BOTH_GATES,
         &every_step(),
     );
-    assert_eq!(label(&claims).0, "PASS", "{claims:#?}");
+    assert_eq!(label(&claims).0, Verdict::Pass, "{claims:#?}");
 }
 
 /// A recruit aMule left unanswered while it never read itself open is its
@@ -138,7 +139,7 @@ fn an_unanswered_recruit_to_an_open_amule_fails_the_run() {
         outcome(&claims, "amule-answered-the-recruit-with-0x5a"),
         "absent"
     );
-    assert_eq!(label(&claims).0, "FAIL");
+    assert_eq!(label(&claims).0, Verdict::Fail);
 }
 
 /// aMule accepted and the link came up, then went: the hold fails, and the
@@ -241,7 +242,7 @@ fn a_serverless_run_whose_hellos_name_one_passes() {
         &BOTH_GATES,
         &every_step(),
     );
-    assert_eq!(label(&claims).0, "PASS", "{claims:#?}");
+    assert_eq!(label(&claims).0, Verdict::Pass, "{claims:#?}");
 }
 
 /// A serverless hello naming `0` reads as the dialer's address, a High ID an
@@ -259,7 +260,7 @@ fn a_serverless_hello_naming_zero_fails_the_posture() {
         outcome(&claims, "the-target-presents-the-kad-firewalled-id-1"),
         "absent"
     );
-    assert_eq!(label(&claims).0, "FAIL");
+    assert_eq!(label(&claims).0, Verdict::Fail);
 }
 
 /// A target that never dialed aMule sent it no hello: the posture is blocked

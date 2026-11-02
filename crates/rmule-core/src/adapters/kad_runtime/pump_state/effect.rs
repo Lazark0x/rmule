@@ -17,7 +17,7 @@ use rmule_kad::{KadId, KadPublishPosture};
 use rmule_primitives::{FileHash, Ipv4Endpoint, SearchResult, UserHash};
 
 use super::keyword_subscribers::SearchSink;
-use crate::adapters::kad_runtime::CallbackWalkReply;
+use crate::adapters::kad_runtime::CallbackReply;
 use crate::address_learning::AddressObservation;
 use crate::diagnostics::{KadFirewallCheck, NattRetirement};
 use crate::firewalled::link::RecruitedBuddy;
@@ -46,14 +46,23 @@ pub(crate) enum KadPumpEffect {
     /// download's full channel turns away leaves the candidate to its slot's
     /// own deadline.
     CallbackWalkRetired {
-        reply: CallbackWalkReply,
+        reply: CallbackReply,
         reason: NattRetirement,
+    },
+    /// The **Callback Pace** holds this download's `0x52`: its callback wait
+    /// starts after `leaves_in`.
+    CallbackHeld {
+        reply: CallbackReply,
+        leaves_in: std::time::Duration,
     },
     /// A write to **Address Learning**, answered with a fresh `Sampled`.
     Address(AddressWrite),
-    /// A flood offender the node reported, banned at the peer-TCP surface
-    /// (ADR-0064): Kad's own datagram path never consults the ban store.
+    /// A flood offender that proved its address, banned at every door
+    /// (ADR-0064).
     Ban { ip: Ipv4Addr, at: Instant },
+    /// A flood offender that proved nothing, hushed (ADR-0064): a forger may
+    /// have named the address.
+    Hush { ip: Ipv4Addr, at: Instant },
     /// A write to the Kad family of **Self Reach**.
     Verdict(VerdictWrite),
     /// A write to the Kad half of the **Awaited Testers**.
@@ -239,6 +248,8 @@ pub(crate) enum DiagnosticsWrite {
     KeywordsStored(usize),
     /// A datagram that opened like Kad and did not decode.
     UndecodableEnvelope,
+    /// One datagram the node stopped under the Hush.
+    HushedDatagram,
 }
 
 /// Work the driver runs beside the pump's path.
@@ -262,6 +273,7 @@ pub(crate) enum Spawn {
         buddy_id: KadId,
         requester_hash: UserHash,
         requester_tcp_port: u16,
+        check_collision: bool,
     },
     /// ADR-0061 open-node relay over the held buddy link.
     CallbackRelay {

@@ -34,6 +34,22 @@ use verdict::{ProbeKind, Stake, Verdicts};
 /// already keeps.
 pub(crate) const ANSWER_GRACE: Duration = Duration::from_secs(20);
 
+/// The first-contact pace (ADR-0052): a server never probed this run — a
+/// fresh import, or every row at start — is probed at one per tick, 250 ms
+/// (eMuleAI's `UDPSEARCHSPEED`, the family's fastest shipped server-UDP
+/// fan-out).
+pub(crate) const FIRST_CONTACT_TICK: Duration = Duration::from_millis(250);
+
+/// The per-server status re-ask window (ADR-0052): 4.5 h, aMule's
+/// `UDPSERVSTATREASKTIME`. A server pinged within it, less up to an hour of
+/// jitter, is walked past, not re-asked.
+pub(crate) const REASK_WINDOW: Duration = Duration::from_secs(16_200);
+
+/// The least time between two pings of one server when its UDP key has
+/// expired (ADR-0052): 20 min, aMule's `UDPSERVSTATMINREASKTIME`, the shortest
+/// interval the family ever re-pings one server at.
+pub(crate) const KEY_FLOOR: Duration = Duration::from_secs(20 * 60);
+
 /// How far apart two pings may be sent for one's answer to vouch that the
 /// network carried the other (ADR-0052, the offline guard): a minute holds a
 /// dozen refreshes at the steady pace and the whole of a small list's pass.
@@ -81,12 +97,20 @@ pub(crate) fn os_crypt_ping_nonce() -> CryptPingNonce {
     CryptPingNonce { challenge, padding }
 }
 
+/// How much sooner than the window a server may come due: the hour aMule's
+/// `rand() % HR2S(1)` means. 2.3.3 mixes those seconds into a millisecond
+/// clock; 3.1.0 keeps the clock in seconds (`ServerList.cpp:341`).
+const REASK_JITTER_SECS: u64 = 3600;
+
 /// A server's place in the sweep's re-ask schedule, stepped once per tick.
 #[derive(Clone, Copy)]
 enum PingSchedule {
-    /// A plain `0x96` was sent (or a crypt-ping the engine has since settled):
-    /// next eligible only after the full re-ask window.
-    Pinged(tokio::time::Instant),
+    /// A plain `0x96` was sent at `sent` (or a crypt-ping the engine has since
+    /// settled): next eligible at `due`, or early for an expired UDP key.
+    Pinged {
+        sent: tokio::time::Instant,
+        due: tokio::time::Instant,
+    },
     /// An obfuscated crypt-ping was sent at this instant to this endpoint and
     /// awaits its reply until the grace elapses; a timeout then falls back to
     /// a plain ping at the same endpoint (aMule's `CryptPingReplyPending` +
@@ -124,13 +148,16 @@ impl Default for SweepState {
 }
 
 impl SweepState {
-    /// The walk state at attach: a server whose durable figures are
-    /// younger than the re-ask window counts as pinged when it last answered,
-    /// so it is refreshed at the steady pace once that window lapses; one
-    /// with none, or older ones, is a first contact and joins the burst. The
-    /// burst therefore takes only the stale and the never-answered — at most
-    /// one probe per server per window, as ADR-0052 already allows for every
-    /// row at start. `wall` dates the figures; `now` is the sweep's clock.
+    /// The walk state at attach: a server whose last status answer is
+    /// younger than the re-ask window counts as pinged when it answered, so
+    /// it is refreshed at the steady pace once that window lapses; one with
+    /// none, or an older one, is a first contact and joins the burst. Only
+    /// the status-answer date seeds (ADR-0052): counts a login reported are
+    /// no ping, so a server only logged into gets its first contact at once.
+    /// The burst therefore takes only the stale and the never-answered — at
+    /// most one probe per server per window, as ADR-0052 already allows for
+    /// every row at start. `wall` dates the figures; `now` is the sweep's
+    /// clock.
     pub(crate) fn seeded(
         servers: &[crate::server_list::ManagedServer],
         wall: std::time::SystemTime,
@@ -140,10 +167,11 @@ impl SweepState {
         let schedule = servers
             .iter()
             .filter_map(|row| {
-                let age = row.figures.as_ref()?.age(wall);
+                let age = row.figures.as_ref()?.status_age(wall)?;
                 (age < reask).then(|| {
-                    let at = now.checked_sub(age).unwrap_or(now);
-                    (row.endpoint.clone(), PingSchedule::Pinged(at))
+                    let sent = now.checked_sub(age).unwrap_or(now);
+                    let due = sent + reask;
+                    (row.endpoint.clone(), PingSchedule::Pinged { sent, due })
                 })
             })
             .collect();
@@ -189,11 +217,15 @@ pub(crate) struct CryptPingArm {
 /// `first_contact_tick`, so an
 /// imported list fills in seconds rather than at aMule's one per
 /// `UDPSERVERSTATTIME`. Every later probe is a *refresh*: due once the
-/// `reask` window lapses and paced at one per `tick` across the whole list
-/// (aMule's 5 s), so a list that came due together never bursts twice. Each
-/// server still hears at most one probe per window (plus its crypt fallback);
-/// the burst spends our own uplink, not any server's tolerance. Within-window
-/// servers are walked past without consuming the tick, fire-and-forget — the
+/// `reask` window less up to [`REASK_JITTER_SECS`] lapses and paced at one per
+/// `tick` across the whole list (aMule's 5 s), so a list that came due together
+/// never bursts twice. Each server still hears at most one probe per window
+/// (plus its crypt fallback); the burst spends our own uplink, not any server's
+/// tolerance. A server whose UDP key was learned under a public address we no
+/// longer hold is due early, but never inside `key_floor` of its last ping
+/// (aMule's `CheckForExpiredUDPKeys`, `ServerList.cpp:1002-1030`).
+/// Within-window servers are walked past without consuming the tick,
+/// fire-and-forget — the
 /// challenge is registered with the engine's gate *before* the send, and a
 /// non-answer just leaves the server capability-less until the next pass.
 ///
@@ -203,9 +235,7 @@ pub(crate) struct CryptPingArm {
 /// whether or not a download ever asks it for sources. Not transplanted: the
 /// failed-count dead-server *removal* (`DeadServer` eviction — rmule marks a
 /// server dead and keeps pinging it, at the steady pace only, so it can come
-/// back; ADR-0052's dead-server amendment), and the up-to-1-hour ping jitter (aMule's
-/// `rand() % HR2S(1)` spreads a 4.5 h window that rmule does not use; the
-/// steady pace already spreads the refreshes).
+/// back; ADR-0052's dead-server amendment).
 ///
 /// A row listed by host name is resolved when its ping is due (ADR-0052's
 /// listed-by-name amendment) — aMule's `SendQueue` DynIP lookup — reusing an answer
@@ -229,9 +259,12 @@ pub(crate) struct StatusPingSweep<T> {
     /// The refresh pace and the start delay (aMule `UDPSERVERSTATTIME`, 5 s):
     /// at most one refresh probe per tick across the whole list.
     pub(crate) tick: Duration,
-    /// The per-server re-ask window (aMule's `UDPSERVSTATMINREASKTIME` floor,
-    /// 20 min): a server probed within it is walked past.
+    /// The per-server re-ask window (aMule's `UDPSERVSTATREASKTIME`, 4.5 h):
+    /// a server probed within it, less its jitter, is walked past.
     pub(crate) reask: Duration,
+    /// The least time between two pings when a UDP key has expired (aMule's
+    /// `UDPSERVSTATMINREASKTIME`, 20 min).
+    pub(crate) key_floor: Duration,
     /// The obfuscated crypt-ping arm (ADR-0046); disabled ⇒ plain-only.
     pub(crate) crypt: CryptPingArm,
     /// The **Name Resolver** a row listed by name is resolved through.
@@ -321,7 +354,11 @@ impl<T: ServerUdpTransport> StatusPingSweep<T> {
             state.cursor = state.cursor.wrapping_add(1) % servers.len();
             match state.schedule.get(&server).copied() {
                 // Pinged within the re-ask window — walk past.
-                Some(PingSchedule::Pinged(at)) if at.elapsed() < self.reask => continue,
+                Some(PingSchedule::Pinged { sent, due })
+                    if tokio::time::Instant::now() < due && !self.key_expired(row, sent) =>
+                {
+                    continue;
+                }
                 // A crypt-ping still within its reply grace — walk past.
                 Some(PingSchedule::CryptPending(at, _)) if at.elapsed() < self.crypt.grace => {
                     continue;
@@ -335,16 +372,14 @@ impl<T: ServerUdpTransport> StatusPingSweep<T> {
                         self.send_plain(&server, key, stake, state).await;
                         return;
                     }
-                    state
-                        .schedule
-                        .insert(server, PingSchedule::Pinged(tokio::time::Instant::now()));
+                    state.schedule.insert(server, self.pinged_now());
                     continue;
                 }
                 // The re-ask window elapsed but this tick's refresh is spent:
                 // walk past, the steady pace comes back around. A dead
                 // server is never a first contact: it waits for the steady
                 // pace too, so a list of dead servers never bursts.
-                Some(PingSchedule::Pinged(_)) if !refresh_spendable => continue,
+                Some(PingSchedule::Pinged { .. }) if !refresh_spendable => continue,
                 None if dead && !refresh_spendable => continue,
                 // Never pinged (a first contact), or the re-ask window
                 // elapsed (a refresh): a fresh probe.
@@ -354,11 +389,10 @@ impl<T: ServerUdpTransport> StatusPingSweep<T> {
                     }
                     let Some(key) = self.reached_at(row).await else {
                         // A name with no address: this pass's silence.
-                        state.schedule.insert(
-                            server.clone(),
-                            PingSchedule::Pinged(tokio::time::Instant::now()),
-                        );
+                        state.schedule.insert(server.clone(), self.pinged_now());
                         state.verdicts.unresolved(&server, stake);
+                        self.facts
+                            .probe_silent(&server, tokio::time::Instant::now().into_std());
                         return;
                     };
                     if crypt_active {
@@ -370,6 +404,34 @@ impl<T: ServerUdpTransport> StatusPingSweep<T> {
                 }
             }
         }
+    }
+
+    /// The schedule of a server pinged now: due a window from now, less up to
+    /// [`REASK_JITTER_SECS`] (`ServerList.cpp:332`), which keeps a list that was
+    /// pinged together from coming due together.
+    fn pinged_now(&self) -> PingSchedule {
+        let sent = tokio::time::Instant::now();
+        let jitter = Duration::from_secs(u64::from((self.entropy)()) % REASK_JITTER_SECS);
+        PingSchedule::Pinged {
+            sent,
+            due: sent + self.reask.saturating_sub(jitter),
+        }
+    }
+
+    /// Whether `row`, last pinged at `sent`, is owed an early ping for a UDP
+    /// key learned under a public address we no longer hold; its address is
+    /// read from what is known already, never resolved for this.
+    fn key_expired(&self, row: &ManagedServer, sent: tokio::time::Instant) -> bool {
+        if sent.elapsed() < self.key_floor {
+            return false;
+        }
+        let ip = server_tcp_key(&row.endpoint)
+            .map(|key| key.ip)
+            .or_else(|| self.facts.fresh_address(&row.endpoint));
+        ip.is_some_and(|ip| {
+            let at = Ipv4Endpoint::new(ip, row.standard_endpoint().port());
+            self.seal.key_expired(at)
+        })
     }
 
     /// The endpoint `row` is pinged at: its own address, or — for a row
@@ -410,13 +472,11 @@ impl<T: ServerUdpTransport> StatusPingSweep<T> {
     ) {
         let ping = GlobServStatReq::mint((self.entropy)());
         self.challenges.expect(key, ping.challenge());
-        state.schedule.insert(
-            server.clone(),
-            PingSchedule::Pinged(tokio::time::Instant::now()),
-        );
+        state.schedule.insert(server.clone(), self.pinged_now());
         state
             .verdicts
             .sent(server, key, ping.challenge(), ProbeKind::Plain, stake);
+        self.facts.probe_sent(server);
         self.seal.send(key, ping.encode_packet().encode_udp()).await;
     }
 
@@ -439,6 +499,7 @@ impl<T: ServerUdpTransport> StatusPingSweep<T> {
         state
             .verdicts
             .sent(server, key, nonce.challenge, ProbeKind::Crypt, stake);
+        self.facts.probe_sent(server);
         self.seal
             .send_crypt_ping(key, encode_crypt_ping(&nonce))
             .await;
@@ -450,6 +511,9 @@ impl<T: ServerUdpTransport> StatusPingSweep<T> {
     /// when they await a vouching ping not yet sent.
     async fn judge(&self, state: &mut SweepState) -> Option<Vec<ServerEndpoint>> {
         let judgement = state.verdicts.judge(&self.challenges);
+        for (server, sent_at) in &judgement.silenced {
+            self.facts.probe_silent(server, sent_at.into_std());
+        }
         for server in &judgement.counted {
             if let Err(error) = self.facts.silent(server).await {
                 tracing::warn!(%error, host = %server.host(), "an unanswered status ping not tallied");
@@ -476,7 +540,7 @@ fn voucher<'a>(
     servers
         .iter()
         .filter(|row| !policy.is_dead(row) && !silent.contains(&row.endpoint))
-        .filter_map(|row| Some((row.figures.as_ref()?.answered_at, row)))
+        .filter_map(|row| Some((row.figures.as_ref()?.answered_at?, row)))
         .max_by_key(|&(answered_at, _)| answered_at)
         .map(|(_, row)| row)
 }

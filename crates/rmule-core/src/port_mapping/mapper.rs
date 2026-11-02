@@ -45,9 +45,10 @@ use super::renewal::{
 };
 use super::{
     DesiredMapping, GrantAnswer, MappingCommand, MappingDiagnostics, MappingGrade, MappingLease,
-    MappingResult, MappingStatus, PortMappingConfig,
+    MappingResult, MappingStatus, PortMappingConfig, ProbeRound,
 };
 
+mod end;
 mod probe;
 mod readd;
 mod renew;
@@ -60,6 +61,12 @@ const PROBE_GRACE: Duration = Duration::from_secs(3);
 /// The grace a round is extended to, once, while a backend is still working
 /// and nothing is available yet.
 const SLOW_PROBE_GRACE: Duration = Duration::from_secs(15);
+
+/// How long a trial stays open after its maps went out. Past the runtime's
+/// [`BACKEND_DEADLINE`](super::BACKEND_DEADLINE), so a live-but-slow gateway
+/// is always answered by the runtime first and this closes only a trial whose
+/// answer was lost.
+pub(super) const TRIAL_DEADLINE: Duration = Duration::from_secs(25);
 
 /// What settling one trial decided, so the decision is taken under the phase
 /// borrow and acted on after it.
@@ -99,6 +106,8 @@ enum Phase {
         queue: VecDeque<MappingProtocol>,
         /// The trial in flight.
         current: Trial,
+        /// When the trial in flight closes on whatever it has heard.
+        deadline: Instant,
         /// Finished trials and their standings, kept so the losers' mappings
         /// can be released once a winner is picked.
         completed: Vec<(Trial, Standing)>,
@@ -151,6 +160,8 @@ pub(crate) struct PortMapper {
     /// what a re-race must strictly beat, and what tells a fresh lead-family
     /// `Exact` (which earns a recheck) from one already held.
     installed: Option<Standing>,
+    /// The open (or last) probe round; an answer naming any other is stale.
+    pub(super) round: ProbeRound,
     /// Whether the open (or last) probe round tried the learned method alone.
     /// A short round's non-Exact winner is re-raced at once: the other
     /// protocols were never asked.
@@ -191,6 +202,7 @@ impl PortMapper {
             readd_succeeded: false,
             next_readd_at: None,
             installed: None,
+            round: ProbeRound::default(),
             short_round: false,
             rerace_at: None,
             reracing: None,
@@ -217,50 +229,22 @@ impl PortMapper {
     pub(crate) fn start(&mut self, now: Instant) {
         let derived = DesiredMappingSet::derive(&self.addresses);
         let unchanged = derived == self.desired;
-        self.release_departed(&derived);
+        self.end_departed(&derived);
         self.desired = derived;
+        if unchanged && !self.desired.is_empty() && !matches!(self.phase, Phase::Idle) {
+            return;
+        }
+        // The set changed (or emptied), so any open race is interrupted and
+        // its grants go back. A surviving row keeps its lease until the next
+        // race re-grants it (ADR-0093): it is still held on the gateway, so a
+        // quit that lands mid-race must still release it.
+        self.abandon_trials();
+        self.forget_install();
         if self.desired.is_empty() {
             self.phase = Phase::Idle;
             return;
         }
-        if unchanged && !matches!(self.phase, Phase::Idle) {
-            return;
-        }
-        // The set changed, so it is raced again. A surviving row keeps its
-        // lease until the race re-grants it (ADR-0093): it is still held on
-        // the gateway, so a quit that lands mid-race must still release it.
-        let desired = self.desired.mappings();
-        self.leases.retain(|mapping, _| desired.contains(mapping));
-        self.forget_install();
         self.open_probe_round(now);
-    }
-
-    /// Release every held lease whose mapping is not in `derived`, before the
-    /// set change drops it from the lease table.
-    ///
-    /// A row that leaves the set — its socket re-bound on another port, or
-    /// stopped — is genuinely gone: the gateway keeps forwarding it until its
-    /// lease expires unless told otherwise, so this hands it back with the
-    /// same [`Release`](MappingCommand::Release) release-on-exit uses, ahead
-    /// of the new row's `Map`. A row with no lease here was never granted
-    /// (its own trial answer refused while a sibling's succeeded) — there is
-    /// nothing to release. This is *not* [`reprobe`](Self::reprobe): a
-    /// mapping dropped there is not leaving the set, only being re-raced, and
-    /// its finite lease is the real cleanup a release would buy nothing over.
-    fn release_departed(&mut self, derived: &DesiredMappingSet) {
-        let departed: Vec<_> = self
-            .leases
-            .iter()
-            .filter(|(mapping, _)| !derived.mappings().contains(mapping))
-            .map(|(mapping, lease)| (*mapping, lease.protocol, lease.external.port()))
-            .collect();
-        for (mapping, protocol, external_port) in departed {
-            self.commands.push_back(MappingCommand::Release {
-                protocol,
-                mapping,
-                external_port,
-            });
-        }
     }
 
     /// Re-derive and open a race, keeping the failure count — the backoff
@@ -282,7 +266,11 @@ impl PortMapper {
     /// finite lease is the real cleanup; a release aimed at a gateway that is
     /// already not answering buys nothing.
     pub(crate) fn reprobe(&mut self, now: Instant) {
-        self.leases.clear();
+        self.abandon_trials();
+        let held: Vec<_> = self.leases.keys().copied().collect();
+        for mapping in held {
+            self.end_lease(mapping, false);
+        }
         self.readd_queue.clear();
         self.readd_outstanding.clear();
         self.next_readd_at = None;
@@ -309,19 +297,22 @@ impl PortMapper {
         self.drain_readds(now);
         match &self.phase {
             Phase::Probing { .. } => self.settle_probe_round(now),
+            Phase::Trialling { deadline, .. } if now >= *deadline => self.expire_trial(now),
             Phase::BackingOff { retry_at } if now >= *retry_at => self.race(now),
             Phase::Mapped if self.rerace_at.is_some_and(|at| now >= at) => self.rerace(now),
             _ => {}
         }
-        if matches!(self.phase, Phase::Mapped) || self.reracing.is_some() {
-            self.fire_due_renewals(now);
-        }
+        self.fire_due_renewals(now);
     }
 
     /// Take one answer from the runtime.
     pub(crate) fn on_result(&mut self, result: MappingResult, now: Instant) {
         match result {
-            MappingResult::Probed { protocol, outcome } => self.on_probe(protocol, &outcome, now),
+            MappingResult::Probed {
+                protocol,
+                round,
+                outcome,
+            } => self.on_probe(protocol, round, &outcome, now),
             MappingResult::Mapped {
                 protocol,
                 mapping,
@@ -334,16 +325,12 @@ impl PortMapper {
     /// behind keeps a port open on the router for a process that is gone — and
     /// on a shared LAN that port is somebody else's.
     pub(crate) fn shutdown(&mut self) {
-        if self.config.release_on_exit {
-            for (mapping, lease) in &self.leases {
-                self.commands.push_back(MappingCommand::Release {
-                    protocol: lease.protocol,
-                    mapping: *mapping,
-                    external_port: lease.external.port(),
-                });
-            }
+        self.abandon_trials();
+        let release = self.config.release_on_exit;
+        let held: Vec<_> = self.leases.keys().copied().collect();
+        for mapping in held {
+            self.end_lease(mapping, release);
         }
-        self.leases.clear();
         self.forget_install();
         self.phase = Phase::Idle;
     }
@@ -356,21 +343,15 @@ impl PortMapper {
     /// The earliest instant the mapper has work — what a runtime sleeps until.
     pub(crate) fn next_wake(&self) -> Option<Instant> {
         let phase = match &self.phase {
-            Phase::Probing { deadline, .. } => Some(*deadline),
+            Phase::Probing { deadline, .. } | Phase::Trialling { deadline, .. } => Some(*deadline),
             Phase::BackingOff { retry_at } => Some(*retry_at),
             Phase::Mapped => self.rerace_at,
-            Phase::Idle | Phase::Trialling { .. } => None,
+            Phase::Idle => None,
         };
-        // Only while renewals actually fire: a lease a set change kept while
-        // it is re-raced is not renewed until the race concludes, and its
+        // Only what a tick would fire: a lease a set change kept while it is
+        // re-raced, or one a re-add holds, is not renewed now, and its
         // past-due instant as the wake would be a runtime that spins.
-        let renewing = matches!(self.phase, Phase::Mapped) || self.reracing.is_some();
-        let renewals = self
-            .leases
-            .values()
-            .map(|lease| lease.renew_at)
-            .min()
-            .filter(|_| renewing);
+        let renewals = self.renewable().map(|(_, lease)| lease.renew_at).min();
         [phase, renewals, self.next_readd_at]
             .into_iter()
             .flatten()

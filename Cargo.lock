@@ -2042,16 +2042,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "pem"
-version = "4.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d354a98a3d1251555de99e8fdd8afda05573c31b82f59063a7b0a29b5527f120"
-dependencies = [
- "base64 0.23.1",
- "serde_core",
-]
-
-[[package]]
 name = "pem-rfc7468"
 version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2593,7 +2583,6 @@ version = "0.14.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8774e05a7d0de114588e6a28fe7e71694b82614ed569d86d8b389dfbc98b8ad8"
 dependencies = [
- "pem",
  "ring",
  "rustls-pki-types",
  "time",
@@ -2713,31 +2702,37 @@ dependencies = [
 
 [[package]]
 name = "rmule"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "assert_cmd",
  "chrono",
  "data-encoding",
- "icu_normalizer",
+ "parking_lot",
  "predicates",
  "ratatui",
  "rmule-bootstrap",
  "rmule-core",
  "rmule-kad",
+ "rmule-os",
  "rmule-primitives",
  "rmule-testkit",
  "rmule-words",
+ "rustix",
+ "shlex",
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "unicode-segmentation",
+ "unicode-width",
 ]
 
 [[package]]
 name = "rmule-bootstrap"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
+ "parking_lot",
  "reqwest",
  "rmule-ed2k",
  "rmule-kad",
@@ -2750,7 +2745,7 @@ dependencies = [
 
 [[package]]
 name = "rmule-cli"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "assert_cmd",
@@ -2759,6 +2754,7 @@ dependencies = [
  "rmule-core",
  "rmule-kad",
  "rmule-net",
+ "rmule-os",
  "rmule-primitives",
  "rmule-testkit",
  "rmule-words",
@@ -2769,17 +2765,19 @@ dependencies = [
 
 [[package]]
 name = "rmule-core"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "data-encoding",
  "ed2k",
  "getrandom 0.4.2",
  "notify",
+ "parking_lot",
  "postcard",
  "rmule-bootstrap",
  "rmule-ed2k",
  "rmule-kad",
  "rmule-net",
+ "rmule-os",
  "rmule-peer",
  "rmule-primitives",
  "rmule-store",
@@ -2797,7 +2795,7 @@ dependencies = [
 
 [[package]]
 name = "rmule-ed2k"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "data-encoding",
  "flate2",
@@ -2810,24 +2808,26 @@ dependencies = [
 
 [[package]]
 name = "rmule-interop-harness"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "assert_cmd",
  "clap",
  "flate2",
+ "parking_lot",
  "predicates",
  "rmule-kad",
  "rmule-peer",
  "rmule-primitives",
  "serde",
+ "socket2",
  "tempfile",
  "toml",
 ]
 
 [[package]]
 name = "rmule-kad"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "flate2",
  "md-5",
@@ -2839,24 +2839,26 @@ dependencies = [
 
 [[package]]
 name = "rmule-net"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
+ "attohttpc",
  "crab_nat",
  "getrandom 0.4.2",
  "igd-next",
  "librqbit-dualstack-sockets",
  "librqbit-utp",
  "netdev",
+ "parking_lot",
  "quinn",
  "quinn-proto",
  "rand 0.8.6",
  "rcgen",
  "rmule-ed2k",
  "rmule-kad",
+ "rmule-os",
  "rmule-peer",
  "rmule-primitives",
  "rmule-testkit",
- "rmule-winsock",
  "rsa",
  "rustls",
  "socket2",
@@ -2865,11 +2867,23 @@ dependencies = [
  "tokio",
  "toml",
  "tracing",
+ "xmltree",
+]
+
+[[package]]
+name = "rmule-os"
+version = "0.3.0"
+dependencies = [
+ "core-foundation-sys",
+ "libc",
+ "rustix",
+ "tempfile",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
 name = "rmule-peer"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "flate2",
  "rmule-primitives",
@@ -2879,7 +2893,7 @@ dependencies = [
 
 [[package]]
 name = "rmule-primitives"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "crypto-bigint",
  "data-encoding",
@@ -2898,7 +2912,7 @@ dependencies = [
 
 [[package]]
 name = "rmule-store"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "postcard",
  "redb",
@@ -2909,10 +2923,11 @@ dependencies = [
 
 [[package]]
 name = "rmule-testkit"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "ed2k",
  "flate2",
+ "parking_lot",
  "rmule-core",
  "rmule-ed2k",
  "rmule-kad",
@@ -2927,22 +2942,25 @@ dependencies = [
 
 [[package]]
 name = "rmule-tools"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "assert_cmd",
  "clap",
  "ed2k",
  "getrandom 0.4.2",
+ "parking_lot",
  "predicates",
  "rmule-bootstrap",
  "rmule-core",
  "rmule-ed2k",
  "rmule-kad",
  "rmule-net",
+ "rmule-os",
  "rmule-peer",
  "rmule-primitives",
  "rmule-testkit",
+ "rmule-words",
  "tempfile",
  "tokio",
  "toml",
@@ -2952,15 +2970,8 @@ dependencies = [
 ]
 
 [[package]]
-name = "rmule-winsock"
-version = "0.2.0"
-dependencies = [
- "windows-sys 0.61.2",
-]
-
-[[package]]
 name = "rmule-words"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "chrono",
  "rmule-bootstrap",
@@ -3028,9 +3039,9 @@ dependencies = [
 
 [[package]]
 name = "rustls"
-version = "0.23.45"
+version = "0.23.46"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0d41d731c7d2f962d1ccc364cec258de3c0e93b38c2fb3ba97ac74513048d634"
+checksum = "48e13bd8c0e9365c43cfa5c9e8f9ad49d3c8444926c9aac819e0e4dc503c8fdf"
 dependencies = [
  "once_cell",
  "ring",
@@ -4109,9 +4120,9 @@ dependencies = [
 
 [[package]]
 name = "webpki-roots"
-version = "1.0.9"
+version = "1.0.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7dcd9d09a39985f5344844e66b0c530a33843579125f23e21e9f0f220850f22a"
+checksum = "f5f280bbb2b287bc8e7de7e3852945a0ff50d1bbcb5ed42b6c7a568c546df171"
 dependencies = [
  "rustls-pki-types",
 ]

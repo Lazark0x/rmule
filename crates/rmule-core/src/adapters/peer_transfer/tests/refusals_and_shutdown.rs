@@ -72,10 +72,15 @@ async fn a_required_policy_names_a_stanceless_seed_s_refusal() {
 
 /// The obfuscation policy changes live (ADR-0046): each dial reads it as it
 /// starts, so the dial made before a change to `Required` reaches its
-/// stanceless peer, and the very next one is refused before any socket.
+/// stanceless peer, and the very next one is refused before any socket. The
+/// next dial is to another peer: one to the same peer would wait on the
+/// first one's link instead of dialing (ADR-0107).
 #[tokio::test]
 async fn a_live_policy_change_reaches_the_very_next_dial() {
     let listener = PeerListener::bind(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0))
+        .await
+        .unwrap();
+    let other = PeerListener::bind(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0))
         .await
         .unwrap();
     let policy = crate::obfuscation_policy::SharedObfuscationPolicy::default();
@@ -84,11 +89,8 @@ async fn a_live_policy_change_reaches_the_very_next_dial() {
             obfuscation: policy.clone(),
             ..HelloAdverts::default()
         });
-    let peer = PeerEndpoint::V4(Ipv4Endpoint::new(
-        Ipv4Addr::LOCALHOST,
-        listener.local_port(),
-    ));
-    let dial = async |transfer: &mut RuntimePeerTransferService| {
+    let at = |port| PeerEndpoint::V4(Ipv4Endpoint::new(Ipv4Addr::LOCALHOST, port));
+    let dial = async |transfer: &mut RuntimePeerTransferService, peer| {
         transfer
             .start_download_worker(
                 peer,
@@ -100,7 +102,7 @@ async fn a_live_policy_change_reaches_the_very_next_dial() {
             .unwrap()
     };
 
-    let _before = dial(&mut transfer).await;
+    let _before = dial(&mut transfer, at(listener.local_port())).await;
     timeout(
         Duration::from_secs(2),
         listener.accept(dialed_serve_ctx(), PeerConnectOptions::default()),
@@ -110,7 +112,7 @@ async fn a_live_policy_change_reaches_the_very_next_dial() {
     .expect("in plaintext, as off dials");
 
     policy.set(Some(ObfuscationPolicy::Required));
-    let mut after = dial(&mut transfer).await;
+    let mut after = dial(&mut transfer, at(other.local_port())).await;
     assert_eq!(
         first_two(&mut after).await,
         [
@@ -119,6 +121,15 @@ async fn a_live_policy_change_reaches_the_very_next_dial() {
             }),
             Some(PeerWorkerEvent::CryptIncompatible)
         ]
+    );
+    assert!(
+        timeout(
+            Duration::from_millis(300),
+            other.accept(dialed_serve_ctx(), PeerConnectOptions::default())
+        )
+        .await
+        .is_err(),
+        "the refused dial opens no socket"
     );
 }
 
@@ -165,15 +176,12 @@ async fn a_banned_peer_is_never_dialed() {
     let mut transfer =
         RuntimePeerTransferService::new(crate::DEFAULT_SLOT_WAIT_TIMEOUT).with_ban_store(ban_store);
     let peer = PeerEndpoint::V4(Ipv4Endpoint::new(*bound.ip(), bound.port()));
-    let file = Ed2kFileLink {
-        name: Ed2kText::from_utf8("dummy"),
-        size: 4096,
-        file_hash: FileHash::from_bytes([0xAB; FileHash::BYTE_LEN]),
-        part_hash_set: None,
-        aich_root: None,
-        ipv6_sources: Vec::new(),
-        sources: Default::default(),
-    };
+    let file = Ed2kFileLink::new(
+        Ed2kText::from_utf8("dummy"),
+        4096,
+        FileHash::from_bytes([0xAB; FileHash::BYTE_LEN]),
+    )
+    .expect("a size eD2k addresses");
     let mut worker = transfer
         .start_peer_worker(peer, dialed_serve_ctx(), file)
         .await
@@ -215,20 +223,17 @@ async fn an_ip_filtered_peer_is_never_dialed() {
     let bound = SocketAddrV4::new(Ipv4Addr::LOCALHOST, listener.local_port());
 
     let ip_filter = SharedIpFilter::default();
-    *ip_filter.write().expect("ip filter lock") = loopback_blocking_ip_filter();
+    *ip_filter.write() = loopback_blocking_ip_filter();
 
     let mut transfer =
         RuntimePeerTransferService::new(crate::DEFAULT_SLOT_WAIT_TIMEOUT).with_ip_filter(ip_filter);
     let peer = PeerEndpoint::V4(Ipv4Endpoint::new(*bound.ip(), bound.port()));
-    let file = Ed2kFileLink {
-        name: Ed2kText::from_utf8("dummy"),
-        size: 4096,
-        file_hash: FileHash::from_bytes([0xAB; FileHash::BYTE_LEN]),
-        part_hash_set: None,
-        aich_root: None,
-        ipv6_sources: Vec::new(),
-        sources: Default::default(),
-    };
+    let file = Ed2kFileLink::new(
+        Ed2kText::from_utf8("dummy"),
+        4096,
+        FileHash::from_bytes([0xAB; FileHash::BYTE_LEN]),
+    )
+    .expect("a size eD2k addresses");
     let mut worker = transfer
         .start_peer_worker(peer, dialed_serve_ctx(), file)
         .await
@@ -267,15 +272,12 @@ async fn a_peer_requiring_crypt_is_reported_crypt_incompatible_while_ours_is_off
     let bound = SocketAddrV4::new(Ipv4Addr::LOCALHOST, listener.local_port());
     let mut transfer = RuntimePeerTransferService::new(crate::DEFAULT_SLOT_WAIT_TIMEOUT);
     let peer = PeerEndpoint::V4(Ipv4Endpoint::new(*bound.ip(), bound.port()));
-    let file = Ed2kFileLink {
-        name: Ed2kText::from_utf8("dummy"),
-        size: 4096,
-        file_hash: FileHash::from_bytes([0xAB; FileHash::BYTE_LEN]),
-        part_hash_set: None,
-        aich_root: None,
-        ipv6_sources: Vec::new(),
-        sources: Default::default(),
-    };
+    let file = Ed2kFileLink::new(
+        Ed2kText::from_utf8("dummy"),
+        4096,
+        FileHash::from_bytes([0xAB; FileHash::BYTE_LEN]),
+    )
+    .expect("a size eD2k addresses");
     let brief = WorkerBrief {
         peer_crypt: PeerCrypt::new(
             CryptStance::new(true, true, true),
@@ -334,14 +336,15 @@ async fn a_shutdown_mid_part_stops_the_stream_at_once() {
         .start_peer_worker(peer, dialed_serve_ctx(), file.clone())
         .await
         .unwrap();
+    assert!(worker.next_event().await.is_some(), "the peer's hello");
     worker
-        .send(PeerWorkerCommand::RequestPart {
-            plan: crate::PartPlan {
-                part_index: 0,
-                offset: 0,
-                len: file.size,
-            },
-            resume_offset: 0,
+        .send(PeerWorkerCommand::RequestBlocks {
+            blocks: vec![crate::BlockPlan {
+                part_index: rmule_peer::PartIndex::new(0),
+                start: 0,
+                end: file.size(),
+            }],
+            handout: 1,
         })
         .await
         .unwrap();
@@ -365,4 +368,95 @@ async fn a_shutdown_mid_part_stops_the_stream_at_once() {
         .expect("the worker closed the socket at the shutdown, mid-part")
         .unwrap();
     assert_eq!(stats.cancel_transfer_count, 1);
+}
+
+/// A dial the run lets go while it connects stops there, as a download ending
+/// calls off what it had in flight: the socket closes at once, not at the
+/// connect's own timeout. The crypt handshake holds the dial open, the source
+/// accepting and never answering.
+#[tokio::test]
+async fn a_dial_the_run_lets_go_is_called_off_while_it_connects() {
+    use tokio::io::AsyncReadExt;
+    use tokio::net::TcpListener;
+
+    let source = TcpListener::bind(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0))
+        .await
+        .unwrap();
+    let peer = PeerEndpoint::V4(Ipv4Endpoint::new(
+        Ipv4Addr::LOCALHOST,
+        source.local_addr().unwrap().port(),
+    ));
+    let file = rmule_testkit::file_link("called-off.bin", &[0x5A; 4096]);
+    let adverts = HelloAdverts {
+        obfuscation: crate::obfuscation_policy::SharedObfuscationPolicy::new(Some(
+            ObfuscationPolicy::Supported,
+        )),
+        ..HelloAdverts::default()
+    };
+    let mut transfer = RuntimePeerTransferService::new(crate::DEFAULT_SLOT_WAIT_TIMEOUT)
+        .with_hello_adverts(adverts);
+    let brief = WorkerBrief {
+        peer_crypt: PeerCrypt::new(
+            CryptStance::new(true, true, true),
+            Some(UserHash::from_bytes([0x5A; UserHash::BYTE_LEN])),
+        ),
+        ..WorkerBrief::fresh(&file)
+    };
+    let worker = transfer
+        .start_download_worker(peer, dialed_serve_ctx(), file, brief)
+        .await
+        .unwrap();
+    let (mut stream, _) = timeout(Duration::from_secs(5), source.accept())
+        .await
+        .expect("the dial reaches the source")
+        .unwrap();
+
+    worker
+        .send(PeerWorkerCommand::Shutdown { cancel: false })
+        .await
+        .unwrap();
+
+    let closed = async {
+        let mut bytes = [0; 256];
+        while stream.read(&mut bytes).await.is_ok_and(|read| read > 0) {}
+    };
+    timeout(Duration::from_secs(3), closed)
+        .await
+        .expect("the dial closed its socket when the run let it go");
+}
+
+/// With no link to ride, a worker that may not dial opens no socket and is
+/// handed back: its source stands on the peer's clock (ADR-0090).
+#[tokio::test]
+async fn a_worker_held_to_a_link_with_none_standing_dials_nothing() {
+    let source = tokio::net::TcpListener::bind(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0))
+        .await
+        .unwrap();
+    let peer = PeerEndpoint::V4(Ipv4Endpoint::new(
+        Ipv4Addr::LOCALHOST,
+        source.local_addr().unwrap().port(),
+    ));
+    let file = rmule_testkit::file_link("no-link.bin", &[0x5A; 4096]);
+    let brief = WorkerBrief {
+        opening: WorkerOpening::ProbeOnLink,
+        ..WorkerBrief::fresh(&file)
+    };
+    let mut transfer = RuntimePeerTransferService::new(crate::DEFAULT_SLOT_WAIT_TIMEOUT);
+    let mut worker = transfer
+        .start_download_worker(peer, dialed_serve_ctx(), file, brief)
+        .await
+        .unwrap();
+
+    assert_eq!(
+        timeout(Duration::from_secs(5), worker.next_event())
+            .await
+            .expect("the worker says so at once"),
+        Some(PeerWorkerEvent::NoLinkToRide)
+    );
+    assert!(
+        timeout(Duration::from_millis(200), source.accept())
+            .await
+            .is_err(),
+        "no socket reaches the source"
+    );
 }

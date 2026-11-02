@@ -1,12 +1,12 @@
-┌ Search ───────────────────────────────────────────────── / focus  ←→ method  o options ┐
-│❯ big buck bunny▮                                                                       │
-│Method: eD2k server ▾  Kad ▾ (always on — every search also walks Kad)                  │
+┌ Search ──────────────────────────────────────────────────────────── i focus  o options ┐
+│❯ big buck bunny                                                                        │
+│Asks: nobody yet; a search waits for a server or Kad                                    │
 │Filters: none   o edit                                                                  │
 └────────────────────────────────────────────────────────────────────────────────────────┘
-[big buck bunny · —]
+[big buck bunny · 0]
 ┌ Results · Not sent ─────────────────────────────────────────────── [ ] search  x close ┐
 │                                                                                        │
-│not sent — no core is attached (UI-only run: the store would not open — is another rmule│
-│              running on this data dir?). The query is still in the input.              │
+│           not sent — the engine has stopped. The query is still in the input.          │
+│                                                                                        │
 │                                                                                        │
 └────────────────────────────────────────────────────────────────────────────────────────┘

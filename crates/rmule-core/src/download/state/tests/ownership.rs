@@ -1,13 +1,16 @@
-//! The brain's half of source ownership (ADR-0090 "Source ownership"): what
+//! The brain's half of source ownership (ADR-0090 "A download holds each source under one owner"):
+//! what
 //! the **Source Book**'s outcomes become as decisions — a remote-queued
 //! source's TCP full ask dials it once, a proven sender of bad data is
 //! distrusted durably and not dialed again, and a distrusted peer reached
 //! without its hash is retired at its hello. The book's own invariants are
 //! asserted in its tests.
 
+use rmule_peer::PartIndex;
+
 use std::net::Ipv4Addr;
 
-use rmule_primitives::{Ipv4Endpoint, PeerSource, SourceSighting, UserHash};
+use rmule_primitives::{Informant, Ipv4Endpoint, PeerSource, SourceSighting, UserHash};
 
 use crate::DownloadFailure;
 
@@ -45,7 +48,10 @@ fn sight(state: &mut DownloadState) -> Vec<PeerEndpoint> {
     spawned(&via_exchange(
         state,
         peer(1),
-        vec![SourceSighting::plain(PeerSource::HighId(v4))],
+        vec![SourceSighting::plain(
+            PeerSource::HighId(v4),
+            Informant::Own,
+        )],
     ))
 }
 
@@ -56,7 +62,7 @@ fn sight(state: &mut DownloadState) -> Vec<PeerEndpoint> {
 fn a_remote_queued_source_sighted_again_keeps_one_owner() {
     let mut state = exchanging_state();
     assert_eq!(sight(&mut state), vec![source()]);
-    let _ = state.on_worker_event(t0(), source(), PeerWorkerEvent::Connected);
+    let _ = connect(&mut state, t0(), source());
     let _ = state.on_worker_event(t0(), source(), PeerWorkerEvent::Queued { rank: 3 });
     let _ = state.on_worker_event(t0(), source(), PeerWorkerEvent::Disconnected);
 
@@ -81,7 +87,7 @@ fn sight_hashed(
             let PeerEndpoint::V4(v4) = at else {
                 unreachable!()
             };
-            SourceSighting::new(PeerSource::HighId(v4), hash, None)
+            SourceSighting::new(PeerSource::HighId(v4), hash, None, Informant::Own)
         })
         .collect();
     spawned(&via_exchange(state, peer(1), sources))
@@ -90,24 +96,30 @@ fn sight_hashed(
 /// `at` completes its hello naming `user_hash`, then connects.
 fn hello(state: &mut DownloadState, at: PeerEndpoint, user_hash: UserHash) -> Vec<Decision> {
     let mut out = state.on_worker_event(t0(), at, identified(user_hash));
-    out.extend(state.on_worker_event(t0(), at, PeerWorkerEvent::Connected));
+    out.extend(connect(state, t0(), at));
     out
 }
 
 /// `at`, the part's sole contributor, streams all of it and the part fails
 /// its hash.
 fn serve_bad_part(state: &mut DownloadState, at: PeerEndpoint) {
-    let part = crate::planning::part_plan(ONE_PART, 0);
+    let part = crate::planning::part_plan(ONE_PART, PartIndex::new(0));
     let _ = state.on_worker_event(
         t0(),
         at,
         PeerWorkerEvent::BlockReceived {
-            part_index: 0,
+            part_index: PartIndex::new(0),
             offset: part.offset,
             bytes: vec![0u8; part.len as usize],
         },
     );
-    let failed = state.on_persist_result(t0(), 0, at, Err(DownloadFailure::PartVerificationFailed));
+    let failed = state.on_persist_result(
+        t0(),
+        PartIndex::new(0),
+        Some(at),
+        Err(DownloadFailure::PartVerificationFailed),
+        Some(vec![[0; 20]; part.cells()]),
+    );
     assert!(
         failed
             .iter()
@@ -127,10 +139,16 @@ fn a_peer_that_served_bad_data_is_not_redialled_and_a_clean_one_is() {
 
     let _ = hello(&mut state, bad, BAD);
     serve_bad_part(&mut state, bad);
-    let _ = hello(&mut state, clean, CLEAN);
+    let _ = state.on_worker_event(t0(), clean, identified(CLEAN));
+    let _ = probed(&mut state, t0(), clean);
     let _ = state.on_worker_event(t0(), clean, PeerWorkerEvent::Disconnected);
 
-    assert_eq!(sight_hashed(&mut state, &both), vec![clean]);
+    assert!(sight_hashed(&mut state, &both).is_empty());
+    assert_eq!(
+        spawned(&state.on_tick(t0() + MIN_REQUEST_TIME)),
+        vec![clean],
+        "it is asked once the peer's clock lets it"
+    );
 }
 
 /// A distrusted peer reached through a record that named no hash — here at an

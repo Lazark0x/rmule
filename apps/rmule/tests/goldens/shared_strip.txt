@@ -1,21 +1,21 @@
-┌ Shared Files · 1 file · 700.0 MB ─────────────────────── s sort  S reverse ┐
+┌ Shared Files · 1 file · 700.0 MB ─────────── m menu  / filter  Tab uploads ┐
 │  all shared files · 2 files                                                │
 │  /home/u/Downloads (download dir) · watched · 1 file, 40.0 MB              │
-│▸ /srv/media · not watched: the system's limit on watched files is reached  │
-│  (on Linux, raise fs.inotify.max_user_watches) · 1 file, 700.0 MB          │
+│▸ /srv/media · not watched: the system's limit on w…ches) · 1 file, 700.0 MB│
 │  /srv/books (being added) · hashing 37/100, 36 % · no files shared yet     │
-│  [ ] filter by directory · add or remove in Settings                       │
-│  File ▲     State        Size Uploading   Requests   Accepted   Transferred│
-│▸ film.mkv   shared      700.0         0      0 (0)      0 (0)        0.0 KB│
-│                            MB                                              │
-│Off-screen: Transferred 0.0 KB (0.0 KB)                                     │
-└────────────────────────────────────────────────────────────────────────────┘
-┌ Uploads · active only ────────────────────────────────── s sort  S reverse ┐
-│  Peer ▲                Software     State             Speed File           │
-│▸ 10.0.0.1:4662         aMule v2.3.3 Uploading             — album.flac     │
+│  [ ] filter by directory · add or remove in Settings                 3 / 4 │
+│  File ▲                                  State               Size Uploading│
+│▸ film.mkv                                shared          700.0 MB         0│
+│                                                                            │
+│                                                                            │
+│Off-screen: Requests 0 (0) · Accepted 0 (0) · Transferred 0 B (0 B)         │
+└ too narrow to show: Requests, Accepted, Transferred ──────────────── 1 / 1 ┘
+┌ Uploads · active only ────── f all  / filter  Tab files  s sort  S reverse ┐
+│  Peer ▲                State                Speed File                     │
+│▸ 10.0.0.1:4662         Uploading     not measured album.flac               │
 │                                                                            │
 │                                                                            │
 │                                                                            │
-│                                                                            │
+│Off-screen: Software aMule v2.3.3                                           │
 │  2 hidden queued                                                           │
-└────────────────────────────────────────────────────────────────────────────┘
+└ too narrow to show: Software ─────────────────────────────────────── 1 / 1 ┘

@@ -25,12 +25,44 @@
 //! [`DialingSlot`], a tunnel's by the [`HeldSlot`] inside the
 //! [`Tunnel`](super::Tunnel) — so no caller downstream of an engine has to
 //! remember to release anything, in any family.
+//!
+//! # Who may open a slot (ADR-0091, security rule 10)
+//!
+//! An opening packet is a stranger's to forge, and admitting one costs an
+//! `ST_STATE` sent to its claimed source, or a KEY frame and a QUIC handshake
+//! under the same window for a QUIC long header. So an opening packet
+//! opens a slot only when the caller says its source IP is **expected** — the
+//! core's Punch Expectations and Peer Roster answer that, asked only when a
+//! packet would actually open a slot — and only while the **Unidentified
+//! Allowance** has room: [`UNIDENTIFIED_PER_IP`] endpoints for that IP and
+//! [`UNIDENTIFIED_MAX`] in all. The per-IP half is what keeps a flood spoofing
+//! one expected address from crowding out another. Expired `Opening` slots are
+//! removed by [`TunnelRegistry::prune`] on the caller's tick, never by a scan
+//! per admit; one that has expired but not yet been pruned admits nothing.
+//!
+//! The charge outlives the `Opening` slot. `librqbit-utp` hands a stream over
+//! at the `ST_SYN`, so a slot that turned [`TunnelSlot::Held`] at the accept
+//! has proved nothing, and it spends the allowance until
+//! [`TunnelRegistry::identified`] says a hello read on it or its tunnel drops.
+//!
+//! # One ledger per endpoint
+//!
+//! The registry owns the **Key Frame** table and the **CAPS Negotiation** rows
+//! too, under one lock, because the allowance has to answer for them. A KEY or
+//! CAPS frame opens a slot exactly as an opening packet does, so it passes the
+//! same gate, and the rows it leaves behind go with the charge: those tables
+//! hold at most [`UNIDENTIFIED_MAX`] rows an unidentified source made.
 
+use parking_lot::Mutex;
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::net::IpAddr;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use rmule_primitives::PeerEndpoint;
+use rmule_primitives::{PeerEndpoint, UserHash};
+
+use super::keys::NattKeyTable;
+use super::negotiations::NegotiationTable;
 
 /// How long an endpoint stays admitted on the strength of an **inbound**
 /// opening packet alone. rmule's own bound, not the dialect's — eMuleAI defines
@@ -43,12 +75,26 @@ use rmule_primitives::PeerEndpoint;
 /// nothing a stranger sent created it.
 pub const OPENING_TTL: Duration = Duration::from_secs(30);
 
+/// How many unidentified endpoints one source IP may hold at once. Four, as
+/// many as the peers the core expects behind one address (a CGNAT pool, a home
+/// NAT with several clients); a legitimate peer holds one.
+pub const UNIDENTIFIED_PER_IP: usize = 4;
+
+/// How many unidentified endpoints the registry holds at once, over every IP.
+/// A hard bound on what forged frames from expected addresses can make rmule
+/// answer or keep before a hello names anyone.
+pub const UNIDENTIFIED_MAX: usize = 64;
+
+/// The caller's answer to "is an opening packet from this IP expected?" —
+/// asked only when a packet would open a slot (ADR-0091, security rule 10).
+pub type ExpectsSource<'a> = dyn Fn(IpAddr) -> bool + Send + Sync + 'a;
+
 /// What the registry knows about one endpoint.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TunnelSlot {
-    /// An **inbound** opening packet arrived and the handshake is in flight.
-    /// Admitted, but only until [`OPENING_TTL`] elapses: an endpoint nobody
-    /// here chose to talk to buys one window.
+    /// An **inbound** opening packet arrived from an expected IP and the
+    /// handshake is in flight. Admitted, but only until [`OPENING_TTL`]
+    /// elapses: an opener rmule did not send buys one window.
     Opening,
     /// **We** are dialing this endpoint, and the dial is still running.
     /// Admitted for as long as the dial's [`DialingSlot`] lives — never aged
@@ -85,12 +131,24 @@ struct SlotEntry {
     /// either side settles on one, and the loser closing must not evict the
     /// winner's admission. Zero unless `slot` is [`TunnelSlot::Held`].
     holders: u32,
+    /// Whether this row spends the **Unidentified Allowance**: it came from an
+    /// inbound frame and no hello has named anyone at the endpoint yet.
+    unidentified: bool,
 }
 
 /// The endpoint → tunnel-state table.
 #[derive(Debug, Default)]
 pub struct TunnelRegistry {
     slots: HashMap<PeerEndpoint, SlotEntry>,
+    /// How many unidentified endpoints each IP holds — kept beside the table
+    /// so the allowance costs a lookup, not a scan.
+    unidentified: HashMap<IpAddr, usize>,
+    /// The sum of `unidentified`.
+    unidentified_total: usize,
+    /// What KEY frames taught us, and when we last asserted our own hash.
+    pub(super) keys: NattKeyTable,
+    /// Each endpoint's **CAPS Negotiation**.
+    pub(super) negotiations: NegotiationTable,
 }
 
 impl TunnelRegistry {
@@ -103,21 +161,83 @@ impl TunnelRegistry {
     /// Decide whether a datagram from `peer` reaches the engine.
     ///
     /// `opens` is whether *this packet* is an opening one — a uTP `ST_SYN` or a
-    /// QUIC long header. An opening packet from an unknown endpoint is admitted
-    /// and the endpoint recorded as [`TunnelSlot::Opening`], because the
-    /// handshake's own follow-ups are not opening packets and would otherwise
-    /// be dropped a millisecond later.
-    pub fn admit(&mut self, peer: PeerEndpoint, opens: bool, now: Instant) -> Admission {
-        self.prune(now);
+    /// QUIC long header. An opening packet from an endpoint with no slot opens
+    /// a [`TunnelSlot::Opening`] one when `expects` says its IP is expected
+    /// and the allowance has room, because the handshake's own follow-ups are
+    /// not opening packets and would otherwise be dropped a millisecond later.
+    /// `expects` is asked only then.
+    pub fn admit(
+        &mut self,
+        peer: PeerEndpoint,
+        opens: bool,
+        expects: impl FnOnce(IpAddr) -> bool,
+        now: Instant,
+    ) -> Admission {
         match self.slots.get(&peer) {
-            Some(_) => Admission::Inject,
-            None if opens => {
-                self.slots
-                    .insert(peer, SlotEntry::new(TunnelSlot::Opening, now));
-                Admission::Opened
-            }
-            None => Admission::Drop,
+            Some(entry) if !entry.lapsed(now) => return Admission::Inject,
+            Some(_) => self.remove(peer),
+            None => {}
         }
+        if !opens || !expects(peer.ip()) || !self.has_room(peer.ip()) {
+            return Admission::Drop;
+        }
+        let mut entry = SlotEntry::new(TunnelSlot::Opening, now);
+        entry.unidentified = true;
+        self.insert(peer, entry);
+        Admission::Opened
+    }
+
+    /// Expire inbound opening slots whose window has passed, and key and
+    /// negotiation rows past theirs. Held and dialing slots are untouched:
+    /// each is ended by the guard that owns it — a held one when its tunnel
+    /// drops, whatever ended the tunnel, and a dial's by the dial. The caller
+    /// runs this on its own coarse tick.
+    pub fn prune(&mut self, now: Instant) {
+        let lapsed: Vec<PeerEndpoint> = self
+            .slots
+            .iter()
+            .filter(|(_, entry)| entry.lapsed(now))
+            .map(|(peer, _)| *peer)
+            .collect();
+        for peer in lapsed {
+            self.remove(peer);
+        }
+        let slots = &self.slots;
+        self.keys.prune(now, |peer| {
+            slots
+                .get(&peer)
+                .is_some_and(|entry| entry.slot == TunnelSlot::Held)
+        });
+        self.negotiations.prune(now);
+    }
+
+    /// Adopt the hash a KEY frame carried, returning whether it was adopted:
+    /// a held endpoint refuses one that contradicts its live key, and any
+    /// endpoint one that contradicts its name (ADR-0091, security rule 11).
+    pub fn learn_key(&mut self, peer: PeerEndpoint, hash: UserHash, now: Instant) -> bool {
+        let held = self.slot(peer) == Some(TunnelSlot::Held);
+        self.keys.learn(peer, hash, held, now)
+    }
+
+    /// The hash `peer`'s KEY frames state, if any. A live tunnel keeps its key
+    /// whatever its age (ADR-0091, security rule 11).
+    #[must_use]
+    pub fn key_for(&self, peer: PeerEndpoint, now: Instant) -> Option<UserHash> {
+        let held = self.slot(peer) == Some(TunnelSlot::Held);
+        self.keys.key_for(peer, held, now)
+    }
+
+    /// The hash to obfuscate a send to `peer` under, if any: its key, once the
+    /// endpoint stops spending the **Unidentified Allowance**. Until a hello
+    /// names it, a KEY is only what somebody claimed (ADR-0091, security rule
+    /// 11).
+    #[must_use]
+    pub fn send_key(&self, peer: PeerEndpoint, now: Instant) -> Option<UserHash> {
+        let unidentified = self
+            .slots
+            .get(&peer)
+            .is_some_and(|entry| entry.unidentified);
+        self.key_for(peer, now).filter(|_| !unidentified)
     }
 
     /// Record that we are dialing `peer`, so the answer to our own opening
@@ -131,8 +251,7 @@ impl TunnelRegistry {
     /// must follow however the dial ends.
     pub fn dialing(&mut self, peer: PeerEndpoint, now: Instant) {
         if self.slot(peer) != Some(TunnelSlot::Held) {
-            self.slots
-                .insert(peer, SlotEntry::new(TunnelSlot::Dialing, now));
+            self.insert(peer, SlotEntry::new(TunnelSlot::Dialing, now));
         }
     }
 
@@ -143,27 +262,55 @@ impl TunnelRegistry {
     /// handshake's own [`TunnelSlot::Opening`] window.
     pub fn release_dialing(&mut self, peer: PeerEndpoint) {
         if self.slot(peer) == Some(TunnelSlot::Dialing) {
-            self.slots.remove(&peer);
+            self.remove(peer);
         }
     }
 
-    /// Promote `peer` to a held tunnel — the handshake completed and a
-    /// [`Tunnel`](super::Tunnel) exists — counting one more holder. A held
-    /// slot never ages out; it goes when its last holder does.
+    /// Promote `peer` to a held tunnel — a [`Tunnel`](super::Tunnel) exists —
+    /// counting one more holder. A held slot never ages out; it goes when its
+    /// last holder does.
+    ///
+    /// An inbound slot keeps its charge on the **Unidentified Allowance**: a
+    /// stream exists from the `ST_SYN` on, which proves nothing. Only a slot
+    /// our own dial opened is free of it.
     ///
     /// Prefer [`HeldSlot::hold`], which pairs this with the
     /// [`release_held`](Self::release_held) that must follow.
     pub fn held(&mut self, peer: PeerEndpoint, now: Instant) {
-        match self.slots.get_mut(&peer) {
-            Some(entry) if entry.slot == TunnelSlot::Held => {
+        let prior = self.slot(peer);
+        if prior == Some(TunnelSlot::Held) {
+            if let Some(entry) = self.slots.get_mut(&peer) {
                 entry.holders = entry.holders.saturating_add(1);
             }
-            _ => {
-                let mut entry = SlotEntry::new(TunnelSlot::Held, now);
-                entry.holders = 1;
-                self.slots.insert(peer, entry);
-            }
+            return;
         }
+        let mut entry = SlotEntry::new(TunnelSlot::Held, now);
+        entry.holders = 1;
+        entry.unidentified = prior != Some(TunnelSlot::Dialing);
+        self.insert(peer, entry);
+    }
+
+    /// Our own dial to `peer` completed: the endpoint stops spending the
+    /// **Unidentified Allowance**.
+    fn dial_completed(&mut self, peer: PeerEndpoint) {
+        if let Some(entry) = self.slots.get_mut(&peer)
+            && std::mem::take(&mut entry.unidentified)
+        {
+            self.uncharge(peer.ip());
+        }
+    }
+
+    /// A hello on `peer`'s tunnel named `hash`: the endpoint stops spending the
+    /// **Unidentified Allowance**, and is that hash from here on.
+    pub fn identified(&mut self, peer: PeerEndpoint, hash: UserHash, now: Instant) {
+        self.dial_completed(peer);
+        self.name(peer, hash, now);
+    }
+
+    /// `peer` is `hash`, for as long as its slot lives (ADR-0091, security rule
+    /// 11): what a dial aimed at, or what a hello said.
+    pub fn name(&mut self, peer: PeerEndpoint, hash: UserHash, now: Instant) {
+        self.keys.name(peer, hash, now);
     }
 
     /// One holder of `peer`'s held slot let go; the slot goes with the last.
@@ -175,14 +322,14 @@ impl TunnelRegistry {
         {
             entry.holders = entry.holders.saturating_sub(1);
             if entry.holders == 0 {
-                self.slots.remove(&peer);
+                self.remove(peer);
             }
         }
     }
 
     /// Forget `peer` outright, whatever holds it.
     pub fn release(&mut self, peer: PeerEndpoint) {
-        self.slots.remove(&peer);
+        self.remove(peer);
     }
 
     /// What the registry holds for `peer`, if anything.
@@ -203,15 +350,56 @@ impl TunnelRegistry {
         self.slots.is_empty()
     }
 
-    /// Expire inbound opening slots whose window has passed. Held and dialing
-    /// slots are untouched: each is ended by the guard that owns it — a held
-    /// one when its tunnel drops, whatever ended the tunnel, and a dial's by
-    /// the dial.
-    fn prune(&mut self, now: Instant) {
-        self.slots.retain(|_, entry| match entry.slot {
-            TunnelSlot::Held | TunnelSlot::Dialing => true,
-            TunnelSlot::Opening => now.duration_since(entry.since) < OPENING_TTL,
-        });
+    /// Whether one more unidentified endpoint at `ip` fits the allowance.
+    fn has_room(&self, ip: IpAddr) -> bool {
+        self.unidentified_total < UNIDENTIFIED_MAX
+            && self.unidentified.get(&ip).copied().unwrap_or(0) < UNIDENTIFIED_PER_IP
+    }
+
+    /// Put `entry` at `peer`, replacing whatever was there, with the allowance
+    /// kept in step. The endpoint is still spoken for, so its rows stay.
+    fn insert(&mut self, peer: PeerEndpoint, entry: SlotEntry) {
+        self.take(peer);
+        if entry.unidentified {
+            *self.unidentified.entry(peer.ip()).or_default() += 1;
+            self.unidentified_total += 1;
+        }
+        self.slots.insert(peer, entry);
+    }
+
+    /// Forget `peer`'s slot, and with an unidentified one the rows its frames
+    /// left: nothing an unidentified source made outlives its charge.
+    fn remove(&mut self, peer: PeerEndpoint) {
+        if self.take(peer) {
+            self.keys.forget(peer);
+            self.negotiations.forget(peer);
+        } else {
+            self.keys.unname(peer);
+        }
+    }
+
+    /// Take `peer`'s slot out, with the allowance kept in step, returning
+    /// whether it was unidentified.
+    fn take(&mut self, peer: PeerEndpoint) -> bool {
+        let unidentified = self
+            .slots
+            .remove(&peer)
+            .is_some_and(|entry| entry.unidentified);
+        if unidentified {
+            self.uncharge(peer.ip());
+        }
+        unidentified
+    }
+
+    /// Give one unidentified endpoint at `ip` back to the allowance.
+    fn uncharge(&mut self, ip: IpAddr) {
+        self.unidentified_total = self.unidentified_total.saturating_sub(1);
+        if let Some(count) = self.unidentified.get_mut(&ip) {
+            *count = count.saturating_sub(1);
+            if *count == 0 {
+                self.unidentified.remove(&ip);
+            }
+        }
     }
 }
 
@@ -221,7 +409,14 @@ impl SlotEntry {
             slot,
             since,
             holders: 0,
+            unidentified: false,
         }
+    }
+
+    /// Whether this is an `Opening` slot whose window has passed. Held and
+    /// dialing slots never lapse.
+    fn lapsed(&self, now: Instant) -> bool {
+        self.slot == TunnelSlot::Opening && now.duration_since(self.since) >= OPENING_TTL
     }
 }
 
@@ -248,10 +443,7 @@ impl DialingSlot {
     /// Mark `peer` as dialing and hold the claim.
     #[must_use]
     pub fn open(registry: &Arc<Mutex<TunnelRegistry>>, peer: PeerEndpoint) -> Self {
-        registry
-            .lock()
-            .expect("the NAT-T tunnel registry is never poisoned")
-            .dialing(peer, Instant::now());
+        registry.lock().dialing(peer, Instant::now());
         Self {
             registry: Arc::clone(registry),
             peer,
@@ -263,17 +455,16 @@ impl DialingSlot {
     /// this claim for exactly as long as the returned [`HeldSlot`] does.
     pub fn held(mut self) -> HeldSlot {
         self.release_on_drop = false;
-        HeldSlot::hold(&self.registry, self.peer)
+        let slot = HeldSlot::hold(&self.registry, self.peer);
+        self.registry.lock().dial_completed(self.peer);
+        slot
     }
 }
 
 impl Drop for DialingSlot {
     fn drop(&mut self) {
         if self.release_on_drop {
-            self.registry
-                .lock()
-                .expect("the NAT-T tunnel registry is never poisoned")
-                .release_dialing(self.peer);
+            self.registry.lock().release_dialing(self.peer);
         }
     }
 }
@@ -295,10 +486,7 @@ pub struct HeldSlot {
 impl HeldSlot {
     /// Hold `peer`'s slot for one tunnel.
     pub fn hold(registry: &Arc<Mutex<TunnelRegistry>>, peer: PeerEndpoint) -> Self {
-        registry
-            .lock()
-            .expect("the NAT-T tunnel registry is never poisoned")
-            .held(peer, Instant::now());
+        registry.lock().held(peer, Instant::now());
         Self {
             registry: Arc::clone(registry),
             peer,
@@ -308,163 +496,9 @@ impl HeldSlot {
 
 impl Drop for HeldSlot {
     fn drop(&mut self) {
-        self.registry
-            .lock()
-            .expect("the NAT-T tunnel registry is never poisoned")
-            .release_held(self.peer);
+        self.registry.lock().release_held(self.peer);
     }
 }
 
 #[cfg(test)]
-mod tests {
-    use std::net::Ipv4Addr;
-
-    use rmule_primitives::Ipv4Endpoint;
-
-    use super::*;
-
-    fn endpoint(last: u8) -> PeerEndpoint {
-        PeerEndpoint::V4(Ipv4Endpoint::new(Ipv4Addr::new(198, 51, 100, last), 4672))
-    }
-
-    /// The A2 rule: a non-opening frame from a stranger is dropped before the
-    /// engine sees it, so no `ST_RESET` reaches an address nobody verified.
-    #[test]
-    fn a_non_opening_frame_from_an_unknown_endpoint_is_dropped_unanswered() {
-        let now = Instant::now();
-        let mut registry = TunnelRegistry::new();
-        assert_eq!(registry.admit(endpoint(1), false, now), Admission::Drop);
-        assert!(registry.is_empty(), "a dropped frame leaves no trace");
-    }
-
-    /// An opening packet admits the endpoint *and* its follow-ups: the
-    /// handshake's second packet is not itself an opening one.
-    #[test]
-    fn an_opening_packet_admits_the_handshake_that_follows_it() {
-        let now = Instant::now();
-        let mut registry = TunnelRegistry::new();
-        assert_eq!(registry.admit(endpoint(1), true, now), Admission::Opened);
-        assert_eq!(registry.slot(endpoint(1)), Some(TunnelSlot::Opening));
-        assert_eq!(registry.admit(endpoint(1), false, now), Admission::Inject);
-    }
-
-    /// A dial opens the slot from our side, because our own `ST_SYN` leaves
-    /// rather than arrives and nothing inbound would have opened it.
-    #[test]
-    fn a_dial_opens_the_slot_so_the_answer_is_admitted() {
-        let now = Instant::now();
-        let mut registry = TunnelRegistry::new();
-        registry.dialing(endpoint(1), now);
-        assert_eq!(registry.admit(endpoint(1), false, now), Admission::Inject);
-    }
-
-    /// An **inbound** opening slot expires; a held one does not. A forged
-    /// opening packet therefore buys one window, while a live transfer is never
-    /// evicted under it.
-    #[test]
-    fn an_opening_slot_ages_out_and_a_held_one_does_not() {
-        let now = Instant::now();
-        let mut registry = TunnelRegistry::new();
-        assert_eq!(registry.admit(endpoint(1), true, now), Admission::Opened);
-        registry.held(endpoint(2), now);
-        let later = now + OPENING_TTL;
-        assert_eq!(registry.admit(endpoint(1), false, later), Admission::Drop);
-        assert_eq!(registry.admit(endpoint(2), false, later), Admission::Inject);
-        assert_eq!(registry.len(), 1);
-    }
-
-    /// The mismatch this slot exists to end: a dial outliving
-    /// `OPENING_TTL` kept waiting for an answer the registry had already
-    /// started dropping as a stranger's. A dial's own slot is not pruned —
-    /// while a forged inbound opener beside it still buys only one window.
-    #[test]
-    fn a_dials_own_slot_outlives_the_window_a_forged_opener_buys() {
-        let now = Instant::now();
-        let mut registry = TunnelRegistry::new();
-        registry.dialing(endpoint(1), now);
-        assert_eq!(registry.admit(endpoint(2), true, now), Admission::Opened);
-        let later = now + OPENING_TTL * 4;
-        assert_eq!(registry.admit(endpoint(1), false, later), Admission::Inject);
-        assert_eq!(registry.admit(endpoint(2), false, later), Admission::Drop);
-    }
-
-    /// The claim ends with the dial, however the dial ended — including the
-    /// cancellation a bounded, retried dial performs. A promoted slot stays:
-    /// it is the tunnel's now.
-    #[test]
-    fn a_dropped_dial_releases_its_slot_and_a_promoted_one_keeps_it() {
-        let registry = Arc::new(Mutex::new(TunnelRegistry::new()));
-        drop(DialingSlot::open(&registry, endpoint(1)));
-        assert_eq!(registry.lock().unwrap().slot(endpoint(1)), None);
-
-        let _tunnel = DialingSlot::open(&registry, endpoint(2)).held();
-        assert_eq!(
-            registry.lock().unwrap().slot(endpoint(2)),
-            Some(TunnelSlot::Held)
-        );
-    }
-
-    /// A dial that ends after somebody else's tunnel took the same endpoint
-    /// leaves that tunnel alone: the release is conditional on the slot still
-    /// being the dial's.
-    #[test]
-    fn a_dial_ending_never_evicts_a_tunnel_that_took_its_endpoint() {
-        let registry = Arc::new(Mutex::new(TunnelRegistry::new()));
-        let slot = DialingSlot::open(&registry, endpoint(1));
-        registry.lock().unwrap().held(endpoint(1), Instant::now());
-        drop(slot);
-        assert_eq!(
-            registry.lock().unwrap().slot(endpoint(1)),
-            Some(TunnelSlot::Held)
-        );
-    }
-
-    /// A released endpoint is a stranger again — so a late datagram for a
-    /// closed tunnel is dropped rather than reset.
-    #[test]
-    fn a_released_endpoint_is_a_stranger_again() {
-        let now = Instant::now();
-        let mut registry = TunnelRegistry::new();
-        registry.held(endpoint(1), now);
-        registry.release(endpoint(1));
-        assert_eq!(registry.slot(endpoint(1)), None);
-        assert_eq!(registry.admit(endpoint(1), false, now), Admission::Drop);
-    }
-
-    /// Two tunnels on one endpoint — our dial and the peer's, both completing
-    /// in a simultaneous open — hold one slot, and the first to close leaves
-    /// the other admitted. The slot goes with the last one.
-    #[test]
-    fn a_held_slot_lives_until_its_last_tunnel_drops() {
-        let registry = Arc::new(Mutex::new(TunnelRegistry::new()));
-        let dialed = DialingSlot::open(&registry, endpoint(1)).held();
-        let accepted = HeldSlot::hold(&registry, endpoint(1));
-        drop(dialed);
-        let now = Instant::now();
-        assert_eq!(
-            registry.lock().unwrap().admit(endpoint(1), false, now),
-            Admission::Inject,
-            "the surviving tunnel is still admitted"
-        );
-        drop(accepted);
-        assert_eq!(registry.lock().unwrap().slot(endpoint(1)), None);
-        assert_eq!(
-            registry.lock().unwrap().admit(endpoint(1), false, now),
-            Admission::Drop
-        );
-    }
-
-    /// Re-dialing a path a tunnel already rides does not demote its slot: the
-    /// dial's end removes only a slot that is still `Dialing`, so a demoted
-    /// one would have been evicted from under the live tunnel.
-    #[test]
-    fn a_dial_over_a_held_path_leaves_the_tunnel_admitted() {
-        let registry = Arc::new(Mutex::new(TunnelRegistry::new()));
-        let _tunnel = HeldSlot::hold(&registry, endpoint(1));
-        drop(DialingSlot::open(&registry, endpoint(1)));
-        assert_eq!(
-            registry.lock().unwrap().slot(endpoint(1)),
-            Some(TunnelSlot::Held)
-        );
-    }
-}
+mod tests;

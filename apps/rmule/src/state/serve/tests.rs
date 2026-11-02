@@ -2,10 +2,10 @@
 
 use std::path::PathBuf;
 
-/// The finished pass says how many files it carried to a new path,
-/// in its place between kept and hashed.
+/// A finished pass says what it added and the exceptions: a file found as
+/// it was left, and a count of none, are not news.
 #[test]
-fn the_scan_finished_line_counts_what_it_carried() {
+fn a_finished_scan_says_what_changed_and_only_that() {
     let line = crate::words::scan::line(&ScanEvent::Finished {
         dir: PathBuf::from("/downloads"),
         summary: rmule_core::ScanSummary {
@@ -19,7 +19,8 @@ fn the_scan_finished_line_counts_what_it_carried() {
     });
     assert_eq!(
         line,
-        "/downloads scanned: 4 kept, 3 carried, 2 hashed, 1 dropped, 0 skipped, 2 unreadable"
+        "/downloads: 2 files added, 3 files moved, 1 file no longer shared, \
+         2 files could not be read"
     );
 }
 
@@ -29,6 +30,14 @@ use rmule_core::file_history::{Ed2kIdentity, FileHistory, HistoryPart, SharedFil
 use super::*;
 use crate::fixture::{file_hash, peer_endpoint, serve_event};
 use crate::state::fold;
+
+fn uploading_now(state: &UiState, file: rmule_primitives::FileHash) -> usize {
+    state
+        .upload_slots()
+        .into_iter()
+        .filter(|held| *held == file)
+        .count()
+}
 
 fn only_shared(state: &UiState) -> &SharedRow {
     state.shared.values().next().expect("one shared row")
@@ -130,13 +139,14 @@ fn uploading_counts_the_files_slot_holders_now() {
             peer: peer_endpoint(peer),
             file_hash: file_hash(1),
             software: None,
+            road: rmule_core::GrantRoad::Linked,
         })
     };
     assert!(fold(&mut state, grant(1)));
     assert!(fold(&mut state, grant(2)));
     history(&[(1, "/dl/film.mkv", 1)]).fold_into(&mut state);
     assert_eq!(
-        state.uploading_now(file_hash(1)),
+        uploading_now(&state, file_hash(1)),
         2,
         "grants before the row"
     );
@@ -150,14 +160,14 @@ fn uploading_counts_the_files_slot_holders_now() {
             software: None,
         }),
     );
-    assert_eq!(state.uploading_now(file_hash(1)), 1, "re-queued");
+    assert_eq!(uploading_now(&state, file_hash(1)), 1, "re-queued");
     assert!(fold(
         &mut state,
         serve_event(ServeEvent::UploadSlotReleased {
             peer: peer_endpoint(2)
         }),
     ));
-    assert_eq!(state.uploading_now(file_hash(1)), 0, "released");
+    assert_eq!(uploading_now(&state, file_hash(1)), 0, "released");
     // Releasing a peer we never had changes nothing.
     assert!(!fold(
         &mut state,
@@ -183,6 +193,87 @@ fn queuing_records_the_peers_rank_and_file() {
         state.upload_peers.values().next().unwrap().state,
         UploadState::Queued { rank: 3, file } if file == file_hash(4),
     ));
+}
+
+/// A waiter back on a new link is the same row at its new address, still at
+/// its rank, and no row is left at the old one.
+#[test]
+fn a_relinked_waiter_keeps_its_row_at_its_new_link() {
+    let mut state = UiState::default();
+    fold(
+        &mut state,
+        serve_event(ServeEvent::PeerQueued {
+            peer: peer_endpoint(2),
+            rank: 1,
+            file_hash: file_hash(4),
+            software: None,
+        }),
+    );
+    assert!(fold(
+        &mut state,
+        serve_event(ServeEvent::WaiterRelinked {
+            from: peer_endpoint(2),
+            to: peer_endpoint(3),
+        }),
+    ));
+    assert!(!state.upload_peers.contains_key(&peer_endpoint(2)));
+    let row = &state.upload_peers[&peer_endpoint(3)];
+    assert_eq!(row.peer, peer_endpoint(3));
+    assert!(matches!(
+        row.state,
+        UploadState::Queued { rank: 1, file } if file == file_hash(4),
+    ));
+}
+
+/// A waiter rmule dials back to its held slot reads so — not uploading yet —
+/// until the grant lands on the dialed link, its row moved there; a dial that
+/// ends unsent takes the row with the place.
+#[test]
+fn a_dialled_back_waiter_reads_dialling_back_until_its_grant_or_its_failure() {
+    let mut state = UiState::default();
+    let dialing = || {
+        serve_event(ServeEvent::UploadDialBack {
+            peer: peer_endpoint(2),
+            file_hash: file_hash(4),
+            software: None,
+        })
+    };
+    assert!(fold(&mut state, dialing()));
+    assert!(matches!(
+        state.upload_peers[&peer_endpoint(2)].state,
+        UploadState::DialingBack { file } if file == file_hash(4),
+    ));
+    assert_eq!(uploading_now(&state, file_hash(4)), 0);
+
+    fold(
+        &mut state,
+        serve_event(ServeEvent::WaiterRelinked {
+            from: peer_endpoint(2),
+            to: peer_endpoint(3),
+        }),
+    );
+    fold(
+        &mut state,
+        serve_event(ServeEvent::UploadSlotGranted {
+            peer: peer_endpoint(3),
+            file_hash: file_hash(4),
+            software: None,
+            road: rmule_core::GrantRoad::DialedBack,
+        }),
+    );
+    assert_eq!(state.upload_peers.len(), 1, "one row, at the dialed link");
+    assert_eq!(uploading_now(&state, file_hash(4)), 1);
+
+    let mut state = UiState::default();
+    fold(&mut state, dialing());
+    assert!(fold(
+        &mut state,
+        serve_event(ServeEvent::UploadDialBackFailed {
+            peer: peer_endpoint(2),
+            cause: rmule_core::DialBackEnd::Lapsed,
+        }),
+    ));
+    assert!(state.upload_peers.is_empty());
 }
 
 #[test]
@@ -284,5 +375,45 @@ fn the_list_edges_read_as_what_happened_to_the_directory() {
             files: 1,
         }),
         "/srv/media no longer shared: 1 file left the offer, still on disk"
+    );
+}
+
+/// A Partial Share is its download's: core's edges open and close it, a File
+/// History answer — the registry's — leaves it be, and it is named by the
+/// download it belongs to.
+#[test]
+fn a_partial_share_outlives_a_registry_answer_and_ends_on_its_withdrawal() {
+    let mut state = crate::fixture::partially_served();
+    assert_eq!(
+        state.notable.as_deref(),
+        Some("a download offers the parts it has verified")
+    );
+    history(&[(1, "/dl/film.mkv", 734_003_200)]).fold_into(&mut state);
+    let download = state
+        .partial_download(file_hash(3))
+        .expect("the share is its download's");
+    assert_eq!(
+        download
+            .metadata
+            .as_ref()
+            .map(|m| m.name.to_display_string()),
+        Some("album.flac".to_string())
+    );
+    assert!(
+        !state.shared.contains_key(&file_hash(3)),
+        "never a registry row"
+    );
+
+    fold(
+        &mut state,
+        serve_event(ServeEvent::PartialWithdrawn {
+            file_hash: file_hash(3),
+            cause: rmule_core::PartialEnd::Completed,
+        }),
+    );
+    assert!(state.partial_download(file_hash(3)).is_none());
+    assert_eq!(
+        state.notable.as_deref(),
+        Some("a download finished and is shared whole")
     );
 }

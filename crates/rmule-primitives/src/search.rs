@@ -3,10 +3,12 @@
 //! and how rows for one file from several origins fold into a single result.
 
 use crate::{
-    Ed2kFileClass, Ed2kFileLink, Ed2kText, FileHash, PeerSource, PrimitiveError, Result, Tag,
+    AichRootHash, Ed2kFileClass, Ed2kFileLink, Ed2kText, FileHash, PeerSource, PrimitiveError,
+    Result, Tag,
 };
 
 mod kind;
+mod named_file;
 mod satisfaction;
 mod terms;
 
@@ -64,6 +66,13 @@ pub enum SearchResultOrigin {
     Kad,
 }
 
+/// The aliases a row folds; past this a name adds nothing an operator could read.
+const ROW_NAMES_CAP: usize = 32;
+/// The sources a row folds, the **Source Limit** a download would take of them.
+const ROW_SOURCES_CAP: usize = 300;
+/// The untyped tags a row folds.
+const ROW_TAGS_CAP: usize = 32;
+
 /// One file as the network reported it, with every alias and source folded in.
 ///
 /// A row is never a single answer: the same file comes back from several
@@ -83,6 +92,9 @@ pub struct SearchResult {
     complete_sources: Option<u32>,
     origin: SearchResultOrigin,
     extra_tags: Vec<Tag>,
+    /// The qualified AICH root a Kad keyword answer carried for this file
+    /// (ADR-0038): the first one a report of it carried.
+    kad_aich_root: Option<AichRootHash>,
 }
 
 impl KeywordQuery {
@@ -275,6 +287,7 @@ impl SearchResult {
             complete_sources: None,
             origin: SearchResultOrigin::Ed2kServer,
             extra_tags: Vec::new(),
+            kad_aich_root: None,
         })
     }
 
@@ -363,16 +376,12 @@ impl SearchResult {
     /// the norm; the extension is the workhorse.
     #[must_use]
     pub fn file_class(&self) -> Option<Ed2kFileClass> {
-        self.primary_name()
-            .try_as_str()
-            .ok()
-            .and_then(Ed2kFileClass::from_file_name)
-            .or_else(|| {
-                self.file_type
-                    .as_ref()
-                    .and_then(|tag| tag.try_as_str().ok())
-                    .and_then(Ed2kFileClass::from_type_tag)
-            })
+        Ed2kFileClass::from_name_bytes(self.primary_name().as_bytes()).or_else(|| {
+            self.file_type
+                .as_ref()
+                .and_then(|tag| tag.try_as_str().ok())
+                .and_then(Ed2kFileClass::from_type_tag)
+        })
     }
 
     /// Every tag the answer carried that this crate does not type, kept so a
@@ -423,6 +432,23 @@ impl SearchResult {
         self
     }
 
+    /// Attach the AICH root a Kad keyword answer qualified for this file
+    /// (ADR-0038). Which roots qualify is the caller's rule, not this row's.
+    #[must_use]
+    pub const fn with_kad_aich_root(mut self, root: AichRootHash) -> Self {
+        self.kad_aich_root = Some(root);
+        self
+    }
+
+    /// The qualified AICH root a Kad keyword answer carried for this file, the
+    /// root a download started from this row trusts until its peers contest it
+    /// (ADR-0038). Never part of [`Self::to_file_link`]: a link's `h=` ranks
+    /// above it.
+    #[must_use]
+    pub const fn kad_aich_root(&self) -> Option<AichRootHash> {
+        self.kad_aich_root
+    }
+
     /// Attach the untyped tags an answer carried.
     #[must_use]
     pub fn with_extra_tags(mut self, extra_tags: Vec<Tag>) -> Self {
@@ -431,9 +457,10 @@ impl SearchResult {
     }
 
     /// Fold another report of the same file into this row: union the names,
-    /// sources and untyped tags, take the first non-empty typed tag, and
-    /// combine the counts by origin (sum across servers, max once Kad is
-    /// involved — see `merge_counts`).
+    /// sources and untyped tags, take the first non-empty typed tag and Kad
+    /// AICH root, and combine the counts by origin (sum across servers, max
+    /// once Kad is involved — see `merge_counts`). Names, sources and tags
+    /// fold up to a cap per row: a report comes from anyone.
     ///
     /// A report of a *different* file is ignored rather than rejected, so a
     /// caller grouping rows cannot corrupt one by mis-grouping.
@@ -443,23 +470,17 @@ impl SearchResult {
         }
         debug_assert_eq!(self.key(), other.key());
 
-        for name in &other.names {
-            if !self.names.contains(name) {
-                self.names.push(name.clone());
-            }
-        }
-
-        for source in &other.sources {
-            if !self.sources.contains(source) {
-                self.sources.push(*source);
-            }
-        }
+        fold_capped(&mut self.names, &other.names, ROW_NAMES_CAP);
+        fold_capped(&mut self.sources, &other.sources, ROW_SOURCES_CAP);
 
         if self.file_type.is_none() {
             self.file_type.clone_from(&other.file_type);
         }
         if self.file_format.is_none() {
             self.file_format.clone_from(&other.file_format);
+        }
+        if self.kad_aich_root.is_none() {
+            self.kad_aich_root = other.kad_aich_root;
         }
         self.reported_availability = merge_counts(
             self.origin,
@@ -479,11 +500,25 @@ impl SearchResult {
         if other.origin == SearchResultOrigin::Kad {
             self.origin = SearchResultOrigin::Kad;
         }
-        for tag in &other.extra_tags {
-            if !self.extra_tags.contains(tag) {
-                self.extra_tags.push(tag.clone());
-            }
-        }
+        fold_capped(&mut self.extra_tags, &other.extra_tags, ROW_TAGS_CAP);
+    }
+
+    /// What this row holds in bytes of a counterparty's text: the measure a
+    /// search budgets its set by.
+    #[must_use]
+    pub fn held_bytes(&self) -> usize {
+        let text = |text: &Option<Ed2kText>| text.as_ref().map_or(0, |text| text.as_bytes().len());
+        self.names
+            .iter()
+            .map(|name| name.as_bytes().len())
+            .sum::<usize>()
+            + text(&self.file_type)
+            + text(&self.file_format)
+            + self
+                .extra_tags
+                .iter()
+                .map(|tag| tag.encode().len())
+                .sum::<usize>()
     }
 
     /// The `ed2k://` link for this row, built from its primary name, hash and
@@ -500,6 +535,19 @@ impl SearchResult {
             aich_root: None,
             ipv6_sources: Vec::new(),
             sources: Default::default(),
+        }
+    }
+}
+
+/// Add to `held` what `other` holds that it does not, up to `cap` entries: a
+/// row folds reports from anyone, and each check is a scan.
+fn fold_capped<T: Clone + PartialEq>(held: &mut Vec<T>, other: &[T], cap: usize) {
+    for item in other {
+        if held.len() >= cap {
+            return;
+        }
+        if !held.contains(item) {
+            held.push(item.clone());
         }
     }
 }

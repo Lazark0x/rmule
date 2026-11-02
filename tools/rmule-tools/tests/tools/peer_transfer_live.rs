@@ -64,11 +64,10 @@ async fn live_transfer_reaches_hash_set_received() {
         .await
         .expect("connect");
     let ranges = PartRanges::new([
-        (0, std::cmp::min(file.size, ED2K_PART_SIZE)),
+        (0, std::cmp::min(file.size(), ED2K_PART_SIZE)),
         (0, 0),
         (0, 0),
-    ])
-    .expect("ranges");
+    ]);
 
     let mut identified = false;
     let mut probed = false;
@@ -86,9 +85,15 @@ async fn live_transfer_reaches_hash_set_received() {
         match evt {
             PeerEvent::Connection(ConnectionEvent::Identified { .. }) => {
                 identified = true;
+                conn.send(PeerCommand::Requester(RequesterCommand::RequestHashSet {
+                    file_hash: file.file_hash,
+                    file_size: file.size(),
+                }))
+                .await
+                .ok();
                 conn.send(PeerCommand::Requester(RequesterCommand::RequestParts {
                     file_hash: file.file_hash,
-                    file_size: file.size,
+                    file_size: file.size(),
                     ranges,
                 }))
                 .await

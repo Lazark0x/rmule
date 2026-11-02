@@ -24,8 +24,10 @@ The evidence is captured: Kad crypt in
 peer-UDP crypt in
 `crates/rmule-peer/tests/fixtures/peer_udp_reask/captured/amule-233-crypt-reask-20260728`,
 server-UDP crypt in
-`crates/rmule-ed2k/tests/fixtures/server/captured/enode-server-udp-crypt-20260727` and
-`ed2ksrv-crypt-ping-20260802`. The Kad capture exposed a direction trap: the sync word is
+`crates/rmule-ed2k/tests/fixtures/server/captured/ed2ksrv-crypt-ping-20260802`, the
+challenge-keyed leg. The leg keyed on a `ServerUDPKey` learned from an earlier answer is
+read off Lugdunum bench runs and the deterministic seal tests, with no frozen counterparty
+bytes. The Kad capture exposed a direction trap: the sync word is
 written little-endian. A big-endian frame was self-consistent and every known-answer
 test round-tripped, but only the little-endian form decodes aMule's bytes.
 
@@ -152,7 +154,9 @@ references carve them out (aMule `EncryptedStreamSocket.cpp:377-397`), and so do
   sent a `KADEMLIA_FIREWALLED(2)_REQ`, for 180 s (strict `<`), dropped when a recheck
   starts or Kad stops.
 - A plain dial from one of them is admitted as a **Test Connection**. It meets the IP
-  filter and ban gate, its hello is answered, an `OP_KAD_FWTCPCHECK_ACK` on it is counted,
+  filter and ban gate in the accept pump, the last of the **Accept Gates** (ADR-0064), which
+  answers it there and never queues it for the serve loop. Its hello is answered, an
+  `OP_KAD_FWTCPCHECK_ACK` on it is counted,
   and it ends on its first request to be served (a file, hash set, slot, parts, sources,
   AICH) or after 30 s. Being identified, Secure User Identification and other statements
   ask for nothing and do not end it. It never reaches inbound triage: no upload queue,

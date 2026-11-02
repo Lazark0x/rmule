@@ -23,9 +23,10 @@ use std::time::Duration;
 use anyhow::{Context, Result, bail};
 use clap::Args;
 use rmule_net::peer::{ConnectOptions as PeerConnectOptions, Connection as PeerConnection};
+use rmule_peer::WireStatus;
 use rmule_peer::{
-    AnswerSources, AnswerSources2, ConnectionEvent, MiscOptions1, PartBitmap, PartRanges,
-    PeerCommand, PeerEvent, PeerHandshakeContext, RequesterCommand, RequesterEvent,
+    AnswerSources, AnswerSources2, ConnectionEvent, MiscOptions1, PartRanges, PeerCommand,
+    PeerEvent, PeerHandshakeContext, RequesterCommand, RequesterEvent,
 };
 use rmule_primitives::{
     ClientId, ClientIdentity, Ed2kFileLink, Ed2kLink, Ed2kText, Ipv4Endpoint, Packet,
@@ -162,8 +163,7 @@ async fn connect(body: &SxBodyArgs) -> Result<PeerConnection> {
 /// that never opens a slot is a row, not an error.
 pub(crate) async fn run_hold_slot(args: Ipv6HoldSlotArgs) -> Result<()> {
     let file = file_link(&args.body.file)?;
-    let ranges = PartRanges::new([(0, file.size.min(HOLD_RANGE_BYTES)), (0, 0), (0, 0)])
-        .context("first block range")?;
+    let ranges = PartRanges::new([(0, file.size().min(HOLD_RANGE_BYTES)), (0, 0), (0, 0)]);
     let mut identified = false;
     let mut slot = String::new();
     let mut received = 0u64;
@@ -185,8 +185,8 @@ pub(crate) async fn run_hold_slot(args: Ipv6HoldSlotArgs) -> Result<()> {
                         let _ = conn
                             .send(PeerCommand::Requester(RequesterCommand::ProbeFile {
                                 file_hash: file.file_hash,
-                                file_size: file.size,
-                                own_status: PartBitmap::downloader_empty(file.size),
+                                file_size: file.size(),
+                                own_status: WireStatus::downloader_empty(file.size()),
                             }))
                             .await;
                     }
@@ -195,7 +195,7 @@ pub(crate) async fn run_hold_slot(args: Ipv6HoldSlotArgs) -> Result<()> {
                         let _ = conn
                             .send(PeerCommand::Requester(RequesterCommand::RequestParts {
                                 file_hash: file.file_hash,
-                                file_size: file.size,
+                                file_size: file.size(),
                                 ranges,
                             }))
                             .await;
@@ -300,8 +300,8 @@ pub(crate) async fn run_sx_ask(args: Ipv6SxAskArgs) -> Result<()> {
                             .map_or(0, MiscOptions1::source_exchange_version);
                         let command = PeerCommand::Requester(RequesterCommand::RequestFile {
                             file_hash: file.file_hash,
-                            file_size: file.size,
-                            own_status: PartBitmap::downloader_empty(file.size),
+                            file_size: file.size(),
+                            own_status: WireStatus::downloader_empty(file.size()),
                             want_sources: true,
                             want_aich_root: false,
                         });

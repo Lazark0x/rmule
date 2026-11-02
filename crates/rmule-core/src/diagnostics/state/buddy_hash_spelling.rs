@@ -30,7 +30,7 @@ pub struct BuddyHashSpellingCounters {
 impl DiagnosticsState {
     /// Count one fallback-spelling `0x52` a download sent.
     pub(crate) fn count_callback_fallback_spelling_sent(&self) {
-        let mut inner = self.inner.lock().expect("diagnostics mutex poisoned");
+        let mut inner = self.inner.lock();
         let counter = &mut inner
             .session
             .buddy_hash_spelling
@@ -41,7 +41,7 @@ impl DiagnosticsState {
     /// Count one `0x52` relayed to our buddy under the other spelling of its
     /// ID.
     pub(crate) fn record_buddy_relay_swapped_spelling(&self) {
-        let mut inner = self.inner.lock().expect("diagnostics mutex poisoned");
+        let mut inner = self.inner.lock();
         let counter = &mut inner
             .session
             .buddy_hash_spelling
@@ -52,7 +52,7 @@ impl DiagnosticsState {
     /// Count one relayed `0x99` dialed back under the other spelling of our
     /// own Kad ID.
     pub(crate) fn record_relayed_callback_swapped_spelling(&self) {
-        let mut inner = self.inner.lock().expect("diagnostics mutex poisoned");
+        let mut inner = self.inner.lock();
         let counter = &mut inner
             .session
             .buddy_hash_spelling

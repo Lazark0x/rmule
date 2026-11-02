@@ -22,10 +22,14 @@
 ARG EMULEQT_BUILD_IMAGE=rmule/interop-emuleqt-build:local
 FROM ${EMULEQT_BUILD_IMAGE} AS build
 
-FROM debian:trixie-slim
+FROM debian:trixie-slim@sha256:f6b08b09a05725f9431502d3b5714f5c4576e82c1a84fa1debe0c24a7e0c3ec4
 # `org.rmule.bench=1` scopes the bench-image cleanup to harness images
 # Every harness final stage carries it.
 LABEL org.rmule.bench=1
+# The commit build.sh verified: a final stage inherits no label from the build
+# stage, and a flow refuses a runtime image that does not name its pin.
+ARG EMULEQT_COMMIT
+LABEL org.rmule.emuleqt.commit="${EMULEQT_COMMIT}"
 
 ENV DEBIAN_FRONTEND=noninteractive
 # Qt refuses a non-UTF-8 locale and prints a warning on every start otherwise.

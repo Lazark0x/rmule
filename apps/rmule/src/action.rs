@@ -16,7 +16,7 @@ pub enum Action {
     Core(CoreEvent),
     /// The 1 Hz data tick's *levels* + synthesized rates; latest wins, and
     /// the bridge drops a frame rather than queue behind a slow UI.
-    Snapshot(BridgeSnapshot),
+    Snapshot(Box<BridgeSnapshot>),
     /// The core's event stream ended: the core has stopped. Terminal — no
     /// further `Core` or `Snapshot` actions follow.
     CoreClosed,
@@ -26,8 +26,13 @@ pub enum Action {
     SwitchView(ViewId),
     /// Cycle views (`l` forward, `h` back); sign is the direction.
     CycleView(i8),
+    /// `q` or Ctrl-C: quit, once the operator has said so over a running
+    /// download. An OS stop is [`Quit`](Self::Quit) and asks nobody.
+    AskQuit,
     /// `?` — open/close the help overlay.
     ToggleHelp,
+    /// A key for the text over the help overlay.
+    HelpKey(ratatui::crossterm::event::KeyEvent),
     /// `Esc`/`q` while a modal is up.
     DismissOverlay,
     /// Scroll the help overlay by this many lines (negative: up); it scrolls
@@ -43,7 +48,7 @@ pub enum Action {
     /// installs no tracing subscriber (stdout is the alternate screen).
     /// Reserved for facts, not chatter — a [`Flash`](Self::Flash) is the right
     /// arm for anything that may safely scroll away.
-    Note(crate::words::Sentence),
+    Note(crate::words::severity::Severity, crate::words::Sentence),
     /// A core command produced by a view (row menu, query commit); the app
     /// forwards it through the `CoreClient` once one is bound — until then
     /// it flashes the honest "core not attached".
@@ -62,6 +67,9 @@ pub enum Action {
     /// [`crate::state::UiState::preferences`], and applies the live half of it
     /// (the theme, the session's download directory).
     Preference(crate::config::PrefEdit),
+    /// [`Action::Preference`] from the Settings form: the field stays open
+    /// with its typing until the write lands, and a refusal stays under it.
+    SettingsEdit(crate::config::PrefEdit),
     /// A download directory the Settings form would commit (ADR-0101): the
     /// app asks core's share guards first, and only a directory they pass
     /// gets the form's warning that everything under it is offered — a
@@ -70,12 +78,25 @@ pub enum Action {
     /// The operator closed a held search (ADR-0073, Held Searches): its
     /// results leave memory with it. Core has already ended the search.
     ForgetSearch(rmule_core::SearchId),
+    /// The operator brought back the search closed last: its results return
+    /// from where the close set them aside.
+    RestoreSearch(rmule_core::SearchId),
     /// A row menu's *Search related* (ADR-0037, Related-Files Search): the
     /// Search tab opens a Held Search for the file and becomes current.
     SearchRelated(rmule_primitives::RelatedFilesQuery),
     /// `K` in Networks while Kad is off: the app asks its Kad join to
     /// start a node now, seeds and all, without a server connect.
     StartKad,
+    /// The Transfers row menu's *Preview*, or `v` (ADR-0114): the app reads
+    /// the download as the menu did and hands its file to the player lane.
+    Preview(rmule_core::DownloadId),
     /// `q` at the top level.
     Quit,
+    /// Ctrl-L: draw the whole frame again, over whatever the screen shows.
+    Repaint,
+    /// Ctrl-Z, or a SIGTSTP from outside: give the terminal back and stop as
+    /// a job.
+    Suspend,
+    /// A SIGCONT: the run stood still and is going again.
+    Continued,
 }

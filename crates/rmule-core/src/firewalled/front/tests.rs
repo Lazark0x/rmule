@@ -253,9 +253,9 @@ struct Harness {
     /// The Hello Adverts read the front was wired with.
     hello: crate::adapters::HelloAdverts,
     /// The core events the front reports.
-    events: mpsc::Receiver<crate::CoreEvent>,
+    events: crate::service::EventStream,
     /// The strong half, so the front's weak sender upgrades.
-    _events_tx: mpsc::Sender<crate::CoreEvent>,
+    _events_tx: crate::service::Outbox,
 }
 
 impl Harness {
@@ -385,7 +385,7 @@ fn ticking_harness(hello: crate::adapters::HelloAdverts, tick: Duration, kad_up:
         ))
     });
     let kad = crate::reachability::SharedKadVerdicts::default();
-    let (events_tx, events) = mpsc::channel(8);
+    let (events_tx, events) = crate::service::outbox(Default::default());
     let (dials_tx, dials) = mpsc::unbounded_channel();
     let (dial_backs_tx, dial_backs) = mpsc::unbounded_channel();
     let (verdicts_tx, verdicts) = mpsc::channel(8);

@@ -1,5 +1,4 @@
-//! A watch that fails while running (ADR-0100, "A watch that fails while
-//! running is re-established"): a failure about one path leaves the rest
+//! A watch that fails while running (ADR-0100): a failure about one path leaves the rest
 //! watched; a lost watch is re-established on the starter's clock, the whole
 //! directory is examined once it is back, and the outage is told once.
 
@@ -100,7 +99,7 @@ fn a_lost_watch_is_re_established_and_what_changed_meanwhile_is_found() {
         match starts {
             1 => Ok(first.take().unwrap()),
             2 => {
-                phase_at_second_start = harness.progress.lock().unwrap().clone().map(|d| d.phase);
+                phase_at_second_start = harness.progress.lock().clone().map(|d| d.phase);
                 // A file arrives while nothing watches: no event will say so.
                 harness
                     .world

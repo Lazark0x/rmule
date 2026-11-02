@@ -9,6 +9,7 @@
 //! a fixture — it stays in that module's own test block.
 
 mod draw;
+pub(crate) use crate::views::View;
 pub(crate) use draw::{draw_golden, draw_searches, screen_lines};
 
 mod networks;
@@ -131,6 +132,12 @@ pub(crate) fn file_hash(byte: u8) -> FileHash {
     FileHash::from_bytes([byte; 16])
 }
 
+/// The `.part` core names for a fixture download: an absolute path, as
+/// core only ever publishes one.
+pub(crate) fn part_file() -> std::path::PathBuf {
+    rooted("downloads/file.bin.part")
+}
+
 /// Metadata for a file core knows the hash of but not the name — the
 /// edge-order case every download row must render honestly.
 pub(crate) fn unnamed_metadata() -> DownloadMetadata {
@@ -167,8 +174,12 @@ pub(crate) const FIXTURE_SEARCH_IDS: u64 = 1 << 62;
 /// A named result carrying a reported source count — the two facts the
 /// Searches table sorts and tints by.
 pub(crate) fn search_result(name: &str, sources: u32) -> SearchResult {
+    let mut hash = [0xAB; 16];
+    for (at, byte) in name.bytes().enumerate() {
+        hash[at % 16] ^= byte;
+    }
     SearchResult::new(
-        FileHash::from_bytes([0xAB; 16]),
+        FileHash::from_bytes(hash),
         1024,
         vec![Ed2kText::from_utf8(name)],
         Vec::new(),
@@ -201,6 +212,11 @@ pub(crate) fn server_connection_event(event: ServerConnectionEvent) -> CoreEvent
 /// input action the bus carries.
 pub(crate) fn key_action(code: KeyCode) -> Action {
     Action::Input(Event::Key(press(code)))
+}
+
+/// A Ctrl chord on `letter`.
+pub(crate) fn ctrl(letter: char) -> KeyEvent {
+    KeyEvent::new(KeyCode::Char(letter), KeyModifiers::CONTROL)
 }
 
 /// A key press with no modifiers — the one keystroke shape every view test
@@ -257,7 +273,7 @@ pub(crate) fn connected_state() -> UiState {
             down_total_bps: 123.4 * 1024.0,
             ..TransferRates::default()
         },
-        notable: Some(crate::words::Sentence::for_test("download completed")),
+        notable: Some(crate::words::Sentence::for_test("download completed").into()),
         ..UiState::default()
     }
 }

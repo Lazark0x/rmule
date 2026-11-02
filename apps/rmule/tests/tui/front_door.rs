@@ -76,8 +76,9 @@ fn an_inline_data_dir_that_is_not_utf8_is_taken() {
     assert_untouched(&home);
 }
 
-/// The binary prints the one version line the help overlay shows, and this
-/// checkout's build names its commit's date.
+/// The binary prints the one version line the help overlay shows. A build
+/// inside a checkout names its commit's date (which catches a broken
+/// `build.rs`); one from an exported tree, with no `.git`, says so.
 #[test]
 fn version_prints_the_one_version_line_and_touches_nothing() {
     let home = TempDir::new().unwrap();
@@ -86,7 +87,18 @@ fn version_prints_the_one_version_line_and_touches_nothing() {
         line.starts_with(&format!("rmule {} (", env!("CARGO_PKG_VERSION"))),
         "{line}"
     );
-    assert!(line.contains(", committed "), "{line}");
+    // A worktree's `.git` is a file, and `exists()` holds for it too.
+    if Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../.git")
+        .exists()
+    {
+        assert!(line.contains(", committed "), "{line}");
+    } else {
+        assert!(
+            line.ends_with("(commit unknown, commit date unknown)"),
+            "{line}"
+        );
+    }
     rmule(home.path())
         .arg("--version")
         .assert()

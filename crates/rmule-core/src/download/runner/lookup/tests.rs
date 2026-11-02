@@ -124,15 +124,8 @@ fn request_for<S, P>(
 ) -> DownloadRequest {
     DownloadRequest {
         download_id: crate::DownloadId::from_u64(download_id),
-        file: rmule_primitives::Ed2kFileLink {
-            name: Ed2kText::from_utf8("span"),
-            size: 4,
-            file_hash,
-            part_hash_set: None,
-            aich_root: None,
-            ipv6_sources: Vec::new(),
-            sources: Default::default(),
-        },
+        file: rmule_primitives::Ed2kFileLink::new(Ed2kText::from_utf8("span"), 4, file_hash)
+            .expect("a size eD2k addresses"),
         identity: ClientIdentity::new(
             UserHash::from_bytes([
                 0x10, 0x32, 0x54, 0x76, 0x98, 0xBA, 0xDC, 0xFE, 0x01, 0x23, 0x45, 0x67, 0x89, 0xAB,
@@ -143,13 +136,15 @@ fn request_for<S, P>(
             60,
         ),
         verified_part_indexes: Vec::new(),
-        peer_concurrency: 1,
+        order: crate::scheduler::PartOrder::Rarest,
         discovery: DiscoveryLiveness {
             global_servers: std::sync::Arc::default(),
             reach: runner.rt.reach.clone(),
             session: runner.rt.diagnostics.clone(),
         },
         remembered: Vec::new(),
+        recovered: None,
+        part_check: None,
     }
 }
 
@@ -233,11 +228,11 @@ async fn futures_poll_once<F: Future + Unpin>(future: F) -> Option<F::Output> {
 /// asked.
 #[derive(Clone, Default)]
 struct Recording(
-    std::sync::Arc<std::sync::Mutex<Vec<(tokio::time::Instant, rmule_primitives::FileHash)>>>,
+    std::sync::Arc<parking_lot::Mutex<Vec<(tokio::time::Instant, rmule_primitives::FileHash)>>>,
 );
 impl Recording {
     fn asks(&self) -> Vec<(tokio::time::Instant, rmule_primitives::FileHash)> {
-        self.0.lock().expect("recording").clone()
+        self.0.lock().clone()
     }
 }
 impl SourceLookupService for Recording {
@@ -247,7 +242,6 @@ impl SourceLookupService for Recording {
     ) -> Result<SourceLookupOutcome, DownloadFailure> {
         self.0
             .lock()
-            .expect("recording")
             .push((tokio::time::Instant::now(), target.file_hash()));
         Ok(SourceLookupOutcome {
             client_id: rmule_primitives::ClientId::from_u32(0x0A0B_0C0D),
@@ -292,8 +286,7 @@ fn connect_lands(session: &crate::server_session::SharedServerSession, after: Du
 /// Sixteen downloads started together while the login is in flight (run
 /// `1790869078`): fifteen asks go on the session the login makes, and the
 /// sixteenth one window later — the login does not start the count over
-/// under asks already waiting to ride it (ADR-0093, "The Source Ask
-/// Budget").
+/// under asks already waiting to ride it (ADR-0097, "The Source Ask Budget").
 #[tokio::test(start_paused = true)]
 async fn sixteen_downloads_started_at_login_ask_fifteen_then_one_a_window_later() {
     let server = Recording::default();

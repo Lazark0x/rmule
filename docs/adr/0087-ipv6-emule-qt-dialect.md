@@ -3,7 +3,7 @@
 ## Context
 
 The eD2k IPv6 dialect has three client implementations — emule-qt, eMuleAI, and aMule on
-kno's fork — and two servers, eNode-go and ed2k-server. Its core never widens a 32-bit
+kno's fork — and a server, ed2k-server. Its core never widens a 32-bit
 field: IPv6 rides as tags in the hello, the login and the ExtSX record, as a Sentinel
 Source record's inline address in source lists (ADR-0085), as two string tags in Kad
 publishes, and as one new client↔client opcode. Kad itself stays IPv4 end to end.
@@ -16,7 +16,7 @@ at `a2f05dc8` and stock aMule 2.3.3, as each line says.
 
 Stock aMule 2.3.3 ignores every tag and opcode of the dialect: `HASH` is a known tag type,
 `0xAC` and `0x26` travel under `0xE3`, and a server sends a sentinel only to a session that
-advertised `SRVCAP_IPV6`.
+sent `CT_MOD_IP_V6` or arrived over IPv6.
 
 **Evidence, per surface.** aMule implements none of the dialect, so by ADR-0082's rule —
 parity is measured against aMule, and against the eMule-family counterparty for behaviour
@@ -29,8 +29,8 @@ speak them. Each surface states its oracles, and a surface with one says so:
 | Hello tags, `0xAC`, UDP key, buddy v6 tag | emule-qt + kno |
 | ExtSX | emule-qt alone — kno writes none |
 | Kad `ip6` / `bi6` | emule-qt + kno (kno writes `ip6`, stores and reads both, writes no `bi6`) |
-| Sentinel sources, `0x4000`, `0xAB` / `0xAF`, login tags | ed2k-server + eNode-go |
-| `0x26`, the `OP_SERVERLIST` v6 block | eNode-go alone |
+| Sentinel sources, `0x4000`, `0xAB` / `0xAF`, login tags | ed2k-server |
+| `0x26`, the `OP_SERVERLIST` v6 block | none pinned: the emule-qt spec alone, source-derived |
 | Legacy ignore | aMule 2.3.3 |
 
 Captures: emule-qt's `OP_ANSWERSOURCES2` carrying `CT_MOD_IP_V6`
@@ -84,15 +84,22 @@ verdict and the Advertised Endpoints chooser).**
   every server-less peer it hands out is Low ID `0` beside its IPv6). Admission keeps the
   **IPv6 Half** on the source it admits, so a dual-stack record reaches core as one
   `SourceSighting` — never two candidates, which would dial one peer twice into two worker
-  slots. On emit, a source carries its IPv6 Half (its hello's `CT_MOD_IP_V6`, past
+  slots. Two channels may still sight the two families apart, and a sighting proves nothing
+  about who holds an address, so the book folds the two records at the hello that names the
+  other one: a worker's High ID, or its `CT_MOD_IP_V6`, at the record's endpoint on the
+  hello's listen port, unless that record names another User Hash. Its worker, if it had
+  one, ends as the same source, and a dial still connecting is dropped. On emit, a source carries its IPv6 Half (its hello's `CT_MOD_IP_V6`, past
   `IsUsableTagIdentity`) beside a High ID, and the ExtSX writer emits `CT_MOD_IP_V6` beside
   the IPv4 id, as emule-qt's writer does for any source with a public open IPv6
   (`KnownFile.cpp:937`, `:849`, `:854`). A Low-ID client with a usable IPv6 queued on a
   complete file is written for an `EXTXS` asker under the **Placeholder Low ID** `1` —
   emule-qt's own IPv6-only marker (`kNoIPv4SourceId`) — and omitted from a classic answer,
   whose fixed stride has no field for the half.
-- `OP_CHANGE_CLIENT_IP 0xAC` (`0xE3`, 16 raw bytes) is sent on an established session when
-  the Known IPv6 changes. `CT_EMULE_SERVINGBUDDYIPV6 0xA0` carries the buddy's IPv6 where
+- `OP_CHANGE_CLIENT_IP 0xAC` (`0xE3`, 16 raw bytes) is sent when the Advertised IPv6 moves
+  to a new address, once, on every identified session whose peer's hello claims
+  `MODMISC_IPV6`, and never on any other (emule-qt `CoreSession.cpp:1510-1520`,
+  `UpDownClient.cpp:4670-4697`). A move before identification rides our hello, or follows it
+  when the peer identifies. A move to no address sends nothing: there is nothing to name. `CT_EMULE_SERVINGBUDDYIPV6 0xA0` carries the buddy's IPv6 where
   ADR-0061 carries its IPv4, from the held buddy link under emule-qt's gate (firewalled and
   a buddy, `UpDownClient.cpp:1197-1210`), read per hello so it drops with the link.
 
@@ -133,6 +140,9 @@ claim). `IsUsableTagIdentity` already refuses a mapped address, so every 16-byte
   before the endpoint-keyed pool sees it; a Low-ID source keeps its half as its candidate's
   rung 0. emule-qt always dials the IPv4 of a High-ID source (`UpDownClient.cpp:88-89`,
   `:1623-1627`); both reach the same peer.
+- **A dual-stack client may link on both families.** Its second address is not a hash thief's:
+  ADR-0107, "One client on two addresses", says what proves the two links one client and what
+  each link gets.
 - **A failed first-family dial falls to the other family once.** A dial that ends short of a
   completed handshake (no route, refused, timed out, closed before the hello answer, or a
   worker that could not start) is retried once in the other family, if that family is
@@ -183,6 +193,12 @@ only when that stack byte happens to be `0x5B`. rmule keeps emule-qt's derivatio
 and counts the miss (`ipv6_undecryptable_datagrams_total`); a 256-candidate search would cost
 256 setups per miss, raise false-sync odds from 2⁻³² to about 2⁻²⁴, and still leave rmule's
 sends unreadable to eMuleAI. Pinned by `datagram_obfuscation::ipv6_key_kat`.
+rmule does not work around it by sending eMuleAI plaintext on the IPv6 half, although
+eMuleAI passes a plain `0xC5` through (`EncryptedDatagramSocket.cpp:181-188`): client-UDP
+stays obfuscated toward every peer that asks for it. The cost is a recorded **divergence**:
+over IPv6, an eMuleAI peer and rmule cannot exchange an obfuscated reask, Kad or NAT-T
+datagram in either direction, so IPv6 client-UDP reachability with eMuleAI is lost until
+eMuleAI writes offset 32.
 
 ### The server-UDP surface
 
@@ -193,11 +209,8 @@ attributed by its source port minus four. A datagram from an IPv6 source answers
 rmule asked and is dropped and traced in `recv`. `0x9B`'s sentinel records carry IPv6 sources
 inside the body; a server must never put one in a chained datagram, which a legacy reader
 walks at `count × 6`. `0x99`'s rows name third-party sources in 32 bits with no sentinel form,
-so an IPv6-only source is the server's to omit. **`0x9C` `OP_GLOBCALLBACKREQUEST` is refused
-for its own body, permanently:** it carries rmule's own contact as `WriteUInt32(ip)`, and for
-a request whose content is that address, omitting is dropping — a v6-only rmule has no global
-callback. A v6-only server in the list is usable over TCP (login, search, source lookup, the
-sentinel sources it publishes there) and gets no UDP status sweep, so it holds no proven
+so an IPv6-only source is the server's to omit. A v6-only server in the list is usable over
+TCP (login, search, source lookup, the sentinel sources it publishes there) and gets no UDP status sweep, so it holds no proven
 capabilities and never enters the global-source rotation, as a DNS-named server.
 
 ### Kad `ip6` and `bi6`
@@ -226,15 +239,29 @@ capabilities and never enters the global-source rotation, as a DNS-named server.
   only a type-3/5 row indexes a buddy contact.
 - **The buddy's IPv4 gate** on both readers (`0x44`, `0x3B`): a `TAG_SERVERIP` that cannot name
   one remote host (`0.0.0.0`, loopback, link-local, multicast, `240/4`) gives the contact no
-  IPv4 endpoint, so the road is the Callback Walk toward the buddy ID; private ranges stay
-  admitted. `TAG_SOURCEIP` refuses only `0.0.0.0` and `224/3`. eMuleAI's IPv6-buddy row writes
-  `TAG_SERVERIP` as a `UINT_MAX` stand-in (`Search.cpp:886`, `Address.cpp:91-92`) and pairs
-  `bi6` with `TAG_SERVERPORT`; rmule keeps that pair as the contact's `buddy_udp_ipv6`, which no
-  road dials, and re-serves the port beside `bi6` without the stand-in.
+  IPv4 endpoint, so the road is the Callback Walk toward the buddy ID. Private ranges stay
+  admitted, by ruling. aMule reads the buddy IP and keeps it unjudged (`Search.cpp:889-890`,
+  `DownloadQueue.cpp:1617`); the one IP-filter consult on that path is the source's own IP
+  (`DownloadQueue.cpp:1563`). eMuleAI judges the buddy IP only through the user's IP filter
+  (`DownloadQueue.cpp:4932-4942`), which passes private addresses when told not to filter
+  them (`IPFilter.cpp:535`). rmule's Kad serves LAN peers, because a LAN contact is a contact
+  (ADR-0085), so a buddy on the LAN is a buddy. `TAG_SOURCEIP` refuses only `0.0.0.0` and
+  `224/3`. eMuleAI's IPv6-buddy row writes `TAG_SERVERIP` as a `UINT_MAX` stand-in
+  (`Search.cpp:886`, `Address.cpp:91-92`) and pairs `bi6` with `TAG_SERVERPORT`; rmule keeps
+  that pair as the contact's `buddy_udp_ipv6`, which no road dials, and re-serves the port
+  beside `bi6` without the stand-in.
 
 ### The server half
 
-The login carries `CT_SERVER_FLAGS` bit `0x1000` (`SRVCAP_IPV6`) and `CT_MOD_IP_V6`.
+The login carries `CT_MOD_IP_V6` and nothing else: the tag is the whole advert. `CT_SERVER_FLAGS`
+bit `0x1000` stays clear. emule-qt's spec at `73fff714` names it `SRVCAP_IPV6`, but that bit is
+Lugdunum's `SRVCAP_NATTRAVERSAL` and ed2k-server's CHANGELOG 0.9.84 records the name's withdrawal
+(`lugdunum_natt.rs:47`): a client that sets it gets an odd Low ID and a longer `OP_IDCHANGE`, and
+claims a callback rmule does not speak (ADR-0091). ed2k-server keys the extension on the tag
+alone (README *IPv6*). An Advertised IPv6 that moves or goes after login reaches a server that set
+`OP_IDCHANGE` bit `0x8000` as `OP_IPV6_UPDATE 0x63` (sixteen bytes, zeros to withdraw), on a
+session that did not arrive over IPv6; any other server keeps what the login named until the next
+one.
 `OP_IDCHANGE` and UDP-ping flag bit `0x4000` are read, deliberately asymmetric.
 `OP_SERVERIDENT`'s `ST_IPV6_STATUS 0xAB` feeds Reachability's IPv6 probe verdict (`PROBED`
 without `REACHABLE` suppresses the tag; cleared on disconnect), and the server's own IPv6 is
@@ -242,6 +269,13 @@ read id-tolerantly (`0xAF` per spec). Sentinel sources are dialed. `OP_SERVERLIS
 IPv6 block is read. `OP_CALLBACKREQUESTED_IPV6 0x26` (16 bytes and a little-endian port) is
 consumed. The `s6=` link token (§6.2) and `ST_IPV6 0x99` in `server.met` are parsed and
 written.
+
+A `server.met` row that carries `ST_IPV6` beside a non-zero header IP is kept whole: one row
+with two endpoints at the header's port, and the dialer takes the IPv4 half, because a High ID
+is the packed public IPv4 and dialing a dual-stack server over IPv6 would cost it. This is a
+recorded **divergence** from emule-qt, whose reader applies the tag only while the entry holds
+no address (`Server.cpp:190-196`) and whose writer writes it only for an IPv6-only entry
+(`Server.cpp:295-298`); it drops the IPv6 half of such a row, rmule keeps it and writes it back.
 
 ## Consequences
 
@@ -252,8 +286,8 @@ written.
   the spec's asymmetry stands.
 - Per-`/64` accounting reaches the flood limiter (ADR-0064), the `0x95` window and the
   upload-queue cap (ADR-0088).
-- An eMuleAI peer's obfuscated IPv6 datagrams mostly fail until eMuleAI writes offset 32; the
-  misses are counted.
+- An eMuleAI peer's obfuscated IPv6 datagrams mostly fail, both ways, until eMuleAI writes
+  offset 32; the misses are counted, and no plaintext fallback hides them.
 - The kno transfer row turns from documented absence to measured on the first kno pin whose
   hello answer carries the tag it counts, admissible under ADR-0045's Fork Pin rule.
 
@@ -269,9 +303,9 @@ written.
 - **Family decisions at each dial site.** Rejected: three copies of the rule ADR-0061 collapsed.
 - **Two candidates for a dual-stack source.** Rejected: one peer dialed twice, one queue place
   and credit record described twice.
-- **Gate `0x26` and the `SERVERLIST` block on a second server oracle.** Rejected: an 18-byte
-  consume that, ungated, would leave an IPv6-only rmule unable to take its one server's
-  callback; the evidence table is the honest form of the gate.
+- **Gate `0x26` and the `SERVERLIST` block on a pinned server that emits them.** Rejected:
+  an 18-byte consume that, ungated, would leave an IPv6-only rmule unable to take a server's
+  callback the day one emits it; the evidence table is the honest form of the gate.
 - **A reader tolerant of kno's short tag count, or a locally patched kno.** Rejected: the
   first accepts a count the bytes do not back; the second makes the surface partly
   self-authored (ADR-0045).

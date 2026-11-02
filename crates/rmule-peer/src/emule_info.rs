@@ -17,7 +17,7 @@
 use rmule_primitives::{Ed2kText, Packet, PacketProtocol, Tag, TagName, TagValue, WireReader};
 
 use crate::capability::{CT_EMULE_UDPPORTS, MiscOptions1};
-use crate::error::EmuleInfoDecodeError;
+use crate::error::WireFault;
 use crate::hello::{PeerHelloBody, decode_tags, hello_int, hello_text};
 use crate::hello_tag::{CT_EMULE_VERSION, CT_MOD_VERSION};
 use crate::software::ClientMod;
@@ -86,16 +86,12 @@ impl EmuleInfo {
     /// # Errors
     /// A frame under another protocol byte or opcode, a body shorter than its
     /// header, or a tag the hello reader would also refuse.
-    pub fn decode_packet(packet: &Packet) -> Result<Self, EmuleInfoDecodeError> {
-        if packet.protocol() != PacketProtocol::Emule {
-            return Err(EmuleInfoDecodeError::UnsupportedProtocol);
-        }
-        if !matches!(packet.opcode(), OP_EMULEINFO | OP_EMULEINFOANSWER) {
-            return Err(EmuleInfoDecodeError::WrongOpcode {
-                opcode: packet.opcode(),
-            });
-        }
-        let mut reader = WireReader::new(packet.payload());
+    pub fn decode_packet(packet: &Packet) -> Result<Self, WireFault> {
+        let mut reader = WireReader::new(
+            packet
+                .body_of(PacketProtocol::Emule, OP_EMULEINFO)
+                .or_else(|_| packet.body_of(PacketProtocol::Emule, OP_EMULEINFOANSWER))?,
+        );
         let version = reader.read_u8("version")?;
         let protocol = reader.read_u8("protocol")?;
         let count = reader.read_u32_le("tag count")?;

@@ -63,7 +63,7 @@ aMule disconnects on:
 - **Pending-attempt timeout** — `CheckForTimeout()` (`ServerConnect.cpp:382-409`) destroys stalled sockets. → rmule: driver-side `ConnectTimeout` / `LoginTimeout` (see table above).
 - **Server marked dead / full** — `ConnectionFailed()` (`ServerConnect.cpp:341-450`) logs reasons like "Fatal Error while trying to connect", "Lost connection to %s", "%s appears to be dead", "%s appears to be full" and increments `pServer->AddFailedCount()` (`ServerConnect.cpp:358`). On a successful login it calls `update->ResetFailedCount()` (`ServerConnect.cpp:263`). → rmule: out of scope for the first session runtime; per-server fail tracking belongs to a future server-list policy layer, not to `Ed2kSession`.
 - **User-requested disconnect** — `Disconnect()` (`ServerConnect.cpp:453-469`) closes the active connected socket explicitly. → rmule: `Ed2kCommand::Disconnect` -> `CloseReason::Local`.
-- **`OP_REJECT` payload** — `ServerSocket::ProcessPacket()` (`ServerSocket.cpp:289-291`) handles only the `OP_REJECT` opcode as a server-side login rejection. → rmule: `Ed2kEvent::LoginRejected` followed by `Disconnected` (the cause is not a `ProtocolViolation`; the server explicitly refused).
+- **`OP_REJECT` payload** — `ServerSocket::ProcessPacket()` (`ServerSocket.cpp:599-603`) logs it and stays connected, at any point in the session. → rmule: after the login, `Ed2kEvent::ServerRejectedCommand` and the session goes on. Before it, `Ed2kEvent::LoginRejected` followed by `Disconnected` (the cause is not a `ProtocolViolation`; the server explicitly refused, and there is no session to keep).
 
 ## Welcome burst arrival
 

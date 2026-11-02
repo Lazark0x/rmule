@@ -1,0 +1,163 @@
+//! The short words a menu row and a status cell wear. Each is a constant the
+//! views name, so a label has one place to be translated; sorting never reads
+//! them.
+
+use super::plural::Plural;
+use crate::state::{DownloadStatus, KnownFileMark};
+
+/// A row menu's copy of the row's eD2k link.
+pub const COPY_LINK: &str = "Copy eD2k link";
+/// The download action.
+pub const DOWNLOAD: &str = "Download";
+/// The search for files related to a row's file.
+pub const SEARCH_RELATED: &str = "Search related";
+/// A download row's cancel, which asks first.
+pub const CANCEL: &str = "Cancel…";
+/// A download row's details.
+pub const SHOW_DETAILS: &str = "Show file details";
+/// A download row's preview.
+pub const PREVIEW: &str = "Preview";
+/// The row menu's item over every download on show.
+pub const PAUSE_ALL: &str = "Pause or resume all";
+/// Why Pause waits over tagged rows.
+pub const NONE_RUNNING: &str = "none of them is running";
+/// Why Resume waits over tagged rows.
+pub const NONE_RESTING: &str = "none of them is paused";
+/// A running download's pause.
+pub const PAUSE: &str = "Pause";
+/// A paused download's resume.
+pub const RESUME: &str = "Resume";
+/// A failed download's restart.
+pub const RESTART: &str = "Restart";
+/// A completed download's way out of the list.
+pub const CLEAR_FROM_LIST: &str = "Clear from list";
+/// A modal that only reads says how to leave it.
+pub const CLOSE_HINT: &str = " Esc close ";
+/// The cancel confirm's title.
+pub const CANCEL_TITLE: &str = " Cancel download ";
+/// The clear confirm's title.
+pub const CLEAR_TITLE: &str = " Clear completed ";
+/// The unshare confirm's title.
+pub const UNSHARE_TITLE: &str = " Unshare ";
+/// The remove confirm's title.
+pub const REMOVE_TITLE: &str = " Remove server ";
+/// A server menu's title with no server selected.
+pub const SERVER_LIST: &str = "Server list";
+/// A shared file's unshare, which asks first.
+pub const UNSHARE: &str = "Unshare…";
+/// The server list's update.
+pub const UPDATE_LIST: &str = "Update list from URL…";
+/// The server list's add.
+pub const ADD_SERVER: &str = "Add server…";
+/// A server row's connect.
+pub const CONNECT: &str = "Connect";
+/// A server row's disconnect.
+pub const DISCONNECT: &str = "Disconnect";
+/// A server row's end of re-making a lost session.
+pub const STOP_RECONNECTING: &str = "Stop reconnecting";
+/// Ends a dial still out.
+pub const STOP_CONNECTING: &str = "Stop connecting";
+/// A static server row's unpin.
+pub const UNPIN: &str = "Unpin (currently static)";
+/// A server row's pin.
+pub const PIN: &str = "Pin as static";
+/// A server row's copy of its link.
+pub const COPY_SERVER_LINK: &str = "Copy server link";
+/// The server menu's item for what the server grants, its health and shares.
+pub const DETAILS: &str = "Details";
+/// A server row's removal, which asks first.
+pub const REMOVE: &str = "Remove…";
+
+/// The word a **Known-File Mark** wears on its row.
+#[must_use]
+pub const fn mark_word(mark: &KnownFileMark) -> &'static str {
+    match mark {
+        KnownFileMark::Downloading { .. } => "downloading",
+        KnownFileMark::Failed { .. } => "failed",
+        KnownFileMark::Have { .. } => "have",
+        KnownFileMark::Withheld { .. } => "withheld",
+        KnownFileMark::Had { .. } => "had",
+        KnownFileMark::Cancelled => "cancelled",
+    }
+}
+
+/// A result's name with its mark's word before it.
+#[must_use]
+pub fn marked(word: &str, name: &str) -> String {
+    format!("{word} · {name}")
+}
+
+/// A running download while core re-makes the operator's session.
+pub const RECONNECTING: &str = "Redialling";
+/// A download Kad alone can find sources for.
+pub const ASKING_KAD: &str = "Asking Kad";
+/// A download parked on its queue standings at peers.
+pub const QUEUED: &str = "Queued";
+
+/// A download that holds a slot and has moved no bytes for a while.
+pub const STALLED: &str = "Stalled";
+
+/// A download's status in its cell.
+#[must_use]
+pub const fn status(status: DownloadStatus) -> &'static str {
+    match status {
+        DownloadStatus::Waiting => "Waiting",
+        // Waiting for a server session or Kad.
+        DownloadStatus::NoConnection => "No network",
+        DownloadStatus::Downloading => "Downloading",
+        DownloadStatus::Paused => "Paused",
+        DownloadStatus::Completing => "Completing",
+        DownloadStatus::Completed => "Completed",
+        DownloadStatus::Failed => "Failed",
+    }
+}
+
+/// The app's name on the tab bar.
+pub const BRAND: &str = " rmule ";
+/// The help overlay's title.
+pub const HELP_TITLE: &str = " Help ";
+/// The Transfers tab.
+pub const TAB_TRANSFERS: &str = "Transfers";
+/// The Searches tab.
+pub const TAB_SEARCHES: &str = "Searches";
+/// The Networks tab.
+pub const TAB_NETWORKS: &str = "Networks";
+/// The Shared Files tab.
+pub const TAB_SHARED_FILES: &str = "Shared Files";
+/// The Statistics tab.
+pub const TAB_STATISTICS: &str = "Statistics";
+/// The Settings tab.
+pub const TAB_SETTINGS: &str = "Settings";
+/// The Shared Files tab where its whole name does not fit.
+pub const TAB_SHARED_SHORT: &str = "Shared";
+/// The Statistics tab where its whole name does not fit.
+pub const TAB_STATISTICS_SHORT: &str = "Stats";
+/// What to say of the columns that gave way, the fullest form first: the
+/// columns by name, how many, how many in fewest cells.
+#[must_use]
+pub fn gave_way_notes(hidden: &[&str]) -> [String; 3] {
+    let count = hidden.len();
+    [
+        format!(" too narrow to show: {} ", hidden.join(", ")),
+        Plural::new(" {n} column not shown ", " {n} columns not shown ").of(count),
+        format!(" {count} hidden "),
+    ]
+}
+
+/// What opens the Off-screen line.
+pub const OFF_SCREEN: &str = "Off-screen: ";
+
+/// Every word the Status column may draw, which its floor is sized to.
+pub const STATUS_WORDS: [&str; 11] = [
+    status(DownloadStatus::Waiting),
+    status(DownloadStatus::NoConnection),
+    status(DownloadStatus::Downloading),
+    status(DownloadStatus::Paused),
+    status(DownloadStatus::Completing),
+    status(DownloadStatus::Completed),
+    status(DownloadStatus::Failed),
+    RECONNECTING,
+    ASKING_KAD,
+    QUEUED,
+    STALLED,
+];

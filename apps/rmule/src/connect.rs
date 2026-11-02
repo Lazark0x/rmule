@@ -1,9 +1,9 @@
 //! The **connect at start** (ADR-0095, "Connecting is the operator's act"):
 //! nothing in rmule dials a server but the operator's connect, so a start
-//! that connects on its own does so only because the operator said so ahead
-//! of time. Off by default; aMule's `Autoconnect` is on by default
-//! (`Preferences.cpp:1160`, acted on at `amule.cpp:1310`), and rmule departs
-//! on the operator's ruling.
+//! that connects on its own repeats the last one they made. On by default, as
+//! aMule's `Autoconnect` is (`Preferences.cpp:1160`, acted on at
+//! `amule.cpp:1310`), and a stored off stays off. A first run has made no
+//! connect to repeat, so it dials nothing and says nothing.
 //!
 //! When on, the app sends the same `ConnectToServer` Networks' `c` key sends,
 //! through the same establishment (listen, map, then log in), to the server
@@ -15,17 +15,18 @@
 use rmule_primitives::ServerEndpoint;
 
 use crate::words::Sentence;
-use crate::words::server::{LAST_SERVER_UNLISTED, NO_LAST_SERVER};
+use crate::words::server::LAST_SERVER_UNLISTED;
 
 /// What a start does about connecting.
 #[derive(Clone, Debug)]
 pub enum AtStart {
-    /// The preference is off: nothing is dialed, and nothing is said.
+    /// The preference is off, or no connect was ever made: nothing is dialed,
+    /// and nothing is said.
     Nothing,
     /// The operator's connect — the `ConnectToServer` the `c` key sends — to
     /// the server they last connected to.
     Connect(ServerEndpoint),
-    /// The preference is on but there is nothing to connect to; the status
+    /// The preference is on but the server is gone from the list; the status
     /// bar says why.
     CannotConnect(Sentence),
 }
@@ -42,7 +43,7 @@ pub fn at_start(
         return AtStart::Nothing;
     }
     let Some(server) = last_server else {
-        return AtStart::CannotConnect(NO_LAST_SERVER);
+        return AtStart::Nothing;
     };
     if !listed.contains(server) {
         return AtStart::CannotConnect(LAST_SERVER_UNLISTED);
@@ -59,7 +60,7 @@ mod tests {
     }
 
     #[test]
-    fn off_by_default_a_start_dials_nothing() {
+    fn off_a_start_dials_nothing() {
         let last = server(4661);
         assert!(matches!(
             at_start(false, Some(&last), std::slice::from_ref(&last)),
@@ -77,12 +78,17 @@ mod tests {
         assert_eq!(to, last);
     }
 
+    /// The default is on, and a first run has no connect to repeat.
     #[test]
-    fn on_with_nothing_to_connect_to_it_says_why_and_dials_nothing() {
+    fn a_first_run_dials_nothing_and_says_nothing() {
         assert!(matches!(
             at_start(true, None, &[server(4661)]),
-            AtStart::CannotConnect(why) if why == NO_LAST_SERVER
+            AtStart::Nothing
         ));
+    }
+
+    #[test]
+    fn on_with_the_server_gone_it_says_why_and_dials_nothing() {
         assert!(matches!(
             at_start(true, Some(&server(4661)), &[server(4242)]),
             AtStart::CannotConnect(why) if why == LAST_SERVER_UNLISTED

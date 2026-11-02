@@ -11,8 +11,8 @@ use rmule_primitives::{Ed2kText, Tag, TagName, TagValue};
 use crate::{KadId, KadInstant};
 
 use super::{
-    KEYWORD_ENTRY_LIFETIME, KEYWORD_MAX_TRACKED_PUBLISHERS, TAG_FILENAME, TAG_FILESIZE,
-    TAG_PUBLISHINFO, TRUST_POINTS_PER_SUBNET,
+    KEYWORD_ENTRY_LIFETIME, KEYWORD_MAX_TRACKED_PUBLISHERS, KEYWORD_NAMES_PER_ENTRY, TAG_FILENAME,
+    TAG_FILESIZE, TAG_PUBLISHINFO, TRUST_POINTS_PER_SUBNET,
 };
 
 /// One decoded per-file row from a `KADEMLIA2_PUBLISH_KEY_REQ` batch.
@@ -167,12 +167,20 @@ impl KeywordEntry {
             .find(|entry| entry.name.to_lowercase() == lower)
         {
             existing.popularity += 1;
-        } else {
+        } else if self.names.len() < KEYWORD_NAMES_PER_ENTRY {
             self.names.push(FileNameEntry {
                 name: filename,
                 popularity: 1,
             });
         }
+    }
+
+    /// The bytes of publishers' text this entry holds, the index's budget's
+    /// measure.
+    pub(super) fn held_bytes(&self) -> usize {
+        let names: usize = self.names.iter().map(|entry| entry.name.len()).sum();
+        let tags: usize = self.tags.iter().map(|tag| tag.encode().len()).sum();
+        names + tags
     }
 
     fn touch_publisher(
@@ -281,8 +289,8 @@ pub(super) fn decrement_subnet(subnet_publishers: &mut HashMap<u32, u32>, ip: Ip
 }
 
 /// `(names&0xFF)<<24 | (publishers&0xFF)<<16 | (trust*100 as u16)`
-/// (`CKeyEntry::WriteTagListWithPublishInfo`). `names` can realistically
-/// exceed 255 (no cap on distinct filenames); `publishers` cannot (capped at
+/// (`CKeyEntry::WriteTagListWithPublishInfo`). `names` cannot
+/// exceed 255 (capped at [`KEYWORD_NAMES_PER_ENTRY`]), nor `publishers` (capped at
 /// [`KEYWORD_MAX_TRACKED_PUBLISHERS`], the mask is restated for fidelity
 /// anyway. `trust*100` saturates into the `u16` via Rust's defined `as` cast
 /// (documented divergence from C++'s implementation-defined narrowing).

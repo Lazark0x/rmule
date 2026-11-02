@@ -266,10 +266,13 @@ pub(crate) fn inspect_client_packet(path: &Path) -> Result<()> {
                     println!("wire_form: legacy");
                     println!("file_hash: {}", file_hash.to_hex_upper());
                 }
-                GetSourcesRequest::Normal { target } => {
+                GetSourcesRequest::Normal {
+                    file_hash,
+                    file_size,
+                } => {
                     println!("wire_form: normal");
-                    println!("file_hash: {}", target.file_hash().to_hex_upper());
-                    println!("file_size: {}", target.file_size());
+                    println!("file_hash: {}", file_hash.to_hex_upper());
+                    println!("file_size: {file_size}");
                 }
                 GetSourcesRequest::Large { target } => {
                     println!("wire_form: large");

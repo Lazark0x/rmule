@@ -103,7 +103,7 @@ async fn a_related_search_reaches_neither_the_sweep_nor_kad_and_completes_on_the
         ["related::0123456789ABCDEFFEDCBA9876543210"],
         "the connected server alone is asked, by hash"
     );
-    assert!(walks.lock().unwrap().is_empty(), "Kad walked nothing");
+    assert!(walks.lock().is_empty(), "Kad walked nothing");
     assert_eq!(
         sweep_datagram(&udp, Duration::from_millis(200)).await,
         None,
@@ -127,11 +127,7 @@ async fn a_related_search_reaches_neither_the_sweep_nor_kad_and_completes_on_the
         )
     })
     .await;
-    assert_eq!(
-        *walks.lock().unwrap(),
-        ["holiday"],
-        "a keyword search walks Kad"
-    );
+    assert_eq!(*walks.lock(), ["holiday"], "a keyword search walks Kad");
 }
 
 #[tokio::test]

@@ -8,23 +8,25 @@
 //! place (ADR-0094, "Failed").
 
 use ratatui::Frame;
-use ratatui::crossterm::event::{KeyCode, KeyEvent};
+use ratatui::crossterm::event::KeyEvent;
 use ratatui::layout::Rect;
-use ratatui::style::{Modifier, Style};
-use ratatui::text::{Line, Span};
+use ratatui::style::Style;
+use ratatui::text::Line;
 
 use rmule_core::{CoreCommand, DownloadCommand, DownloadId, NameTaken};
 use rmule_primitives::{SafeFileName, SearchResult};
 
+use super::sort::ResultsTable;
 use super::{SearchesView, ViewOutcome};
 use crate::action::Action;
-use crate::state::{
-    KnownFileMark, KnownFileMarks, UiState, download_failure_words, withheld_words,
-};
+use crate::row_selection::viewport::Viewport;
+use crate::state::{KnownFileMark, KnownFileMarks, UiState};
+use crate::table_sort::SortedTable;
 use crate::theme::Theme;
 use crate::views::day;
-use crate::views::modal::Modal;
+use crate::views::modal::{Modal, confirm_key, scroll_key};
 use crate::words::download as download_words;
+use crate::words::readd::{self as readd_words, Tone};
 use crate::wrap::wrapped_lines;
 
 /// The confirm a Have, Withheld, Had, Cancelled or Failed result opens: the
@@ -33,11 +35,50 @@ use crate::wrap::wrapped_lines;
 pub(super) struct ReAdd {
     result: SearchResult,
     mark: KnownFileMark,
+    /// What part of the question is on screen, in a frame too short for it.
+    viewport: std::cell::Cell<Viewport>,
 }
 
 impl SearchesView {
-    /// The row menu's Download on the selected result.
+    /// The tagged results, those the operator holds no history with: a marked
+    /// file asks its own question, one row at a time, so it is left and said.
+    fn download_tagged(&mut self, state: &UiState) -> ViewOutcome {
+        let Some(entry) = self.held.current_mut() else {
+            return ViewOutcome::Redraw;
+        };
+        let tagged = entry.tags.targets(None);
+        entry.tags.clear();
+        let marks = KnownFileMarks::of(state);
+        let results = self
+            .held
+            .current_pane(state)
+            .map_or(&[][..], |pane| &*pane.results);
+        let (fresh, marked): (Vec<&SearchResult>, Vec<&SearchResult>) = results
+            .iter()
+            .filter(|result| tagged.contains(&ResultsTable::identity(result)))
+            .partition(|result| marks.get(result.file_hash(), result.file_size()).is_none());
+        let commands = fresh
+            .into_iter()
+            .map(|result| start_command(result, state, false))
+            .collect();
+        let mut actions = vec![Action::Commands(commands)];
+        if !marked.is_empty() {
+            actions.push(Action::Flash(crate::words::rows::tagged_marked_left(
+                marked.len(),
+            )));
+        }
+        ViewOutcome::Emit(Action::Actions(actions))
+    }
+
+    /// The row menu's Download on the tagged results, else the selected one.
     pub(super) fn download_selected(&mut self, state: &UiState) -> ViewOutcome {
+        if self
+            .held
+            .current()
+            .is_some_and(|entry| !entry.tags.is_empty())
+        {
+            return self.download_tagged(state);
+        }
         let Some(result) = self.selected_result(state).cloned() else {
             return ViewOutcome::Redraw;
         };
@@ -50,7 +91,11 @@ impl SearchesView {
                 ViewOutcome::Emit(Action::Flash(download_words::already_downloading(&name)))
             }
             Some(mark) => {
-                self.readd = Some(ReAdd { result, mark });
+                self.readd = Some(ReAdd {
+                    result,
+                    mark,
+                    viewport: std::cell::Cell::default(),
+                });
                 ViewOutcome::Redraw
             }
         }
@@ -59,20 +104,25 @@ impl SearchesView {
     /// The confirm is modal: `y` starts the download, `n` / `Esc` / `q` keep
     /// things as they are, anything else is swallowed.
     pub(super) fn handle_readd_key(&mut self, key: KeyEvent, state: &UiState) -> ViewOutcome {
-        match key.code {
-            KeyCode::Char('y') => match self.readd.take() {
+        match confirm_key(key.code) {
+            Some(true) => match self.readd.take() {
                 Some(ReAdd {
                     mark: KnownFileMark::Failed { download_id, .. },
                     ..
-                }) => restart_download(download_id, state),
+                }) => restart_download(download_id),
                 Some(readd) => start_download(&readd.result, state, true),
                 None => ViewOutcome::Redraw,
             },
-            KeyCode::Esc | KeyCode::Char('n') | KeyCode::Char('q') => {
+            Some(false) => {
                 self.readd = None;
                 ViewOutcome::Redraw
             }
-            _ => ViewOutcome::Redraw,
+            None => {
+                if let Some(readd) = self.readd.as_mut() {
+                    scroll_key(&mut readd.viewport, key.code);
+                }
+                ViewOutcome::Redraw
+            }
         }
     }
 
@@ -81,100 +131,39 @@ impl SearchesView {
             return;
         };
         let width = 56u16.min(area.width);
-        let text_w = usize::from(width).saturating_sub(2).max(1);
-        let text = Style::new().fg(theme.fg);
-        let mut lines: Vec<Line<'static>> = wrapped_lines(
-            &readd.result.primary_name().to_display_string(),
-            text_w,
-            text,
-        );
-        match &readd.mark {
-            KnownFileMark::Have { path } => {
-                lines.extend(wrapped_lines("You have this file, at", text_w, text));
-                lines.extend(wrapped_lines(
-                    &path.display().to_string(),
-                    text_w,
-                    Style::new().fg(theme.mark_have),
-                ));
-            }
-            KnownFileMark::Withheld {
-                path,
-                reason,
-                since,
-            } => {
-                lines.extend(wrapped_lines("You share this file, at", text_w, text));
-                lines.extend(wrapped_lines(
-                    &path.display().to_string(),
-                    text_w,
-                    Style::new().fg(theme.mark_withheld),
-                ));
-                lines.extend(wrapped_lines(
-                    &format!(
-                        "rmule cannot read it now ({}) since {}.",
-                        withheld_words(*reason),
-                        day(*since)
-                    ),
-                    text_w,
-                    text,
-                ));
-            }
-            KnownFileMark::Had { name, found_gone } => {
-                lines.extend(wrapped_lines("You had this file, as", text_w, text));
-                lines.extend(wrapped_lines(name, text_w, Style::new().fg(theme.mark_had)));
-                lines.extend(wrapped_lines(
-                    &format!("rmule found it gone on {}.", day(*found_gone)),
-                    text_w,
-                    text,
-                ));
-            }
-            KnownFileMark::Cancelled => lines.extend(wrapped_lines(
-                "You cancelled a download of this file before.",
-                text_w,
-                Style::new().fg(theme.mark_cancelled),
-            )),
-            KnownFileMark::Failed { name, reason, .. } => {
-                lines.extend(wrapped_lines(
-                    "Your download of this file failed, as",
-                    text_w,
-                    text,
-                ));
-                lines.extend(wrapped_lines(
-                    name,
-                    text_w,
-                    Style::new().fg(theme.mark_failed),
-                ));
-                let why = match reason {
-                    Some(reason) => {
-                        format!("It failed because {}.", download_failure_words(reason))
-                    }
-                    // Only a row failed before the store kept reasons (store
-                    // version 6) has none.
-                    None => format!("Why was {}.", crate::state::FAILURE_NOT_RECORDED),
-                };
-                lines.extend(wrapped_lines(&why, text_w, text));
-                lines.extend(wrapped_lines(
-                    "Restarting continues from the parts on disk that still check, or starts over when nothing there can be continued from.",
-                    text_w,
-                    text,
-                ));
-            }
-            // Refused before a confirm opens.
-            KnownFileMark::Downloading { .. } => {}
-        }
-        let (verb, title) = match readd.mark {
-            KnownFileMark::Failed { .. } => (" restart it    ", " Restart download? "),
-            _ => (" download again    ", " Download again? "),
+        let title = match readd.mark {
+            KnownFileMark::Failed { .. } => crate::words::search::RESTART_TITLE,
+            _ => crate::words::search::AGAIN_TITLE,
         };
-        lines.push(Line::raw(""));
-        let key = Style::new().fg(theme.accent).add_modifier(Modifier::BOLD);
-        lines.push(Line::from(vec![
-            Span::styled("y", key),
-            Span::styled(verb, text),
-            Span::styled("Esc", key),
-            Span::styled(" keep", text),
-        ]));
-
-        Modal::new(title, theme).draw(frame, area, width, theme, lines);
+        let lines = |width: u16| {
+            let text_w = usize::from(width).saturating_sub(2).max(1);
+            let text = Style::new().fg(theme.fg);
+            let mut lines: Vec<Line<'static>> = wrapped_lines(
+                &readd.result.primary_name().to_display_string(),
+                text_w,
+                text,
+            );
+            let subject = match &readd.mark {
+                KnownFileMark::Have { .. } => theme.mark_have,
+                KnownFileMark::Withheld { .. } => theme.mark_withheld,
+                KnownFileMark::Had { .. } => theme.mark_had,
+                KnownFileMark::Cancelled => theme.mark_cancelled,
+                KnownFileMark::Failed { .. } | KnownFileMark::Downloading { .. } => {
+                    theme.mark_failed
+                }
+            };
+            for said in readd_words::mark_lines(&readd.mark, day) {
+                let style = match said.tone {
+                    Tone::Plain => text,
+                    Tone::Subject => Style::new().fg(subject),
+                };
+                lines.extend(wrapped_lines(&said.text, text_w, style));
+            }
+            lines.push(Line::raw(""));
+            lines.push(crate::views::modal::answer_line(theme));
+            lines
+        };
+        Modal::new(title, theme).draw_scrolled(frame, area, width, theme, &readd.viewport, lines);
     }
 }
 
@@ -185,31 +174,28 @@ impl SearchesView {
 /// Kad-only operator: core finds the sources over Kad and asks any server
 /// session that comes up later.
 fn start_download(result: &SearchResult, state: &UiState, again: bool) -> ViewOutcome {
-    if state.session.is_none() {
-        return ViewOutcome::Emit(Action::Flash(crate::words::app::CORE_NOT_ATTACHED));
-    }
+    ViewOutcome::Emit(Action::Command(start_command(result, state, again)))
+}
+
+fn start_command(result: &SearchResult, state: &UiState, again: bool) -> CoreCommand {
     let file = result.to_file_link();
-    ViewOutcome::Emit(Action::Command(CoreCommand::Download(
-        DownloadCommand::StartDownload {
-            name: SafeFileName::of_link(&file),
-            file,
-            source_hint: state.active_server(),
-            if_taken: if again {
-                NameTaken::Number
-            } else {
-                NameTaken::Refuse
-            },
+    CoreCommand::Download(DownloadCommand::StartDownload {
+        name: SafeFileName::of_link(&file),
+        file,
+        source_hint: state.active_server(),
+        if_taken: if again {
+            NameTaken::Number
+        } else {
+            NameTaken::Refuse
         },
-    )))
+        kad_aich_root: result.kad_aich_root(),
+    })
 }
 
 /// `ResumeDownload` for a failed download — the one Restart (ADR-0094,
 /// "Restart"): the same row, which core continues from what is on disk
 /// or starts over in its place; the store would refuse a new one for the file.
-fn restart_download(download_id: DownloadId, state: &UiState) -> ViewOutcome {
-    if state.session.is_none() {
-        return ViewOutcome::Emit(Action::Flash(crate::words::app::CORE_NOT_ATTACHED));
-    }
+fn restart_download(download_id: DownloadId) -> ViewOutcome {
     ViewOutcome::Emit(Action::Command(CoreCommand::Download(
         DownloadCommand::ResumeDownload { download_id },
     )))

@@ -11,7 +11,7 @@ use std::sync::Arc;
 use std::time::SystemTime;
 
 use rmule_primitives::FileHash;
-use rmule_store::{Indexed, Record, Store, StoreError, UpgradeStep, WriteTransaction};
+use rmule_store::{Indexed, Record, Store, StoreError, WriteTransaction};
 use serde::{Deserialize, Serialize};
 
 use crate::CoreError;
@@ -45,14 +45,6 @@ static HAD_FILES: Indexed<FileKey, HadRow> = Indexed::new(HadRow::NAME, &[]);
 pub(crate) fn schema() -> Schema {
     Schema::new().indexed(&HAD_FILES)
 }
-
-/// Store version 2 → 3: the Had Set's table appears, empty. A version-2
-/// build must refuse the file afterwards, because its shares would not take
-/// a hash out of the set.
-pub(crate) const UPGRADE_FROM_V2: UpgradeStep = UpgradeStep {
-    from: 2,
-    run: |txn| HAD_FILES.create(txn),
-};
 
 /// The file `key` left the disk, last named `name` and `file_size` long: it
 /// joins the set, replacing an older leaving of the same content. Runs on
@@ -101,8 +93,7 @@ impl DurableHadSet {
     /// [`CoreError::Repository`] when the store read fails.
     pub fn list(&self) -> Result<Vec<HadFile>, CoreError> {
         self.store.read(|txn| {
-            Ok(HAD_FILES
-                .iter(txn)?
+            Ok(crate::store::readable(&HAD_FILES, txn)?
                 .into_iter()
                 .map(|(key, row)| HadFile {
                     identity: Ed2kIdentity::new(FileHash::from_bytes(key), row.file_size),
@@ -119,11 +110,10 @@ mod tests {
     use std::path::{Path, PathBuf};
 
     use rmule_primitives::FileHash;
-    use rmule_store::{Ladder, Schema};
 
     use crate::registry::{ShareSource, SharedFileEntry, SharedFileRegistry};
+    use crate::store::open_durable_store;
     use crate::store::registry::DurableSharedFileRegistry;
-    use crate::store::{DURABLE_STORE_FILE, DurableStore, open_durable_store};
 
     fn entry(byte: u8, path: &str) -> SharedFileEntry {
         SharedFileEntry {
@@ -218,25 +208,12 @@ mod tests {
     }
 
     #[test]
-    fn a_version_two_store_climbs_to_an_empty_set() {
-        let dir = tempfile::tempdir().unwrap();
-        let film = entry(6, "/dl/film.mkv");
-        // A store as version 2 left it: every table but the set's, stamped 2.
-        let schema = Schema::new()
-            .merge(crate::store::registry::schema_v2())
-            .merge(crate::store::download::schema_v1());
-        drop(
-            DurableStore::open(
-                dir.path().join(DURABLE_STORE_FILE),
-                &schema,
-                &Ladder::new(2, &[crate::store::registry::UPGRADE_FROM_V1]),
-            )
-            .unwrap(),
-        );
-        let registry = DurableSharedFileRegistry::new(open_durable_store(dir.path()).unwrap());
-        assert!(had(&registry).is_empty());
-        registry.share(film.clone()).unwrap();
-        assert!(registry.gone(film.file_hash, &film.path).unwrap());
-        assert_eq!(had(&registry).len(), 1);
+    fn a_had_row_keeps_its_bytes() {
+        let row = super::HadRow {
+            file_size: 300,
+            name: "a.bin".into(),
+            found_gone: std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_000_000_000),
+        };
+        crate::store::assert_pinned(&row, "ac0205612e62696e8094ebdc0300");
     }
 }

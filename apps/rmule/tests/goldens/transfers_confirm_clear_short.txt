@@ -1,0 +1,5 @@
+┌ Clear completed ─────────────────────────────────────────┐
+│ Clear 1 completed download from the list?               ▲│
+│                                                         █│
+│ The file stays on disk and shared.                      ▼│
+└─────────────────────────────────────────────────── 3 / 5 ┘

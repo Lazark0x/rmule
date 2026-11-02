@@ -19,7 +19,7 @@
 
 [server]
 name = "rmule interop bench peer"
-desc = "ed2k-server @ eacf7f1 gossip peer on the fake-public /24"
+desc = "ed2k-server gossip peer on the fake-public /24"
 public = false
 version_major = 17
 version_minor = 15

@@ -25,11 +25,13 @@ use anyhow::{Context, Result};
 use serde::Serialize;
 
 use crate::artifacts::RunLayout;
-use crate::bench_doctor::{BenchDoctor, CAP_DAEMON_IPV6, DoctorReport, SkipReason};
+use crate::bench_doctor::{CAP_DAEMON_IPV6, DoctorReport, SkipReason};
 use crate::docker::{InternalNetwork, RunContainer};
 use crate::fake_public::{MAX_NODES_PER_SUBNET, fake_public_address, subnet_cidr};
 use crate::fake_public_v6::FakePublicV6Plan;
 use crate::flow::bench::{Bench, run_checked};
+use crate::flow::pinned_image::{AMULE_KNO, EMULEQT, PinnedImage};
+use crate::verdict::Verdict;
 
 /// The flow's name in every artifact it writes.
 const FLOW: &str = "ipv6-net-accept";
@@ -99,6 +101,8 @@ pub struct Ipv6NetAcceptOptions<'a> {
     pub build_images: bool,
     /// The `natgw` image, which is what **Bench Doctor** probes the kernel with.
     pub natgw_image: &'a str,
+    /// Build context for the natgw image, built before the doctor runs.
+    pub natgw_build_context: &'a Path,
     /// Keep containers after the run.
     pub keep_containers: bool,
     /// Per-step readiness budget.
@@ -145,7 +149,7 @@ pub(crate) struct BodyAcceptance {
 struct AcceptVerdict {
     #[serde(rename = "scenario")]
     flow: &'static str,
-    verdict: &'static str,
+    verdict: Verdict,
     #[serde(skip_serializing_if = "Option::is_none")]
     skip_reason: Option<String>,
     wan_subnet_v4: String,
@@ -222,12 +226,30 @@ pub fn run_ipv6_net_accept(options: Ipv6NetAcceptOptions<'_>) -> Result<()> {
 }
 
 fn drive(bench: &mut Bench, options: &Ipv6NetAcceptOptions<'_>) -> Result<()> {
+    let suffix = run_suffix(options.layout)?;
+    let plan = FakePublicV6Plan::for_network(1)?;
+    let subnet_v4 = subnet_cidr(MIXED_BODY_SUBNET_INDEX)?;
+
+    // The doctor decides before anything but its own image is built.
+    let doctor = bench.examine_doctor(
+        "natgw",
+        options.natgw_image,
+        options.natgw_build_context,
+        &suffix,
+    )?;
+    if let Err(skip) = doctor.require(
+        &[CAP_DAEMON_IPV6],
+        "whether any counterparty accepts a 3fff::/20 address",
+    ) {
+        return write_skip(options.layout, &doctor, &skip, &subnet_v4, &plan.subnet());
+    }
+
     if options.build_images {
         for body in options.bodies {
-            if body.name == "amule-kno" {
-                bench.build_amule_kno_image(body.image, body.build_context)?;
-            } else {
-                bench.build_image(body.name, body.image, body.build_context)?;
+            match body.name {
+                "amule-kno" => AMULE_KNO.build(body.image, body.build_context)?,
+                "emuleqt" => EMULEQT.build(body.image, body.build_context)?,
+                _ => bench.build_image(body.name, body.image, body.build_context)?,
             }
         }
     }
@@ -239,18 +261,6 @@ fn drive(bench: &mut Bench, options: &Ipv6NetAcceptOptions<'_>) -> Result<()> {
         options.dialer_image,
         options.dialer_build_context,
     )?;
-    let suffix = run_suffix(options.layout)?;
-    let plan = FakePublicV6Plan::for_network(1)?;
-    let subnet_v4 = subnet_cidr(MIXED_BODY_SUBNET_INDEX)?;
-
-    let doctor = BenchDoctor::new(&bench.docker, options.natgw_image, &suffix).examine()?;
-    if let Err(skip) = doctor.require(
-        &[CAP_DAEMON_IPV6],
-        "whether any counterparty accepts a 3fff::/20 address",
-    ) {
-        return write_skip(options.layout, &doctor, &skip, &subnet_v4, &plan.subnet());
-    }
-
     let ipv6_dir = options.layout.ipv6_dir();
     fs::create_dir_all(&ipv6_dir).with_context(|| format!("create {}", ipv6_dir.display()))?;
     fs::create_dir_all(options.layout.docker_dir())?;
@@ -276,7 +286,11 @@ fn drive(bench: &mut Bench, options: &Ipv6NetAcceptOptions<'_>) -> Result<()> {
     let all_accepted = !rows.is_empty() && rows.iter().all(|row| row.classification == "accepted");
     let verdict = AcceptVerdict {
         flow: FLOW,
-        verdict: if all_accepted { "PASS" } else { "OBSERVED" },
+        verdict: if all_accepted {
+            Verdict::Pass
+        } else {
+            Verdict::Observed
+        },
         skip_reason: None,
         wan_subnet_v4: subnet_v4,
         wan_subnet_v6: plan.subnet(),
@@ -301,9 +315,17 @@ fn measure_one(
         fake_public_address(MIXED_BODY_SUBNET_INDEX * MAX_NODES_PER_SUBNET + index)?.ip;
     let address = plan.address(index as u16)?;
     let container = format!("rmule-interop-v6body-{}-{suffix}", body.name);
+    // A pinned body is checked against its pin before it starts.
+    let pinned = match body.name {
+        "amule-kno" => Some(AMULE_KNO.check(&bench.docker, body.image)?),
+        "emuleqt" => Some(EMULEQT.check(&bench.docker, body.image)?),
+        _ => None,
+    };
     bench.start_extra(
         &container,
-        RunContainer::new(body.image)
+        pinned
+            .as_ref()
+            .map_or_else(|| RunContainer::new(body.image), PinnedImage::container)
             .detach()
             .name(&container)
             .network(network)
@@ -434,7 +456,7 @@ fn write_skip(
         layout,
         &AcceptVerdict {
             flow: FLOW,
-            verdict: "SKIPPED",
+            verdict: Verdict::Skipped,
             skip_reason: Some(skip.reason.clone()),
             wan_subnet_v4: subnet_v4.to_owned(),
             wan_subnet_v6: subnet_v6.to_owned(),
@@ -448,7 +470,7 @@ fn write_verdict(layout: &RunLayout, verdict: &AcceptVerdict) -> Result<()> {
     let text = toml::to_string_pretty(verdict).context("serialize ipv6-net-accept verdict")?;
     let path = layout.root().join("ipv6-net-accept-verdict.toml");
     println!("{text}");
-    fs::write(&path, text).with_context(|| format!("write {}", path.display()))
+    crate::verdict::write(&path, &text)
 }
 
 #[cfg(test)]

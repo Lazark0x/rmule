@@ -10,14 +10,24 @@
 use std::net::Ipv4Addr;
 
 use rmule_peer::{
-    HelloAnswer, MiscOptions1, PeerEvent, PeerHandshakeContext, PeerHelloBody, PeerOutput,
-    PeerSession,
+    HelloAnswer, MiscOptions1, MiscOptions2, PeerEvent, PeerHandshakeContext, PeerHelloBody,
+    PeerOutput, PeerSession,
 };
 use rmule_primitives::session::drain;
 use rmule_primitives::{
     AichRootHash, ClientId, ClientIdentity, Ed2kText, FileHash, Ipv4Endpoint, Packet,
     PacketProtocol, PartHash, PeerEndpoint, Tag, TagName, TagValue, UserHash,
 };
+
+/// A `ClientIdentity` for tests: `seed` fills the user hash, `name` the nick.
+pub fn test_identity(seed: u8, name: &str, tcp_port: u16) -> ClientIdentity {
+    ClientIdentity::new(
+        UserHash::from_bytes([seed; UserHash::BYTE_LEN]),
+        Ed2kText::from_utf8(name),
+        tcp_port,
+        60,
+    )
+}
 
 /// The peer this suite dials: `203.0.113.1:4662`, TEST-NET-3 and never routable.
 pub fn peer() -> PeerEndpoint {
@@ -114,6 +124,8 @@ pub fn answer_body(user_hash: UserHash) -> PeerHelloBody {
             // answer resolve its geometry cross-check (ADR-0055 threads
             // this peer's own claimed nibble, not rmule's).
             MiscOptions1::from_bits(1 << 12).to_tag(),
+            // Stock always claims large files (`MiscOptions2` bit 4).
+            MiscOptions2::from_bits(1 << 4).to_tag(),
         ],
         connected_server: Ipv4Endpoint::new(Ipv4Addr::UNSPECIFIED, 0),
     }

@@ -44,7 +44,7 @@ pub use evidence::KadEvidence;
 pub use id::{KadDistance, KadId};
 pub use keyword::KadKeywordSearchRequest;
 pub use keyword_publisher::KadSharedFile;
-pub use keyword_store::{KadKeywordResult, KeywordResultRow};
+pub use keyword_store::{KadAichRootReport, KadKeywordResult, KeywordResultRow};
 pub use lookup::{
     KadBuddyContact, KadPublishPosture, KadPublishRequest, KadSourceCandidate, KadSourceDiagnostic,
     KadSourceLookupRequest, KadSourceRowFacts,
@@ -55,14 +55,16 @@ pub use messages::{
     MISC_OPTIONS_ACK_REQUEST, MISC_OPTIONS_TCP_FIREWALLED, MISC_OPTIONS_UDP_FIREWALLED,
 };
 pub use node::{
-    KadCallbackWalkEnd, KadCommand, KadContactAdmission, KadEvent, KadNode, KadNodeConfig,
-    KadNodeDiagnostic, KadNodeStart, KadObfuscation, KadOutput, KadPublishRejection,
+    KadCallbackPace, KadCallbackWalkEnd, KadCommand, KadContactAdmission, KadEvent, KadNode,
+    KadNodeConfig, KadNodeDiagnostic, KadNodeStart, KadObfuscation, KadOutput, KadPublishRejection,
     KadReachability, KadSelfCheck, RoutingCensus, UdpFirewallHelper,
 };
 pub use nodes_dat::{CONTACT_FILE_LIMIT, MIN_CONTACTS_TO_WRITE, NodesDat, NodesDatError};
 pub use nodes_dat_bootstrap::BootstrapEditionError;
 pub use reachability::FirewallDecodeError;
-pub use routing::{KadContact, KadContactState, KadRoutingTable, KadRoutingUpdate};
+pub use routing::{
+    KadAdmissionCap, KadContact, KadContactState, KadRoutingTable, KadRoutingUpdate,
+};
 pub use source_result::{
     KadSourceResultDecodeError, KadSourceRow, SOURCE_RESULT_BLOCKED_BY,
     SOURCE_RESULT_ROWS_PER_DATAGRAM, decode_source_result, encode_source_result,

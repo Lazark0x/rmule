@@ -230,7 +230,7 @@ async fn a_helper_whose_hello_is_refused_is_reported_and_cancelled_unasked() {
         let _ = socket.read(&mut hello).await;
     });
     let diagnostics = crate::diagnostics::DiagnosticsState::default();
-    let (events_tx, mut events) = mpsc::channel(4);
+    let (events_tx, mut events) = crate::service::outbox(Default::default());
     let refusals = crate::hello_refusals::SharedHelloRefusals::default();
     refusals.install(diagnostics, events_tx.downgrade());
 
@@ -345,16 +345,19 @@ impl PeerTransferService for DisconnectingPeerTransfer {
         &mut self,
         peer: PeerEndpoint,
         _ctx: PeerHandshakeContext,
-        _file: Ed2kFileLink,
+        file: Ed2kFileLink,
     ) -> Result<PeerWorker, DownloadFailure> {
+        let advertised = PeerWorkerEvent::every_part(file.size());
         let (command_tx, mut command_rx) = mpsc::channel(8);
         let (event_tx, event_rx) = mpsc::channel(8);
         let disconnect = self.disconnect.clone();
         tokio::spawn(async move {
             let _ = event_tx.send(PeerWorkerEvent::Connected).await;
+            let _ = event_tx.send(advertised).await;
+            let _ = event_tx.send(PeerWorkerEvent::SlotGranted).await;
             disconnect.notified().await;
             let _ = event_tx.send(PeerWorkerEvent::Disconnected).await;
-            // Drain whatever the runner sent meanwhile (a `RequestPart`) so
+            // Drain whatever the runner sent meanwhile (a slot ask, a part) so
             // its sender never blocks on a full channel.
             while command_rx.recv().await.is_some() {}
         });
@@ -363,7 +366,7 @@ impl PeerTransferService for DisconnectingPeerTransfer {
 }
 
 #[tokio::test]
-async fn a_download_workers_connect_marks_the_roster_and_disconnect_forgets_it() {
+async fn a_download_workers_connect_marks_the_roster_and_the_runs_end_forgets_it() {
     let out_dir = tempfile::tempdir().unwrap();
     // The download runner's fleet loop is the roster's other
     // writer. This drives a real worker session — a live `Core`, a scripted
@@ -381,14 +384,14 @@ async fn a_download_workers_connect_marks_the_roster_and_disconnect_forgets_it()
         outcome: crate::SourceLookupOutcome {
             client_id: ClientId::from_u32(0x0100_007F),
             sources: vec![
-                rmule_primitives::SourceSighting::plain(rmule_primitives::PeerSource::new(
-                    ClientId::from_u32(42),
-                    4662,
-                )),
-                rmule_primitives::SourceSighting::plain(rmule_primitives::PeerSource::new(
-                    ClientId::from_u32(0x0100_007F),
-                    4663,
-                )),
+                rmule_primitives::SourceSighting::plain(
+                    rmule_primitives::PeerSource::new(ClientId::from_u32(42), 4662),
+                    rmule_primitives::Informant::Own,
+                ),
+                rmule_primitives::SourceSighting::plain(
+                    rmule_primitives::PeerSource::new(ClientId::from_u32(0x0100_007F), 4663),
+                    rmule_primitives::Informant::Own,
+                ),
             ],
         },
     };
@@ -405,17 +408,12 @@ async fn a_download_workers_connect_marks_the_roster_and_disconnect_forgets_it()
     let roster = builder.shared_peer_roster();
     let mut core = builder.build();
 
-    let file = Ed2kFileLink {
-        name: Ed2kText::from_utf8("example.bin"),
-        size: 11,
-        file_hash: rmule_primitives::FileHash::from_bytes(
-            [0xAB; rmule_primitives::FileHash::BYTE_LEN],
-        ),
-        part_hash_set: None,
-        aich_root: None,
-        ipv6_sources: Vec::new(),
-        sources: Default::default(),
-    };
+    let file = Ed2kFileLink::new(
+        Ed2kText::from_utf8("example.bin"),
+        11,
+        rmule_primitives::FileHash::from_bytes([0xAB; rmule_primitives::FileHash::BYTE_LEN]),
+    )
+    .expect("a size eD2k addresses");
     core.send(CoreCommand::Download(DownloadCommand::StartDownload {
         file,
         source_hint: Some(ServerEndpoint::new("127.0.0.1", 4661).unwrap()),
@@ -424,6 +422,7 @@ async fn a_download_workers_connect_marks_the_roster_and_disconnect_forgets_it()
             &rmule_primitives::FileHash::from_bytes([0; 16]),
         ),
         if_taken: crate::NameTaken::Refuse,
+        kad_aich_root: None,
     }))
     .await
     .unwrap();
@@ -480,24 +479,49 @@ async fn a_download_workers_connect_marks_the_roster_and_disconnect_forgets_it()
         "the same read the helper's bias consults still finds the peer known"
     );
 
-    // Let the worker hang up on its own. `on_worker_event(Disconnected)`
-    // releases its in-flight part before the pool's own terminal check —
-    // `PartReleased` fires strictly after the fleet's forget site runs, in
-    // the same iteration.
+    // Let the worker's link fail while it transfers. `on_worker_event
+    // (Disconnected)` releases its in-flight part, and its record stands
+    // queued without a rank, aMule's `DS_ONQUEUE` client known after its
+    // socket closed (ADR-0090): the worker's relation goes, the queued one
+    // holds the IP.
     disconnect.notify_one();
-    loop {
+    let download_id = loop {
         match next_core_event(&mut core).await {
-            CoreEvent::Download(DownloadEvent::PartReleased { .. }) => break,
+            CoreEvent::Download(DownloadEvent::PartReleased { download_id, .. }) => {
+                break download_id;
+            }
             CoreEvent::Download(DownloadEvent::DownloadCompleted { .. }) => {
                 panic!("the sole worker disconnected — nothing to complete")
             }
             _ => {}
         }
+    };
+    loop {
+        if let CoreEvent::Download(DownloadEvent::SourceRemoteQueued { .. }) =
+            next_core_event(&mut core).await
+        {
+            break;
+        }
     }
     assert!(
-        !roster.knows(peer_ip),
-        "the worker's Disconnected forgot the IP once it hung up"
+        roster.knows(peer_ip),
+        "the source standing queued is still known"
     );
+
+    // The run's end forgets every relation it held.
+    core.send(CoreCommand::Download(DownloadCommand::CancelDownload {
+        download_id,
+    }))
+    .await
+    .unwrap();
+    loop {
+        if let CoreEvent::Download(DownloadEvent::DownloadCancelled { .. }) =
+            next_core_event(&mut core).await
+        {
+            break;
+        }
+    }
+    assert!(!roster.knows(peer_ip), "the run's end forgot the IP");
 }
 
 /// Await the next fact from `core`, same as `Core::next_event` but with a

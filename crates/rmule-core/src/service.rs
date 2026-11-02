@@ -12,6 +12,7 @@ mod command;
 mod config;
 mod event;
 mod inbox;
+mod outbox;
 
 pub(crate) use self::activity::FinishedActivity;
 pub(crate) use self::inbox::SettingsDoor;
@@ -23,22 +24,30 @@ pub use self::command::{
     CoreCommand, CoreCommandRejectReason, DownloadCommand, KadUnavailableReason, NameTaken,
     ScanCommand, SearchCommand, ServeCommand, ServerListCommand,
 };
-pub use self::config::{CoreConfig, DEFAULT_SLOT_WAIT_TIMEOUT, NattConfig, VerificationAuthority};
+pub use self::config::{
+    CeilingLowered, CoreConfig, DEFAULT_SLOT_WAIT_TIMEOUT, NattConfig, PeerConnections,
+    VerificationAuthority, descriptor_room,
+};
+pub use self::event::LinkTurn;
+pub use self::event::{BlockAskFault, DeadDialSign, DialBackEnd, GrantRoad};
 pub use self::event::{
-    BuddyDialFailure, CoreEvent, DialEnd, DialFailure, DownloadEvent, IdAssignment,
+    BuddyDialFailure, CompletionStep, CoreEvent, DialEnd, DialFailure, DownloadEvent, IdAssignment,
     IgnoredReaskReply, Ipv6Probe, KadStopReason, LegNotSent, LoginClaim, LoginCloseCause,
-    LoginLink, LoginStep, NatTraversalUnavailableReason, PartsLost, PeerBuddy, PeerReach,
+    LoginLink, LoginStep, LongTask, NatTraversalUnavailableReason, PartsLost, PeerBuddy, PeerReach,
     PeerReachDropReason, PeerReachRoute, PlainLinkReason, PortTestAdmission, PortTestClosedBy,
-    PortTestEnd, PortTestLateAdmission, PurgedSource, QuitStep, ReconnectEnd, RestartOutcome,
-    ScanEvent, SearchEvent, SearchFailure, SearchLegState, SearchLegs, ServeEvent,
+    PortTestEnd, PortTestLateAdmission, PurgedSource, QuitStep, ReachAddress, ReconnectEnd,
+    RestartOutcome, ScanEvent, SearchEvent, SearchFailure, SearchLegState, SearchLegs, ServeEvent,
     ServeStartFailure, ServeStopReason, ServerConnectFailure, ServerConnectionEvent,
     ServerListEvent, ShareRejectReason, SharesWithheld, SourcePurgeReason, SourceWait, SweepTally,
+    VolumeStop,
 };
+pub use self::inbox::CommandSender;
+pub use self::outbox::EventStream;
+pub(crate) use self::outbox::{Outbox, WeakOutbox, outbox};
 
 use std::sync::Arc;
 
 use rmule_primitives::ClientIdentity;
-use tokio::sync::mpsc;
 
 use crate::CoreError;
 use crate::adapters::{
@@ -101,7 +110,7 @@ impl SearchId {
 /// one reader, so every fact is delivered once.
 pub struct Core {
     commands: inbox::CommandDoor,
-    evt_rx: mpsc::Receiver<CoreEvent>,
+    events: EventStream,
     diagnostics: crate::diagnostics::DiagnosticsState,
     settings: crate::CoreSettingsHandle,
     kad_id: crate::KadId,
@@ -129,11 +138,19 @@ impl Core {
         self.commands.send(command).await
     }
 
+    /// A door onto the same inbox for a task apart from this handle's owner.
+    /// It does not keep the core open.
+    #[must_use]
+    pub fn command_sender(&self) -> CommandSender {
+        self.commands.sender()
+    }
+
     /// Await the next fact from the session. `None` means the actor stopped and
-    /// no further event will ever arrive. Events are buffered by the channel, so
-    /// a slow reader delays them but does not lose them.
+    /// no further event will ever arrive. The Outbox holds what has not been
+    /// read and nothing in core waits for this: a slow reader delays its Edges
+    /// and misses superseded Levels (ADR-0069, "The Outbox").
     pub async fn next_event(&mut self) -> Option<CoreEvent> {
-        self.evt_rx.recv().await
+        self.events.recv().await
     }
 
     /// Shut the actor down and wait for its persistence flush. Closing the
@@ -153,16 +170,16 @@ impl Core {
     /// ending once the flush has happened. [`shutdown`](Self::shutdown) is
     /// this, drained unread; a front end that names quit's progress reads it.
     #[must_use = "the stream's end is quit's completion"]
-    pub fn quit(self) -> mpsc::Receiver<CoreEvent> {
+    pub fn quit(self) -> EventStream {
         let Self {
             commands,
-            evt_rx,
+            events,
             diagnostics: _,
             settings: _,
             kad_id: _,
         } = self;
         drop(commands);
-        evt_rx
+        events
     }
 
     fn spawn_with_dialed_serve<S, P, L, K>(
@@ -176,7 +193,7 @@ impl Core {
         K: KadRuntimeFactory,
     {
         let (commands, inbox) = inbox::inbox();
-        let (evt_tx, evt_rx) = mpsc::channel(32);
+        let (evt_tx, events) = outbox(wiring.run_log.clone());
         let diagnostics = crate::diagnostics::DiagnosticsState::new();
         let settings = crate::CoreSettingsHandle::running(
             store,
@@ -184,15 +201,14 @@ impl Core {
             wiring.share_guards.clone(),
         );
         let kad_id = wiring.kad_id;
-        tokio::spawn(run_core_with_adapters(
-            wiring,
-            inbox,
-            evt_tx,
-            diagnostics.clone(),
-        ));
+        crate::supervisor::spawn_told(
+            LongTask::Core,
+            Some(evt_tx.downgrade()),
+            run_core_with_adapters(wiring, inbox, evt_tx, diagnostics.clone()),
+        );
         Self {
             commands,
-            evt_rx,
+            events,
             diagnostics,
             settings,
             kad_id,
@@ -227,8 +243,8 @@ impl Core {
     }
 }
 
-pub(crate) async fn send_download_event(evt_tx: &mpsc::Sender<CoreEvent>, event: DownloadEvent) {
-    let _ = evt_tx.send(event.into()).await;
+pub(crate) fn send_download_event(evt_tx: &Outbox, event: DownloadEvent) {
+    evt_tx.send(event.into());
 }
 
 /// The **Reask Routes** the one shared client-UDP socket's downloader reply
@@ -237,13 +253,13 @@ pub(crate) async fn send_download_event(evt_tx: &mpsc::Sender<CoreEvent>, event:
 /// **Download Set**, installed for its run, and the one `0x90` in flight per
 /// peer endpoint. The quartet names no file, so a reply goes to the download
 /// whose ping it answers and to no other; a reply nothing asked for drops.
-pub(crate) type SharedReaskReplySink = Arc<std::sync::Mutex<crate::download::ReaskRoutes>>;
+pub(crate) type SharedReaskReplySink = Arc<parking_lot::Mutex<crate::download::ReaskRoutes>>;
 
 /// Who this client says it is on a wire-touching command: the presentation
 /// half of its eD2k identity — nickname, listen port, protocol version and
 /// any opaque extra tags. It carries **no User Hash and no Secure User
 /// Identification keypair**: both are the node's, fixed when the core is
-/// built (ADR-0048 "Identity ownership"), so no command can
+/// built (ADR-0048 "One identity per node, owned by the core"), so no command can
 /// name another hash — there is no field to name it in.
 ///
 /// ```compile_fail
@@ -345,6 +361,10 @@ pub enum PartReleaseReason {
     Paused,
     /// The download was cancelled by the caller.
     Cancelled,
+    /// The uploader ended our granted slot and put us back on its queue
+    /// (`OP_OUTOFPARTREQS`, ADR-0057): the worker stays on its link, queued,
+    /// and the part goes back for retry.
+    BackOnQueue,
 }
 
 /// Why a peer was retired from a download. The single retirement-reason
@@ -354,10 +374,12 @@ pub enum PartReleaseReason {
 pub enum PeerRetirementReason {
     /// The peer closed the connection, or the link failed under it.
     PeerDisconnected,
-    /// The peer refused the upload slot outright (`OP_OUTOFPARTREQS`).
-    SlotRejected,
     /// `slot_wait_timeout` elapsed with the peer still queueing us.
     SlotTimeout,
+    /// The peer queued us and gave us a rank, and no slot: the ask is
+    /// answered, so the worker hung up, and the source keeps its place by the
+    /// reask (the **Queued Hang-Up**, ADR-0116). Alive and honest.
+    Queued,
     /// A part this peer served did not match its hash — the peer is dropped,
     /// not just the part, since the bytes cannot be trusted.
     PartVerificationFailed,
@@ -370,10 +392,39 @@ pub enum PeerRetirementReason {
     /// not to reach, as aMule's contact precondition drops it.
     CryptIncompatible,
     /// The peer's hello named a User Hash this download distrusts: it served
-    /// this file bad data before (ADR-0090 "Source ownership").
+    /// this file bad data before (ADR-0090 "A download holds each source under one owner").
     Distrusted,
     /// A sighting proved this worker's peer the same source another worker
     /// already reaches, and this one, the newer, gave way (ADR-0090's merge
     /// rule). The peer is alive, so its endpoint is not spent.
     SameSource,
+    /// The peer's hello named our own User Hash: the source was this node, a
+    /// sighting pooled before we knew its address was ours (ADR-0090
+    /// invariant 6). Spent under every name its record held.
+    OurOwnNode,
+    /// The peer's Advertised Parts hold no part the file still lacks (aMule
+    /// `DS_NONEEDEDPARTS`, ADR-0112): it waits as a queued source, asked again
+    /// over TCP at twice the reask period. Alive and honest, so neither spent
+    /// nor distrusted.
+    NoNeededParts,
+    /// The peer granted a slot this worker had no part to work: every part it
+    /// holds that we lack is in flight elsewhere (ADR-0112). The slot went back
+    /// with `OP_CANCELTRANSFER` (ADR-0056) and the source waits as a queued
+    /// one, asked again on the ordinary cadence (ADR-0057). Alive and honest.
+    NoFreePart,
+    /// The peer said it does not have the file (`OP_FILEREQANSNOFIL`): its
+    /// record is spent for this file under every name it holds, on stock's
+    /// per-file window, as aMule dead-lists it (ADR-0090). Honest, so not
+    /// distrusted.
+    FileNotFound,
+    /// The link this worker waited on, behind another download of the same
+    /// peer, ended before its turn (ADR-0107 invariant 9): nothing was
+    /// dialed, and the source stands on the peer's queue standing, asked at
+    /// the reask, as aMule keeps the client for its other file. Alive, so
+    /// not spent.
+    LinkEnded,
+    /// This worker may ask the peer nothing now: the peer's last ask is too
+    /// recent, or no link stood to ride (ADR-0107 invariant 14). The source
+    /// waits on that clock. Alive, so not spent.
+    OnPeersClock,
 }

@@ -6,7 +6,9 @@
 
 use std::net::Ipv4Addr;
 
-use rmule_primitives::{Ipv4Endpoint, Ipv6Endpoint, PeerSource, SourceSighting};
+use rmule_primitives::{
+    ClientId, Informant, Ipv4Endpoint, Ipv6Endpoint, PeerSource, SourceSighting, UserHash,
+};
 
 use super::*;
 
@@ -44,7 +46,8 @@ fn exchanging_state(dial: DialPosition) -> DownloadState {
 /// `peer(1)` hands over the dual-stack record ([`v4`] with [`v6`] beside it,
 /// as an ExtSX `CT_MOD_IP_V6` names it); what gets dialed.
 fn sight(state: &mut DownloadState) -> Vec<PeerEndpoint> {
-    let source = SourceSighting::plain(PeerSource::HighId(v4())).with_ipv6_half(Some(v6()));
+    let source =
+        SourceSighting::plain(PeerSource::HighId(v4()), Informant::Own).with_ipv6_half(Some(v6()));
     spawned(&via_exchange(state, peer(1), vec![source]))
 }
 
@@ -106,8 +109,9 @@ fn the_second_family_failing_too_retires_the_source() {
     );
 }
 
-/// The failed family is spent: after the IPv4 dial reached the peer and its
-/// session ended, a later sighting dials the IPv4 straight away.
+/// The failed family is spent: after the IPv4 dial reached the peer, whose
+/// file answer leaves it alive, a later sighting past the peer's clock dials
+/// the IPv4.
 #[test]
 fn a_later_sighting_skips_the_spent_family() {
     let mut state = exchanging_state(known_ipv6());
@@ -117,18 +121,22 @@ fn a_later_sighting_skips_the_spent_family() {
         PeerEndpoint::V6(v6()),
         PeerWorkerEvent::Disconnected,
     );
-    let _ = end(
-        &mut state,
-        PeerEndpoint::V4(v4()),
-        PeerWorkerEvent::Connected,
-    );
+    let _ = probed(&mut state, t0(), PeerEndpoint::V4(v4()));
     let _ = end(
         &mut state,
         PeerEndpoint::V4(v4()),
         PeerWorkerEvent::Disconnected,
     );
 
-    assert_eq!(sight(&mut state), vec![PeerEndpoint::V4(v4())]);
+    let source =
+        SourceSighting::plain(PeerSource::HighId(v4()), Informant::Own).with_ipv6_half(Some(v6()));
+    let seen = take_at(
+        &mut state,
+        t0() + MIN_REQUEST_TIME,
+        Channel::Exchanged(peer(1)),
+        [source],
+    );
+    assert_eq!(spawned(&seen.decisions), vec![PeerEndpoint::V4(v4())]);
 }
 
 #[test]
@@ -247,7 +255,7 @@ fn a_dual_stack_dial_that_fails_to_start_falls_to_its_other_family() {
 
 /// `peer(1)` hands over a plain IPv4 record; what gets dialed.
 fn sight_single(state: &mut DownloadState) -> Vec<PeerEndpoint> {
-    let source = SourceSighting::plain(PeerSource::HighId(v4()));
+    let source = SourceSighting::plain(PeerSource::HighId(v4()), Informant::Own);
     spawned(&via_exchange(state, peer(1), vec![source]))
 }
 
@@ -267,7 +275,7 @@ fn a_single_address_source_whose_dial_failed_is_not_redialled() {
 }
 
 /// A source that completed its handshake is alive, however its session ended
-/// — a refused slot here — so it is never spent.
+/// — a slot wait that timed out here — so it is never spent.
 #[test]
 fn a_source_that_connected_is_redialled_when_sighted_again() {
     let mut state = exchanging_state(DialPosition::default());
@@ -280,16 +288,16 @@ fn a_source_that_connected_is_redialled_when_sighted_again() {
     let _ = end(
         &mut state,
         PeerEndpoint::V4(v4()),
-        PeerWorkerEvent::SlotRejected,
+        PeerWorkerEvent::SlotTimeout,
     );
 
     assert_eq!(sight_single(&mut state), vec![PeerEndpoint::V4(v4())]);
 }
 
-/// Spent lasts one to two re-ask periods, not the run: a source that was only
-/// momentarily down comes back on a sighting once it has sat one out.
+/// Spent lasts stock's window, not the run: a source that was only momentarily
+/// down comes back on a sighting once it has sat that out.
 #[test]
-fn a_spent_endpoint_is_redialled_after_it_sits_out_a_reask_period() {
+fn a_spent_endpoint_is_redialled_after_it_sits_out_its_window() {
     let mut state = exchanging_state(DialPosition::default());
     let _ = sight_single(&mut state);
     let _ = end(
@@ -305,4 +313,106 @@ fn a_spent_endpoint_is_redialled_after_it_sits_out_a_reask_period() {
     );
     let _ = state.on_tick(t0() + FILE_REASK_TIME * 2);
     assert_eq!(sight_single(&mut state), vec![PeerEndpoint::V4(v4())]);
+}
+
+/// One client's two addresses as two records, both dialed: the IPv4 one named
+/// `named`, as a source-exchange row may name a hash.
+fn two_records_dialed(named: Option<UserHash>) -> DownloadState {
+    let ipv6 = SourceSighting::plain(PeerSource::Ipv6(v6()), Informant::Own);
+    let ipv4 = SourceSighting::new(
+        PeerSource::HighId(v4()),
+        named,
+        Some(rmule_primitives::SourceCryptOptions::from_byte(0)),
+        Informant::Own,
+    );
+    let mut state = state_from(
+        file_hash_only_content(ONE_PART),
+        SourcingPosture {
+            dial: known_ipv6(),
+            ..QUIET_POSTURE
+        },
+        2,
+        no_facts(),
+        vec![(Channel::Server, vec![ipv6, ipv4])],
+        Vec::new(),
+    );
+    assert_eq!(spawned(&state.start(t0())).len(), 2);
+    state
+}
+
+/// The hello of the client at [`v6`], on the IPv6 link: it names [`v4`] as its
+/// High ID, on the same listen port.
+fn hello_naming_v4(state: &mut DownloadState) -> Vec<Decision> {
+    let at = PeerEndpoint::V6(v6());
+    let hello = HelloFacts {
+        client_id: ClientId::from_u32(u32::from_le_bytes(v4().ip.octets())),
+        tcp_port: v4().port,
+        ..HelloFacts::of(UserHash::from_bytes([0x41; UserHash::BYTE_LEN]))
+    };
+    let _ = state.on_worker_event(t0(), at, PeerWorkerEvent::Connected);
+    state.on_worker_event(t0(), at, PeerWorkerEvent::Identity(hello.identity()))
+}
+
+/// Run `1793356626`'s shape: two channels sighted one client's two families
+/// apart, and both were dialed. The hello of the first says the second is the
+/// same client, whose dial ends as the same source (ADR-0087).
+#[test]
+fn a_hello_naming_the_other_record_folds_the_two_into_one_source() {
+    let mut state = two_records_dialed(None);
+    assert_eq!(state.known_sources(), 2);
+
+    let decisions = hello_naming_v4(&mut state);
+
+    assert_eq!(state.known_sources(), 1);
+    assert!(decisions.iter().any(|decision| matches!(
+        decision,
+        Decision::EndWorker { peer, .. } if *peer == PeerEndpoint::V4(v4())
+    )));
+}
+
+/// A hello proves its own address, not who holds the one it names: a record
+/// that named another User Hash stays apart.
+#[test]
+fn a_record_naming_another_hash_is_not_folded_by_a_hello_naming_its_address() {
+    let mut state = two_records_dialed(Some(UserHash::from_bytes([0x42; UserHash::BYTE_LEN])));
+
+    let _ = hello_naming_v4(&mut state);
+
+    assert_eq!(state.known_sources(), 2);
+}
+
+/// A dial that reached our own listener reads our own User Hash: the source
+/// is spent under every name, so its other half is not tried either, whatever
+/// the gate knew when it was first pooled (ADR-0090 invariant 6).
+#[test]
+fn a_hello_naming_our_own_hash_spends_its_source_whole() {
+    let source =
+        SourceSighting::plain(PeerSource::HighId(v4()), Informant::Own).with_ipv6_half(Some(v6()));
+    let mut state = state_from(
+        file_hash_only_content(ONE_PART),
+        SourcingPosture {
+            dial: known_ipv6(),
+            ..QUIET_POSTURE
+        },
+        1,
+        no_facts(),
+        vec![(Channel::Server, vec![source])],
+        Vec::new(),
+    );
+    let dialed = spawned(&state.start(t0()));
+    assert_eq!(dialed.len(), 1);
+
+    let decisions = state.on_own_hello(t0(), dialed[0]);
+
+    assert_eq!(spawned(&decisions), []);
+    assert!(decisions.iter().any(|decision| matches!(
+        decision,
+        Decision::Emit(DownloadEvent::PeerRetired {
+            reason: PeerRetirementReason::OurOwnNode,
+            ..
+        })
+    )));
+    assert!(state.sources.is_spent(PeerEndpoint::V4(v4())));
+    assert!(state.sources.is_spent(PeerEndpoint::V6(v6())));
+    assert_eq!(state.known_sources(), 0);
 }

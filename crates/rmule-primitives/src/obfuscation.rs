@@ -10,6 +10,8 @@
 //! pinned `[pending]` in `docs/reference/notes/obfuscation.md` until a
 //! captured decrypt vector confirms them.
 
+use std::fmt;
+
 use crypto_bigint::modular::runtime_mod::{DynResidue, DynResidueParams};
 use crypto_bigint::{Encoding, U768};
 use md5::{Digest, Md5};
@@ -116,6 +118,115 @@ pub struct ObfuscationKeys {
     pub send: Rc4,
     /// Decrypts bytes we receive.
     pub recv: Rc4,
+}
+
+/// The sync word a handshake's every encrypted block opens with.
+const HANDSHAKE_SYNC_LEN: usize = 4;
+
+/// How far the decrypted handshake has come.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HandshakeScan {
+    /// More bytes are needed.
+    NeedMore,
+    /// The sync word is wrong, so the keys are: the handshake failed.
+    BadSync,
+    /// The block with its padding is this many decrypted bytes long.
+    Complete(usize),
+}
+
+/// A TCP obfuscation leg's keyed pair of streams: only a finished handshake
+/// hands one over, so a link believed encrypted holds keys by type and no
+/// call on it can pass bytes through in the clear.
+pub struct ObfuscationStream {
+    keys: Box<ObfuscationKeys>,
+}
+
+impl fmt::Debug for ObfuscationStream {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ObfuscationStream").finish_non_exhaustive()
+    }
+}
+
+impl ObfuscationStream {
+    /// Encrypt bytes we send, the send stream running on past the handshake.
+    pub fn transform_send(&mut self, buf: &mut [u8]) {
+        self.keys.send.apply(buf);
+    }
+
+    /// Decrypt bytes we receive, the recv stream running on past the handshake.
+    pub fn transform_recv(&mut self, buf: &mut [u8]) {
+        self.keys.recv.apply(buf);
+    }
+}
+
+/// A keyed leg still in its handshake, with the bytes decrypted so far: what
+/// peer and server links share below their own message orders.
+pub struct ObfuscationHandshake {
+    stream: ObfuscationStream,
+    decrypted: Vec<u8>,
+}
+
+impl ObfuscationHandshake {
+    /// A handshake holding its keys.
+    #[must_use]
+    pub fn keyed(keys: ObfuscationKeys) -> Self {
+        Self {
+            stream: ObfuscationStream {
+                keys: Box::new(keys),
+            },
+            decrypted: Vec::new(),
+        }
+    }
+
+    /// Encrypt a handshake block we send, in place: the send stream runs on
+    /// from it into the app bytes.
+    pub fn transform_send(&mut self, buf: &mut [u8]) {
+        self.stream.transform_send(buf);
+    }
+
+    /// Decrypt `chunk` in place and hold it as handshake bytes.
+    pub fn absorb(&mut self, chunk: &mut [u8]) {
+        self.stream.transform_recv(chunk);
+        self.decrypted.extend_from_slice(chunk);
+    }
+
+    /// Forget the handshake bytes held.
+    pub fn clear(&mut self) {
+        self.decrypted.clear();
+    }
+
+    /// Check the sync word and, once the padding length byte (the fixed
+    /// header's last) is readable, size the block.
+    #[must_use]
+    pub fn scan(&self, header_len: usize) -> HandshakeScan {
+        let held = &self.decrypted;
+        if held.len() >= HANDSHAKE_SYNC_LEN
+            && held[..HANDSHAKE_SYNC_LEN] != MAGICVALUE_SYNC.to_le_bytes()
+        {
+            return HandshakeScan::BadSync;
+        }
+        if held.len() < header_len {
+            return HandshakeScan::NeedMore;
+        }
+        let total = header_len + usize::from(held[header_len - 1]);
+        if held.len() < total {
+            HandshakeScan::NeedMore
+        } else {
+            HandshakeScan::Complete(total)
+        }
+    }
+
+    /// The application bytes that trailed a handshake of `total` bytes.
+    #[must_use]
+    pub fn leftover(&self, total: usize) -> Vec<u8> {
+        self.decrypted[total..].to_vec()
+    }
+
+    /// The handshake is done: the streams, running on from its last byte.
+    #[must_use]
+    pub fn into_stream(self) -> ObfuscationStream {
+        self.stream
+    }
 }
 
 /// Derive the peer (client-to-client) obfuscation key pair from the target's

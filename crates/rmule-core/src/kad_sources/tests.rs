@@ -1,20 +1,25 @@
 //! The Kad Discovery Channel and the Kad Publisher against a fake Kad
 //! channel and the durable registry: routed sources, one publish per
-//! offered file, withdrawal and re-publication, and a failed registry read.
+//! offered file — a Partial Share included — withdrawal and re-publication,
+//! and a failed registry read.
 
+use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 
-use rmule_primitives::{ClientId, FileHash, PeerSource, SourceLookupTarget, SourceSighting};
+use rmule_primitives::{
+    ClientId, FileHash, Informant, PeerSource, SourceLookupTarget, SourceSighting,
+};
 use tokio::sync::mpsc;
 
 use super::{KadDiscoveryChannel, KadPublisher, KadSourceRegistry};
 use crate::adapters::KadSourceChannel;
 use crate::registry::{ShareSource, SharedFileEntry};
 use crate::registry_check::{WithheldReason, WithheldRows};
-use crate::source_discovery::SourceDiscovery;
+use crate::server_pace::SourceCount;
+use crate::source_discovery::{Discoverable, SourceDiscovery};
 use crate::store::registry::DurableSharedFileRegistry;
 
 /// A fake Kad channel: records every issued publish and (when configured)
@@ -83,18 +88,34 @@ fn engine<C: KadSourceChannel>(
     sweep: Duration,
     reask: Duration,
 ) -> SourceDiscovery<KadDiscoveryChannel<C>> {
-    SourceDiscovery::new(KadDiscoveryChannel::new(channel), downloads, sweep, reask)
+    SourceDiscovery::new(
+        KadDiscoveryChannel::new(channel),
+        downloads,
+        sweep,
+        crate::source_discovery::AskClock::shared(reask),
+        crate::server_pace::KAD_SOURCE_GATE,
+    )
 }
 
 #[tokio::test]
 async fn asks_kad_and_routes_found_sources_to_the_matching_download() {
     let file_hash = FileHash::from_bytes([0x21; FileHash::BYTE_LEN]);
     let source = PeerSource::new(ClientId::from_u32(u32::from_le_bytes([10, 0, 0, 9])), 4662);
-    let (channel, _probes) = fake_channel(Some((file_hash, vec![SourceSighting::plain(source)])));
+    let (channel, _probes) = fake_channel(Some((
+        file_hash,
+        vec![SourceSighting::plain(source, Informant::Own)],
+    )));
 
     let downloads: KadSourceRegistry = Arc::new(Mutex::new(HashMap::new()));
     let (sink_tx, mut sink_rx) = mpsc::channel(8);
-    downloads.lock().unwrap().insert(file_hash, (4096, sink_tx));
+    downloads.lock().insert(
+        file_hash,
+        Discoverable {
+            file_size: 4096,
+            sink: sink_tx,
+            sources: SourceCount::default(),
+        },
+    );
 
     let task = tokio::spawn(
         engine(
@@ -110,7 +131,7 @@ async fn asks_kad_and_routes_found_sources_to_the_matching_download() {
         .await
         .expect("a Kad source routed within 2s")
         .expect("sink stayed open");
-    assert_eq!(routed, vec![SourceSighting::plain(source)]);
+    assert_eq!(routed, vec![SourceSighting::plain(source, Informant::Own)]);
 
     task.abort();
 }
@@ -143,6 +164,7 @@ async fn publishes_each_shared_file_exactly_once() {
             channel,
             Arc::new(shared),
             WithheldRows::default(),
+            Default::default(),
             share_changed_rx,
         )
         .run(),
@@ -195,6 +217,7 @@ async fn a_withheld_file_is_withdrawn_and_published_again_once_offered() {
             channel,
             Arc::new(shared),
             withheld.clone(),
+            Default::default(),
             share_changed_rx,
         )
         .run(),
@@ -223,8 +246,62 @@ async fn a_withheld_file_is_withdrawn_and_published_again_once_offered() {
     task.abort();
 }
 
-/// The registry behind a switch: while `failing`, `list` fails as a broken
-/// store read would; every `list` call is reported on `listed`.
+#[tokio::test]
+async fn a_partial_share_is_published_once_and_withdrawn_when_its_download_ends() {
+    use crate::served_downloads::PartialEnd;
+    use crate::served_downloads::leased::{Leased, SIZE, leased};
+    use rmule_primitives::ED2K_PART_SIZE;
+
+    let file_hash = FileHash::from_bytes([0x46; FileHash::BYTE_LEN]);
+    let Leased {
+        store,
+        record,
+        cell: served,
+        lease,
+        set,
+    } = leased(file_hash, "/downloads/partial.bin".into());
+    lease.record_range(
+        &set,
+        &[crate::VerifiedPartRecord {
+            part_index: 0,
+            offset: 0,
+            len: ED2K_PART_SIZE,
+            part_hash: set[0],
+        }],
+    );
+
+    let (channel, mut probes) = fake_channel(None);
+    let (share_changed_tx, share_changed_rx) = mpsc::channel(8);
+    let task = tokio::spawn(
+        KadPublisher::new(
+            channel,
+            Arc::new(DurableSharedFileRegistry::new(store)),
+            WithheldRows::default(),
+            served.clone(),
+            share_changed_rx,
+        )
+        .run(),
+    );
+    let wait = Duration::from_secs(2);
+    let first = tokio::time::timeout(wait, probes.publishes.recv()).await;
+    let first = first.unwrap().unwrap();
+    assert_eq!((first.file_hash(), first.file_size()), (file_hash, SIZE));
+    for _ in 0..3 {
+        share_changed_tx.send(()).await.unwrap();
+    }
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert!(probes.publishes.try_recv().is_err(), "published once");
+
+    served.take_back(file_hash, crate::download::RunNumber::new(1));
+    assert!(served.end(record.id(), PartialEnd::Ended));
+    share_changed_tx.send(()).await.unwrap();
+    let withdrawn = tokio::time::timeout(wait, probes.withdraws.recv()).await;
+    assert_eq!(withdrawn.unwrap().unwrap().file_hash(), file_hash);
+    task.abort();
+}
+
+/// The registry behind a switch: while `failing`, `rows` fails as a broken
+/// store read would; every `rows` call is reported on `listed`.
 struct FlakyRegistry {
     inner: DurableSharedFileRegistry,
     failing: std::sync::atomic::AtomicBool,
@@ -245,10 +322,7 @@ impl crate::registry::SharedFileRegistry for FlakyRegistry {
     ) -> Result<bool, crate::error::CoreError> {
         self.inner.gone(file_hash, path)
     }
-    fn get(&self, file_hash: FileHash) -> Result<Option<SharedFileEntry>, crate::error::CoreError> {
-        self.inner.get(file_hash)
-    }
-    fn list(&self) -> Result<Vec<SharedFileEntry>, crate::error::CoreError> {
+    fn rows(&self) -> Result<Vec<crate::registry::SharedRow>, crate::error::CoreError> {
         let failing = self.failing.load(std::sync::atomic::Ordering::SeqCst);
         let _ = self.listed.send(!failing);
         if failing {
@@ -256,6 +330,12 @@ impl crate::registry::SharedFileRegistry for FlakyRegistry {
                 "read failed".to_owned(),
             ));
         }
+        self.inner.rows()
+    }
+    fn get(&self, file_hash: FileHash) -> Result<Option<SharedFileEntry>, crate::error::CoreError> {
+        self.inner.get(file_hash)
+    }
+    fn list(&self) -> Result<Vec<SharedFileEntry>, crate::error::CoreError> {
         self.inner.list()
     }
     fn hash_set(
@@ -299,6 +379,7 @@ async fn a_failed_registry_read_withdraws_nothing_and_the_sweep_is_retried() {
             channel,
             Arc::clone(&registry),
             WithheldRows::default(),
+            Default::default(),
             share_changed_rx,
         )
         .run(),

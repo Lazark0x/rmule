@@ -37,12 +37,7 @@ impl KadNode {
                 return;
             }
         };
-        let reason = classify_publish(
-            self.config.id,
-            self.reachability.udp_firewalled,
-            from.ip(),
-            key,
-        );
+        let reason = classify_publish(self.config.id, self.own_udp_firewalled(), from.ip(), key);
         self.emit_diagnostic(KadNodeDiagnostic::NotesPublishRefused { from, reason });
     }
 }

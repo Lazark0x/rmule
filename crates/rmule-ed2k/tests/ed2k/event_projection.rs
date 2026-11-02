@@ -8,8 +8,8 @@ use rmule_ed2k::{
     Ed2kEvent, FoundSources, PeerCallback, PeerCallbackCrypt, ServerMessage, ServerPacket,
 };
 use rmule_primitives::{
-    ClientId, Ed2kText, FileHash, Ipv4Endpoint, PeerEndpoint, PeerSource, SourceCryptOptions,
-    SourceSighting, UserHash,
+    ClientId, Ed2kText, FileHash, Ipv4Endpoint, PeerEndpoint, PeerSource, SourceClaim,
+    SourceCryptOptions, UserHash,
 };
 
 #[test]
@@ -57,7 +57,7 @@ fn found_sources_packet_projects_to_hash_keyed_event() {
         } => {
             assert_eq!(h, file_hash);
             // A plain `0x42` source projects as plaintext-only provenance.
-            assert_eq!(sources, vec![SourceSighting::plain(source)]);
+            assert_eq!(sources, vec![SourceClaim::plain(source)]);
         }
         other => panic!("expected SourcesFound, got {other:?}"),
     }

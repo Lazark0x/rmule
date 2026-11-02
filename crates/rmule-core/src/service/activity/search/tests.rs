@@ -35,8 +35,8 @@ enum Road {
 /// The ledger's surroundings: the actor's event and finish channels.
 struct Bench {
     searches: Searches,
-    evt_tx: mpsc::Sender<CoreEvent>,
-    evt_rx: mpsc::Receiver<CoreEvent>,
+    evt_tx: crate::service::Outbox,
+    evt_rx: crate::service::EventStream,
     finished_tx: mpsc::Sender<FinishedActivity>,
     finished_rx: mpsc::Receiver<FinishedActivity>,
 }
@@ -46,7 +46,7 @@ type Gone = oneshot::Receiver<()>;
 
 impl Bench {
     fn new() -> Self {
-        let (evt_tx, evt_rx) = mpsc::channel(16);
+        let (evt_tx, evt_rx) = crate::service::outbox(Default::default());
         let (finished_tx, finished_rx) = mpsc::channel(16);
         Self {
             searches: Searches::default(),

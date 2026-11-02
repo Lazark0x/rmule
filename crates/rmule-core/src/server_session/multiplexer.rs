@@ -2,7 +2,8 @@
 //! source lookups, announce, search, Low-ID callback relay, disconnect — down
 //! the one logged-in server link, routes the server's answers back (lookups
 //! demuxed by file hash, a search answer by its place on the link, welcome-burst
-//! facts and IDCHANGE republishes into their sinks), and on any link close
+//! facts and IDCHANGE republishes into their sinks, a relayed peer callback to
+//! its dial-back), and on any link close
 //! fails every parked request so no activity hangs on a session that will
 //! never answer. The link is a trait so the loop is tested sans-I/O over a
 //! fake; the cheap-`Clone` handle is what the slot stores and adapters share.
@@ -12,22 +13,24 @@ use std::future::Future;
 use std::time::Duration;
 
 use rmule_ed2k::{
-    CommandRejectReason, Ed2kCommand, Ed2kCommandKind, Ed2kEvent, OfferedFile,
+    CommandRejectReason, Ed2kCommand, Ed2kCommandKind, Ed2kEvent, OfferPace, OfferedFile,
     SearchResultSkipReason, ServerCapability, ServerGrants,
 };
 use rmule_net::ed2k::Connection as Ed2kConnection;
 use rmule_primitives::{
-    ClientId, FileHash, SearchQuery, ServerEndpoint, SourceLookupTarget, SourceSighting,
+    ClientId, FileHash, Informant, SearchQuery, ServerEndpoint, SourceLookupTarget, SourceSighting,
 };
 use tokio::sync::{mpsc, oneshot, watch};
 
+use super::offers::OfferQueue;
 use crate::adapters::SourceLookupOutcome;
+use crate::firewalled::server_callback::ServerCallbackConsume;
 use crate::own_identity::SharedOwnIdentity;
-use crate::reachability::SharedIpv6Probe;
+use crate::reachability::{OwnListenEndpoint, SharedIpv6Probe};
 use crate::search::LiveSearches;
 use crate::server_list::ServerFacts;
 use crate::service::SearchId;
-use crate::{CoreError, DownloadFailure};
+use crate::{CoreError, DownloadFailure, GoneService};
 
 mod answer_order;
 #[cfg(test)]
@@ -52,6 +55,7 @@ enum ServerRequest {
         files: Vec<OfferedFile>,
         reply: oneshot::Sender<Result<(), CoreError>>,
     },
+    HaltOffers,
     Search {
         search_id: SearchId,
         ask: Ask,
@@ -134,6 +138,14 @@ impl SearchStream {
 pub(crate) trait ServerLink: Send + 'static {
     fn send(&self, command: Ed2kCommand) -> impl Future<Output = Result<(), ()>> + Send;
     fn next_event(&mut self) -> impl Future<Output = Option<Ed2kEvent>> + Send;
+    /// Close the link, its socket gone when this returns: the session's end
+    /// is the server's to hear before the session reports itself down.
+    fn close(self) -> impl Future<Output = ()> + Send
+    where
+        Self: Sized,
+    {
+        async {}
+    }
 }
 
 impl ServerLink for Ed2kConnection {
@@ -142,6 +154,11 @@ impl ServerLink for Ed2kConnection {
     }
     async fn next_event(&mut self) -> Option<Ed2kEvent> {
         Ed2kConnection::next_event(self).await
+    }
+    async fn close(self) {
+        // A driver that died already reports so here; the link is gone either
+        // way, and that is all the session's end asks.
+        let _ = self.shutdown().await;
     }
 }
 
@@ -177,9 +194,8 @@ impl SessionLink {
     /// reporting whether the request was queued. `try_send`, never `send`:
     /// the caller is the NAT-T front's loop, which may not wait on a consumer
     /// it does not drain — a full session inbox costs this introduction. The
-    /// answer is an event on the session, or — from a server that does not
-    /// speak the punch — nothing at all, which the ledger's timeout turns
-    /// into a fallback.
+    /// answer is an event on the session, or — a frame lost on the way —
+    /// nothing at all, which the ledger's timeout turns into a fallback.
     pub(crate) fn request_holepunch(&self, target: ClientId, our_udp_port: u16) -> bool {
         self.requests.upgrade().is_some_and(|requests| {
             requests
@@ -298,10 +314,13 @@ impl ServerSessionHandle {
                 reply: reply_tx,
             })
             .await
-            .map_err(|_| CoreError::Repository("server session closed".into()))?;
-        reply_rx
-            .await
-            .map_err(|_| CoreError::Repository("server session closed".into()))?
+            .map_err(|_| GoneService::ServerSession)?;
+        reply_rx.await.map_err(|_| GoneService::ServerSession)?
+    }
+
+    /// Send no more of the set (ADR-0099): what was told stays told.
+    pub(crate) async fn halt_offers(&self) {
+        let _ = self.request_tx.send(ServerRequest::HaltOffers).await;
     }
 
     /// Put `search_id`'s request on the link in turn, the search spacing after
@@ -357,13 +376,14 @@ impl ServerSessionHandle {
     }
 
     /// Ask the connected server to relay a Low-ID callback to `low_id`
-    /// (ADR-0039). Fire-and-forget — no ack, no reply; a closed session drops
-    /// the request silently (the download's callback timeout releases the slot).
-    pub(crate) async fn request_callback(&self, low_id: ClientId) {
-        let _ = self
-            .request_tx
+    /// (ADR-0039), saying whether the session took the request. No ack, no
+    /// reply beyond that: a session that has ended takes nothing, and the
+    /// caller ends the callback's road at once.
+    pub(crate) async fn request_callback(&self, low_id: ClientId) -> bool {
+        self.request_tx
             .send(ServerRequest::CallbackRequest { low_id })
-            .await;
+            .await
+            .is_ok()
     }
 
     /// End the session and wait until it has reported itself gone.
@@ -425,6 +445,45 @@ pub(crate) struct SessionSinks {
     /// Self Reach, where an offer reads the Presented Client ID it carries at
     /// the moment it is sent. `None` presents the session's own id.
     pub(crate) reach: Option<crate::reachability::SharedSelfReach>,
+    /// Where a server-relayed callback is answered (ADR-0061): a dial-back
+    /// into the serve pipeline while this session is Low-ID.
+    pub(crate) dial_backs: super::ServerCallbackDialBacks,
+    /// The TCP port the login named, as configured: the self-connect guard
+    /// reads the port we present from it at each callback.
+    pub(crate) tcp_port: u16,
+    /// How the session keeps the server's copy of our IPv6 true. `None` on a
+    /// session that arrived over IPv6: the server keeps the address it
+    /// observed and ignores an update.
+    pub(crate) ipv6_told: Option<Ipv6Told>,
+}
+
+/// The IPv6 a server last heard from us, and what wakes the session when the
+/// Advertised IPv6 may have moved (ADR-0087).
+pub(crate) struct Ipv6Told {
+    /// What the login's `CT_MOD_IP_V6` named, then what the last update did.
+    pub(crate) told: Option<std::net::Ipv6Addr>,
+    /// The Advertised IPv6, followed.
+    pub(crate) follow: rmule_net::peer::Ipv6Follow,
+}
+
+impl Ipv6Told {
+    /// The address the server must hear next, once it differs from what the
+    /// server last heard. Pends forever when `this` is `None`.
+    async fn moved(this: &mut Option<Self>) -> Option<std::net::Ipv6Addr> {
+        let Some(told) = this else {
+            return std::future::pending().await;
+        };
+        loop {
+            if told.follow.changed.changed().await.is_err() {
+                return std::future::pending().await;
+            }
+            let now = (told.follow.read)();
+            if now != told.told {
+                told.told = now;
+                return now;
+            }
+        }
+    }
 }
 
 /// Namespace for the session spawner. The session itself is the spawned task.
@@ -449,7 +508,9 @@ impl ServerSession {
             requests: request_tx.downgrade(),
             id,
         };
-        tokio::spawn(run_session(link, request_rx, sinks, grants_tx, own_link));
+        tokio::spawn(run_session(
+            link, client_id, request_rx, sinks, grants_tx, own_link,
+        ));
         ServerSessionHandle {
             request_tx,
             client_id,
@@ -466,6 +527,7 @@ impl ServerSession {
 /// answer). Ends when the link closes or all handles are dropped.
 async fn run_session<L: ServerLink>(
     mut link: L,
+    mut session_id: ClientId,
     mut request_rx: mpsc::Receiver<ServerRequest>,
     sinks: SessionSinks,
     grants_tx: watch::Sender<ServerGrants>,
@@ -481,6 +543,9 @@ async fn run_session<L: ServerLink>(
         punch,
         grants,
         reach,
+        dial_backs,
+        tcp_port,
+        mut ipv6_told,
     } = sinks;
     // Every waiter on one file's ask, keyed by the hash `OP_FOUNDSOURCES`
     // carries back (ADR-0107): lookups for different files ride the link side
@@ -490,13 +555,33 @@ async fn run_session<L: ServerLink>(
     let mut disconnect_ack: Option<oneshot::Sender<()>> = None;
     // The introduction clock (ADR-0091). It lives on the session
     // for the reason the `0x9F` keepalive's cadence does: the session is an
-    // introduction's whole lifetime. A server that does not speak the punch
-    // says nothing at all, so this tick is the only thing that can ever turn
-    // that silence into a fall-through to the target's buddy.
+    // introduction's whole lifetime. A frame lost on the way says nothing at
+    // all, so this tick is the only thing that can ever turn that silence
+    // into a fall-through to the target's buddy.
     let mut introductions = tokio::time::interval(crate::natt::server_punch::INTRODUCTION_POLL);
     introductions.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    let mut offers = OfferQueue::new(tokio::time::Instant::now());
+    // Once, right after login, where aMule's goes (`ServerConnect.cpp:289`):
+    // a server names itself and states its limits in the ident that follows
+    // the answer, on a login that drew none (ADR-0080).
+    let mut opened = false;
     loop {
+        if !std::mem::replace(&mut opened, true)
+            && link.send(Ed2kCommand::RequestServerList).await.is_err()
+        {
+            break;
+        }
         tokio::select! {
+            // `changed` is cancel-safe and the address is read after it, so a
+            // lost race costs nothing. A server that took no update keeps what
+            // the login named (ADR-0087).
+            address = Ipv6Told::moved(&mut ipv6_told) => {
+                if grants_tx.borrow().ipv6_update
+                    && link.send(Ed2kCommand::UpdateIpv6 { address }).await.is_err()
+                {
+                    break;
+                }
+            }
             // An interval never closes, so this arm cannot end the session;
             // `tick` is cancel-safe, so racing it drops nothing.
             () = answer_wait_expiry(searches.deadline()) => {
@@ -508,6 +593,24 @@ async fn run_session<L: ServerLink>(
                     && link.send(command).await.is_err()
                 {
                     break;
+                }
+            }
+            // The batch whose turn has come (ADR-0099). An offer reads the
+            // Presented Client ID as Self Reach answers it now.
+            () = answer_wait_expiry(offers.next_send()) => {
+                let now = tokio::time::Instant::now();
+                if let Some(files) = offers.release(now, || facts.file_limits(&server)) {
+                    let presented_id = reach
+                        .as_ref()
+                        .map(crate::reachability::SharedSelfReach::presented_client_id);
+                    if link
+                        .send(Ed2kCommand::OfferFiles { files, presented_id })
+                        .await
+                        .is_err()
+                    {
+                        break;
+                    }
+                    facts.shares_told(&server, offers.level());
                 }
             }
             _ = introductions.tick() => {
@@ -538,19 +641,11 @@ async fn run_session<L: ServerLink>(
                         }
                     }
                     ServerRequest::Announce { files, reply } => {
-                        let result = link
-                            .send(Ed2kCommand::OfferFiles {
-                                files,
-                                presented_id: reach
-                                    .as_ref()
-                                    .map(crate::reachability::SharedSelfReach::presented_client_id),
-                            })
-                            .await
-                            .map_err(|()| CoreError::Repository("announce send failed".into()));
-                        let dead = result.is_err();
-                        let _ = reply.send(result);
-                        if dead { break; }
+                        offers.hand(files, grants_tx.borrow().large_files);
+                        facts.shares_told(&server, offers.level());
+                        let _ = reply.send(Ok(()));
                     }
+                    ServerRequest::HaltOffers => offers.halt(),
                     ServerRequest::Search { search_id, ask, answer_wait, live, reply } => {
                         let (stream, now) = searches.ask(
                             search_id,
@@ -624,6 +719,18 @@ async fn run_session<L: ServerLink>(
                                 "source list carried a malformed Sentinel Source tail"
                             );
                         }
+                        // The answer is this server's word, judged against the
+                        // address the session reached (ADR-0085). A session
+                        // over a stream its caller brought reached no address
+                        // of its own, and its answer is rmule's word.
+                        let informant = server_ip.map_or(
+                            rmule_primitives::Informant::Own,
+                            rmule_primitives::Informant::Party,
+                        );
+                        let sources: Vec<_> = sources
+                            .into_iter()
+                            .map(|claim| claim.stated_by(informant))
+                            .collect();
                         for reply in pending.remove(&file_hash).into_iter().flatten() {
                             let _ = reply.send(Ok(sources.clone()));
                         }
@@ -650,18 +757,50 @@ async fn run_session<L: ServerLink>(
                         // Nothing reached the wire, so it holds no place.
                         searches.related_refused().await;
                     }
-                    // A login rejection mid-session, the driver dropping its
-                    // send half (None), or the server rejecting a command we
-                    // sent (`CommandRejected` carries no file hash to target one
-                    // waiter — e.g. RequestSources when not logged in, or a
-                    // large-file request an old server can't serve) ends the
-                    // session, failing all parked lookups via the drain below
-                    // rather than stranding them: a rejected command is a
-                    // session-level fault, not one lookup's.
+                    // A lookup the server cannot take is skipped at the session's
+                    // gate, the one ask and nothing else (aMule's
+                    // `DownloadQueue.cpp:1083-1084`). Nothing reached the wire,
+                    // so no answer comes: the ask ends empty here, the file's
+                    // next lookup comes round on the download's own budget.
+                    Some(Ed2kEvent::CommandRejected {
+                        command: Ed2kCommandKind::RequestSources { file_hash },
+                        reason,
+                    }) => {
+                        tracing::debug!(
+                            file_hash = %file_hash.to_hex_upper(),
+                            ?reason,
+                            "source lookup skipped at the session's gate"
+                        );
+                        for reply in pending.remove(&file_hash).into_iter().flatten() {
+                            let _ = reply.send(Ok(Vec::new()));
+                        }
+                    }
+                    // Every other refusal is as local: nothing left, the link
+                    // is as healthy as it was, and what the command was for
+                    // has its own clock (a search its answer wait, an
+                    // introduction its ledger timeout). A refusal never ends a
+                    // session.
+                    Some(Ed2kEvent::CommandRejected { command, reason }) => {
+                        tracing::debug!(?command, ?reason, "the session refused a command");
+                    }
+                    // A link's end or the driver dropping its send half (None)
+                    // ends the session, failing all parked lookups via the
+                    // drain below rather than stranding them. A rejection comes
+                    // only before the login; after it the server's refusal of
+                    // one command is `ServerRejectedCommand`.
                     Some(Ed2kEvent::Disconnected { .. })
                     | Some(Ed2kEvent::LoginRejected)
-                    | Some(Ed2kEvent::CommandRejected { .. })
                     | None => break,
+                    // The server discarded our last command (`OP_REJECT`), or
+                    // sent a source answer that does not decode: the link
+                    // stays (stock 2.3.3 `ServerSocket.cpp:599-603`, `:617-619`),
+                    // and a lookup it leaves unanswered runs out its own bound.
+                    Some(Ed2kEvent::ServerRejectedCommand) => {
+                        tracing::info!("the server rejected our last command");
+                    }
+                    Some(Ed2kEvent::FoundSourcesSkipped { opcode, reason }) => {
+                        tracing::info!(opcode, reason, "a source answer did not decode");
+                    }
                     // The server could not route a Low-ID callback we requested
                     // (`OP_CALLBACK_FAIL`, ADR-0039). It carries no id, so it
                     // cannot be attributed to a specific pending callback; the
@@ -707,6 +846,7 @@ async fn run_session<L: ServerLink>(
                             server_ip,
                         );
                         own.reassign_client_id(client_id);
+                        session_id = client_id;
                         let assignment = crate::service::IdAssignment { client_id, address, grants };
                         let step = crate::service::LoginStep::Reassigned { assignment };
                         facts.login_step(&server, step).await;
@@ -725,6 +865,10 @@ async fn run_session<L: ServerLink>(
                     // read a mirror still learns the name of the server it
                     // connected to.
                     Some(Ed2kEvent::ServerIdentified { identity }) => {
+                        if offers.unsettled() {
+                            let known = facts.file_limits(&server);
+                            offers.settle(OfferPace::from_ident(&identity.extra_tags, known));
+                        }
                         // ADR-0087 §4.3, before the name and description are
                         // moved into the list: only a *stated* verdict writes
                         // the cell. A server sends a second ident in reply to
@@ -778,20 +922,23 @@ async fn run_session<L: ServerLink>(
                             tracing::warn!(%error, "server ident not folded into the list");
                         }
                     }
-                    // A peer asking us, through the server, to dial it back
-                    // (`0x35`, or `0x26` for an IPv6 requester — ADR-0087
-                    // §4.5). Both families project onto this one event and
-                    // both are currently **unadopted**, which is a gap worth
-                    // naming rather than a silent drop: the opcode names a
-                    // peer but no file hash, so there is no download to attach
-                    // the dial to without a policy for offering one peer to
-                    // every active download. rmule is High-ID in the ordinary
-                    // case and rarely receives either.
-                    Some(Ed2kEvent::PeerCallbackRequested { peer, .. }) => {
-                        tracing::debug!(
-                            %peer,
-                            "server relayed a peer callback; rmule adopts none yet"
+                    // A peer on the server asking to reach us (`0x35`, or
+                    // `0x26` for an IPv6 requester — ADR-0087 §4.5): it wants
+                    // to download from us, so a Low-ID session dials it back
+                    // into the serve pipeline (ADR-0061). The requester is the
+                    // server's word, judged against the address the session
+                    // reached (ADR-0085).
+                    Some(Ed2kEvent::PeerCallbackRequested { peer, crypt }) => {
+                        let verdict = dial_backs.answer(
+                            &ServerCallbackConsume { requester: peer, crypt },
+                            session_id,
+                            server_ip.map_or(Informant::Own, Informant::Party),
+                            OwnListenEndpoint::current(
+                                &own,
+                                super::presented_tcp_port(tcp_port, &own),
+                            ),
                         );
+                        tracing::debug!(%peer, ?verdict, "server relayed a peer callback");
                     }
                     // Informational server events are not part of any request.
                     Some(_) => {}
@@ -825,6 +972,7 @@ async fn run_session<L: ServerLink>(
     // with nobody, which is exactly what `None` here says.
     own.set_connected_session(None);
     own.addresses().end_server_session();
+    link.close().await;
     if let Some(ack) = disconnect_ack {
         let _ = ack.send(());
     }

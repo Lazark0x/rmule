@@ -1,10 +1,230 @@
 //! Unit tests for the action reducer: how a bus action becomes a state change, a command or a flash.
 
 use super::*;
+use crate::config::AppFlag;
 use crate::fixture::key_action;
 use crate::theme::Theme;
 use crate::view::ViewId;
-use ratatui::crossterm::event::KeyCode;
+use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use rmule_core::Setting;
+
+fn release(code: KeyCode) -> Action {
+    Action::Input(Event::Key(KeyEvent::new_with_kind(
+        code,
+        KeyModifiers::NONE,
+        KeyEventKind::Release,
+    )))
+}
+
+fn chord(code: KeyCode, modifiers: KeyModifiers) -> Action {
+    Action::Input(Event::Key(KeyEvent::new(code, modifiers)))
+}
+
+/// Windows reports a release for every key: one press types one letter, on
+/// the tabs that read their keys raw too.
+#[test]
+fn a_release_never_acts_on_any_surface() {
+    let now = Instant::now();
+    let mut app = App::new(Theme::default_dark());
+    app.reduce(key_action(KeyCode::Char('2')), now);
+    app.reduce(key_action(KeyCode::Char('b')), now);
+    app.reduce(release(KeyCode::Char('b')), now);
+    assert_eq!(app.views.searches.query_text(), "b");
+    app.reduce(key_action(KeyCode::Esc), now);
+    for view in ViewId::ALL {
+        app.chrome.active = view;
+        assert!(matches!(
+            app.reduce(release(KeyCode::Char('q')), now),
+            Flow::Continue
+        ));
+    }
+}
+
+/// The reflex every terminal user has: Ctrl-C leaves, from every tab and over
+/// any modal, and is never the tab's own `c`.
+#[test]
+fn ctrl_c_quits_from_every_surface_and_never_toggles_the_server() {
+    let now = Instant::now();
+    let ctrl_c = || chord(KeyCode::Char('c'), KeyModifiers::CONTROL);
+    let mut app = App::new(Theme::default_dark());
+    for view in ViewId::ALL {
+        app.chrome.active = view;
+        assert!(matches!(app.reduce(ctrl_c(), now), Flow::Quit), "{view:?}");
+    }
+    app.chrome.help_open = true;
+    assert!(matches!(app.reduce(ctrl_c(), now), Flow::Quit));
+    assert!(app.pending_commands.is_empty());
+}
+
+#[test]
+fn a_chord_reaches_no_view_and_altgr_is_text() {
+    let now = Instant::now();
+    let mut app = App::new(Theme::default_dark());
+    app.reduce(key_action(KeyCode::Char('2')), now);
+    app.reduce(chord(KeyCode::Char('w'), KeyModifiers::CONTROL), now);
+    app.reduce(chord(KeyCode::Char('b'), KeyModifiers::ALT), now);
+    assert_eq!(app.views.searches.query_text(), "");
+    let alt_gr = KeyModifiers::CONTROL | KeyModifiers::ALT;
+    app.reduce(chord(KeyCode::Char('@'), alt_gr), now);
+    assert_eq!(app.views.searches.query_text(), "@");
+}
+
+/// `q` is one letter on the wrong tab away: over a running download it asks,
+/// `y` leaves, anything that declines stays, and a second Ctrl-C is the answer.
+/// A chord the line editor binds reaches an open field from the reducer down;
+/// with no field open it is nothing, and an unbound one never reaches a view
+/// as its letter.
+#[test]
+fn an_open_field_claims_its_chords_at_the_gate() {
+    let now = Instant::now();
+    let mut app = App::new(Theme::default_dark());
+    app.chrome.active = ViewId::Searches;
+    app.reduce(key_action(KeyCode::Tab), now);
+    for c in "big buck".chars() {
+        app.reduce(key_action(KeyCode::Char(c)), now);
+    }
+    app.reduce(chord(KeyCode::Char('p'), KeyModifiers::CONTROL), now);
+    assert_eq!(app.views.searches.query_text(), "big buck");
+    app.reduce(chord(KeyCode::Char('w'), KeyModifiers::CONTROL), now);
+    assert_eq!(app.views.searches.query_text(), "big ");
+    app.reduce(key_action(KeyCode::Esc), now);
+    app.reduce(chord(KeyCode::Char('u'), KeyModifiers::CONTROL), now);
+    assert_eq!(app.views.searches.query_text(), "big ", "no field open");
+}
+
+/// Ctrl-D and Ctrl-U page a list outside a field, and never reach a view as
+/// the letter it binds: `u` brings a closed search back.
+#[test]
+fn ctrl_d_and_ctrl_u_page_and_reach_no_view_as_their_letter() {
+    let now = Instant::now();
+    let mut app = App::new(Theme::default_dark());
+    app.state = crate::fixture::three_downloads();
+    app.chrome.active = ViewId::Transfers;
+    let down = chord(KeyCode::Char('d'), KeyModifiers::CONTROL);
+    let at = |app: &mut App| app.views.transfers.selected_row();
+    app.reduce(down, now);
+    assert_eq!(at(&mut app), Some(1));
+    app.reduce(chord(KeyCode::Char('u'), KeyModifiers::CONTROL), now);
+    assert_eq!(at(&mut app), Some(0));
+}
+
+/// A node serving a queue, or with a download waiting for a source, is under
+/// way as much as one moving bytes: one `q` must not throw that away.
+#[test]
+fn a_quit_over_a_queue_or_a_waiting_download_asks_first() {
+    let now = Instant::now();
+    let peer = |state| crate::state::UploadPeer {
+        peer: crate::fixture::peer_endpoint(1),
+        state,
+        software: None,
+    };
+    let file = crate::fixture::file_hash(1);
+    for under_way in [
+        crate::state::UploadState::Uploading { file },
+        crate::state::UploadState::Queued { rank: 3, file },
+    ] {
+        let mut app = App::new(Theme::default_dark());
+        let row = peer(under_way);
+        app.state.upload_peers.insert(row.peer, row);
+        assert!(matches!(
+            app.reduce(key_action(KeyCode::Char('q')), now),
+            Flow::Continue
+        ));
+        assert!(app.chrome.quit_open);
+    }
+    let mut app = App::new(Theme::default_dark());
+    app.state = crate::fixture::three_downloads();
+    for row in app.state.downloads.values_mut() {
+        row.status = crate::state::DownloadStatus::Waiting;
+    }
+    assert!(matches!(
+        app.reduce(key_action(KeyCode::Char('q')), now),
+        Flow::Continue
+    ));
+    let mut app = App::new(Theme::default_dark());
+    app.state = crate::fixture::three_downloads();
+    for row in app.state.downloads.values_mut() {
+        row.status = crate::state::DownloadStatus::Paused;
+    }
+    assert!(
+        matches!(app.reduce(key_action(KeyCode::Char('q')), now), Flow::Quit),
+        "paused downloads are at rest"
+    );
+}
+
+#[test]
+fn a_quit_over_a_running_download_asks_first() {
+    let now = Instant::now();
+    let mut app = App::new(Theme::default_dark());
+    assert!(
+        matches!(app.reduce(key_action(KeyCode::Char('q')), now), Flow::Quit),
+        "nothing running, nothing to ask"
+    );
+    app.state = crate::fixture::three_downloads();
+    assert!(matches!(
+        app.reduce(key_action(KeyCode::Char('q')), now),
+        Flow::Continue
+    ));
+    assert!(app.chrome.quit_open);
+    app.reduce(key_action(KeyCode::Char('2')), now);
+    assert_eq!(app.chrome.active, ViewId::Networks, "the confirm is modal");
+    app.reduce(key_action(KeyCode::Esc), now);
+    assert!(!app.chrome.quit_open);
+    app.reduce(key_action(KeyCode::Char('q')), now);
+    assert!(matches!(
+        app.reduce(key_action(KeyCode::Char('y')), now),
+        Flow::Quit
+    ));
+    let ctrl_c = || chord(KeyCode::Char('c'), KeyModifiers::CONTROL);
+    let mut app = App::new(Theme::default_dark());
+    app.state = crate::fixture::three_downloads();
+    assert!(matches!(app.reduce(ctrl_c(), now), Flow::Continue));
+    assert!(matches!(app.reduce(ctrl_c(), now), Flow::Quit));
+}
+
+/// A first press of `2` then a typed word must search, not quit on its `q`.
+#[test]
+fn arriving_on_searches_with_no_results_focuses_the_query() {
+    let now = Instant::now();
+    let mut app = App::new(Theme::default_dark());
+    app.reduce(key_action(KeyCode::Char('2')), now);
+    for letter in "queen".chars() {
+        assert!(matches!(
+            app.reduce(key_action(KeyCode::Char(letter)), now),
+            Flow::Continue
+        ));
+    }
+    assert_eq!(app.views.searches.query_text(), "queen");
+}
+
+/// A paste is one thing: its letters run as no key, and its line break sends
+/// nothing, wherever it lands.
+#[test]
+fn a_paste_is_text_or_nothing_and_never_keys() {
+    let now = Instant::now();
+    let mut app = App::new(Theme::default_dark());
+    app.reduce(key_action(KeyCode::Char('2')), now);
+    app.reduce(Action::Input(Event::Paste("queen\nlive".into())), now);
+    assert_eq!(app.views.searches.query_text(), "queen live");
+    assert!(app.pending_commands.is_empty(), "no search went out");
+    app.chrome.active = ViewId::SharedFiles;
+    assert!(matches!(
+        app.reduce(Action::Input(Event::Paste("q2x".into())), now),
+        Flow::Continue
+    ));
+    assert_eq!(app.chrome.active, ViewId::SharedFiles);
+}
+
+/// `h` / `l` pass through the tab on the way to another.
+#[test]
+fn cycling_through_searches_leaves_the_query_alone() {
+    let now = Instant::now();
+    let mut app = App::new(Theme::default_dark());
+    app.reduce(key_action(KeyCode::Char('l')), now);
+    app.reduce(key_action(KeyCode::Char('l')), now);
+    assert_eq!(app.chrome.active, ViewId::Transfers);
+    assert_eq!(app.views.searches.query_text(), "");
+}
 
 #[test]
 fn input_routes_through_mapping_into_chrome_state() {
@@ -33,7 +253,8 @@ fn the_fifth_tab_reaches_a_view_that_claims_no_keys() {
     // A click inside the view is nobody's, so it is not swallowed either.
     assert!(matches!(
         app.views
-            .handle_click(ViewId::Statistics, 10, 5, &app.state),
+            .view_mut(ViewId::Statistics)
+            .handle_click(10, 5, &app.state),
         ViewOutcome::Ignored
     ));
 }
@@ -98,7 +319,7 @@ fn quit_flows_out_of_reduce() {
         app.reduce(key_action(KeyCode::Char('q')), Instant::now()),
         Flow::Quit
     ));
-    // …but not while help is open: there q dismisses.
+    // …but not while help is open: there it is typed into the filter.
     let mut app = App::new(Theme::default_dark());
     app.reduce(key_action(KeyCode::Char('?')), Instant::now());
     assert!(app.chrome.help_open);
@@ -106,7 +327,8 @@ fn quit_flows_out_of_reduce() {
         app.reduce(key_action(KeyCode::Char('q')), Instant::now()),
         Flow::Continue
     ));
-    assert!(!app.chrome.help_open);
+    assert!(app.chrome.help_open);
+    assert!(app.chrome.help_typed());
 }
 
 #[test]
@@ -148,6 +370,7 @@ fn a_restart_that_fails_again_says_so_on_the_status_bar() {
                 size: 30_000_000,
                 origin: DownloadMetadataOrigin::Link,
             },
+            file_path: crate::fixture::part_file(),
         })),
         now,
     );
@@ -211,8 +434,13 @@ fn copy_link_queues_the_osc52_write_and_flashes() {
     assert_eq!(app.pending_copy.as_deref(), Some("ed2k://|file|x|1|AA|/"));
     assert_eq!(
         app.chrome.flash_text(Instant::now()),
-        Some("link copied"),
-        "the flash is the user-visible receipt"
+        Some("link sent to the terminal's clipboard"),
+        "the flash claims the write, not the clipboard"
+    );
+    assert_eq!(
+        app.state.notable.as_ref().map(|note| note.as_str()),
+        Some("link: ed2k://|file|x|1|AA|/"),
+        "a terminal that ignored the write leaves the link readable"
     );
 }
 
@@ -228,6 +456,7 @@ fn wheel_scroll_reaches_the_focused_table_as_arrows() {
                     download_id: rmule_core::DownloadId::from_u64(n),
                     file_hash: rmule_primitives::FileHash::from_bytes([n as u8; 16]),
                     metadata: rmule_core::DownloadMetadata::unnamed(0),
+                    file_path: crate::fixture::part_file(),
                 },
             )),
             Instant::now(),
@@ -380,17 +609,17 @@ fn a_settings_edit_reaches_the_store_and_the_live_half_lands_at_once() {
     assert_eq!(app.state.preferences.theme, ThemeChoice::Light);
 
     let dir = rmule_testkit::absolute_path("tmp/rmule-dl");
-    app.reduce(Action::Preference(PrefEdit::DownloadDir(dir.clone())), now);
+    app.reduce(Action::Preference(PrefEdit::download_dir(dir.clone())), now);
     assert_eq!(
-        app.state
-            .session
-            .as_ref()
-            .and_then(|s| s.download_dir.clone()),
+        app.state.session.download_dir.clone(),
         Some(dir.clone()),
         "the next download reads the new directory, not the startup one"
     );
 
-    app.reduce(Action::Preference(PrefEdit::TcpPort(4711)), now);
+    app.reduce(
+        Action::Preference(PrefEdit::Core(Setting::TcpPort(4711))),
+        now,
+    );
     assert_eq!(
         app.chrome.flash_text(now),
         Some("saved: eD2k port → 4711 (takes effect on restart)")
@@ -399,7 +628,7 @@ fn a_settings_edit_reaches_the_store_and_the_live_half_lands_at_once() {
     // …and all three are on disk, not just in the UI.
     let reloaded = config.load(None).expect("reload");
     assert_eq!(reloaded.theme, ThemeChoice::Light);
-    assert_eq!(reloaded.download_dir, Some(dir));
+    assert_eq!(reloaded.core.download_dir, Some(dir));
 }
 
 /// Two tables keep two different sorts in the one stored preference, and
@@ -420,8 +649,8 @@ fn two_tables_keep_their_own_sorts_across_a_restart() {
         .with_config(config.clone(), config.load(None).expect("load"));
     with_rows(&mut app);
     let now = Instant::now();
-    // Transfers by size; its sources pane, focused, by software; the
-    // servers by address, reversed.
+    // Transfers by speed, the column after its opening one; its sources
+    // pane, focused, by software; the servers by address, reversed.
     for key in [
         KeyCode::Char('3'),
         KeyCode::Char('s'),
@@ -437,7 +666,7 @@ fn two_tables_keep_their_own_sorts_across_a_restart() {
     let reloaded = config.load(None).expect("reload");
     assert_eq!(
         reloaded.table_sorts.get("transfers"),
-        Some(("size", Direction::Descending))
+        Some(("speed", Direction::Descending))
     );
     assert_eq!(
         reloaded.table_sorts.get("servers"),
@@ -454,14 +683,14 @@ fn two_tables_keep_their_own_sorts_across_a_restart() {
     let header = |app: &mut App, view: ViewId| {
         let screen = crate::golden::render_to_lines(78, 21, |frame| {
             app.views
-                .draw(view, frame, frame.area(), &app.state, &app.theme, now);
+                .view_mut(view)
+                .draw(frame, frame.area(), &app.state, &app.theme, now);
         });
         screen.lines().nth(1).unwrap_or_default().to_string()
     };
-    assert!(header(&mut restarted, ViewId::Transfers).contains("Size ▼"));
+    assert!(header(&mut restarted, ViewId::Transfers).contains("Speed ▼"));
     let screen = crate::golden::render_to_lines(78, 21, |frame| {
-        restarted.views.draw(
-            ViewId::Transfers,
+        restarted.views.view_mut(ViewId::Transfers).draw(
             frame,
             frame.area(),
             &restarted.state,
@@ -474,26 +703,6 @@ fn two_tables_keep_their_own_sorts_across_a_restart() {
     assert!(servers.contains("Address ▼") && !servers.contains("Name ▲"));
 }
 
-/// Without a store there is nothing to write to, and the app says exactly
-/// that instead of pretending the edit took.
-#[test]
-fn a_settings_edit_on_a_ui_only_run_degrades_to_the_honest_flash() {
-    use crate::config::{PrefEdit, ThemeChoice};
-
-    let mut app = App::new(Theme::default_dark());
-    let now = Instant::now();
-    app.reduce(Action::Preference(PrefEdit::Theme(ThemeChoice::Light)), now);
-    assert_eq!(
-        app.chrome.flash_text(now),
-        Some("no config store (UI-only run)")
-    );
-    assert_eq!(
-        app.theme.bg,
-        Theme::default_dark().bg,
-        "nothing was applied"
-    );
-}
-
 /// A value Core Settings refuses is told by why it was refused, not as a
 /// store failure, and nothing is applied.
 #[test]
@@ -504,17 +713,17 @@ fn a_refused_value_says_why() {
     let preferences = config.load(None).expect("load");
     let mut app = App::new(Theme::default_dark()).with_config(config, preferences);
     let now = Instant::now();
-    let limit = app.state.preferences.dead_server_retries;
+    let limit = app.state.preferences.core.server_policy.dead_after;
 
     app.reduce(
-        Action::Preference(crate::config::PrefEdit::DeadServerRetries(0)),
+        Action::Preference(crate::config::PrefEdit::Core(Setting::DeadServerRetries(0))),
         now,
     );
     assert_eq!(
         app.chrome.flash_text(now),
         Some("not saved: the dead server limit must be at least 1")
     );
-    assert_eq!(app.state.preferences.dead_server_retries, limit);
+    assert_eq!(app.state.preferences.core.server_policy.dead_after, limit);
 }
 
 /// A download dir the share guards refuse is told by the guard's reason, and
@@ -542,7 +751,7 @@ fn a_download_dir_the_share_guards_refuse_says_why_and_is_not_applied() {
     let now = Instant::now();
 
     app.reduce(
-        Action::Preference(crate::config::PrefEdit::DownloadDir(
+        Action::Preference(crate::config::PrefEdit::download_dir(
             home.path().to_path_buf(),
         )),
         now,
@@ -553,10 +762,7 @@ fn a_download_dir_the_share_guards_refuse_says_why_and_is_not_applied() {
             "not saved: everything under the download dir is shared, and it is your home directory"
         )
     );
-    assert_eq!(
-        app.state.session.and_then(|session| session.download_dir),
-        Some(before)
-    );
+    assert_eq!(app.state.session.download_dir, Some(before));
 }
 
 /// A download directory the share guards refuse is refused as the form
@@ -580,10 +786,11 @@ fn a_refused_download_dir_is_said_before_the_share_warning() {
 
     app.reduce(Action::ConfirmDownloadDir(home.path().to_path_buf()), now);
     assert_eq!(
-        app.chrome.flash_text(now),
+        app.views.settings.refusal(),
         Some(
             "not saved: everything under the download dir is shared, and it is your home directory"
-        )
+        ),
+        "the refusal stays under the field"
     );
     assert_eq!(app.views.settings.warned_dir(), None, "no share warning");
 
@@ -593,6 +800,59 @@ fn a_refused_download_dir_is_said_before_the_share_warning() {
         now,
     );
     assert_eq!(app.views.settings.warned_dir(), Some(elsewhere.path()));
+}
+
+/// The bar may shorten a flash and drops it in seconds: the log keeps it whole.
+#[test]
+fn a_flash_stays_in_the_log_whole() {
+    let mut app = App::new(Theme::default_dark());
+    let now = Instant::now();
+    app.reduce(Action::Flash(crate::fixture::LONG_FLASH), now);
+    assert_eq!(
+        app.state.log.back().map(|line| &line.text),
+        Some(&crate::fixture::LONG_FLASH)
+    );
+}
+
+/// The next run opens on the tab this one left up, however it got there.
+#[test]
+fn the_tab_left_up_is_the_tab_the_next_run_opens_on() {
+    use crate::config::SharedConfig;
+
+    let config = SharedConfig::open(rmule_testkit::memory_store());
+    let preferences = config.load(None).expect("load");
+    let mut app = App::new(Theme::default_dark()).with_config(config.clone(), preferences);
+    let now = Instant::now();
+    app.reduce(Action::SwitchView(ViewId::Transfers), now);
+    app.reduce(Action::CycleView(1), now);
+
+    let reopened = config.load(None).expect("load");
+    let app = App::new(Theme::default_dark()).with_config(config, reopened);
+    assert_eq!(app.chrome.active, ViewId::SharedFiles);
+}
+
+/// The bell is opt-in, and rings for the completing edge.
+#[test]
+fn a_finished_download_rings_only_when_the_operator_asked() {
+    let completed = || {
+        Action::Core(rmule_core::CoreEvent::Download(
+            rmule_core::DownloadEvent::DownloadCompleted {
+                download_id: crate::fixture::download_id(1),
+                final_path: crate::fixture::part_file(),
+            },
+        ))
+    };
+    let mut app = App::new(Theme::default_dark());
+    let now = Instant::now();
+    app.reduce(completed(), now);
+    assert!(!app.pending_bell, "off by default");
+
+    app.state
+        .preferences
+        .flags
+        .set(AppFlag::CompletionBell, true);
+    app.reduce(completed(), now);
+    assert!(app.pending_bell);
 }
 
 /// The server a connect at start dials is kept on each login; when the store
@@ -648,10 +908,16 @@ fn the_full_run_log_preference_changes_the_level_the_writers_read() {
     let now = Instant::now();
     assert_eq!(writers.get(), Level::Lean);
 
-    app.reduce(Action::Preference(PrefEdit::RunLogFull(true)), now);
+    app.reduce(
+        Action::Preference(PrefEdit::Flag(AppFlag::RunLogFull, true)),
+        now,
+    );
     assert_eq!(writers.get(), Level::Full);
 
-    app.reduce(Action::Preference(PrefEdit::RunLogFull(false)), now);
+    app.reduce(
+        Action::Preference(PrefEdit::Flag(AppFlag::RunLogFull, false)),
+        now,
+    );
     assert_eq!(writers.get(), Level::Lean);
 }
 
@@ -667,7 +933,7 @@ fn c_outside_networks_is_unbound() {
         app.chrome.active = view;
         assert!(
             matches!(
-                app.views.handle_key(view, key, &app.state),
+                app.views.view_mut(view).handle_key(key, &app.state),
                 ViewOutcome::Ignored
             ),
             "{view:?} claims `c`"
@@ -677,4 +943,23 @@ fn c_outside_networks_is_unbound() {
             "`c` is global"
         );
     }
+}
+
+/// Under the too-small screen no view is on show, so a key reaches none of
+/// them, and `q` still leaves.
+#[test]
+fn a_terminal_too_small_answers_only_the_way_out() {
+    let now = Instant::now();
+    let mut app = App::new(Theme::default_dark());
+    app.too_small = true;
+    let before = app.chrome.active;
+    assert!(matches!(
+        app.reduce(key_action(KeyCode::Char('l')), now),
+        Flow::Continue
+    ));
+    assert_eq!(app.chrome.active, before, "the tab keys are not heard");
+    assert!(matches!(
+        app.reduce(key_action(KeyCode::Char('q')), now),
+        Flow::Quit
+    ));
 }

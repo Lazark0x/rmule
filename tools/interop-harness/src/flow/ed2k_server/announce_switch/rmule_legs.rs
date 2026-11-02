@@ -16,7 +16,7 @@ use anyhow::{Context, Result, bail};
 use crate::flow::bench::{Bench, CaptureSidecar, DEFAULT_TAP_INTERFACE, ED2K_SERVER_PORT};
 use crate::flow::ed2k_server::rmule_tools::run_to_exit;
 use crate::flow::ed2k_server::search_wire::ED2KSRV_IP;
-use crate::flow::ed2k_server::search_wire::server_tap::{granted_flags, offered_origins};
+use crate::flow::ed2k_server::search_wire::server_tap::{granted_flags, offered_origins, opening};
 
 /// The files rmule shares at start, and the one it adds before the switch.
 const START_FILES: [&str; 2] = ["announce-alpha.bin", "announce-beta.bin"];
@@ -178,10 +178,17 @@ fn run_leg(
                 format!("{}@{at:.1}({})", origins.len(), marks.join(" "))
             })
             .collect();
+        // Both servers are stock: whether each takes the `offerfiles_v` tag
+        // and answers the opening ask with an ident (ADR-0080, ADR-0099).
+        let drew = opening(&pcap, client)?;
         lines.push(format!(
-            "leg={} server={label} granted_flags={flags} offers=[{}]",
+            "leg={} server={label} granted_flags={flags} offers=[{}] \
+             login_asked_pace={} list_asks={} idents={}",
             leg.name,
-            offered.join(",")
+            offered.join(","),
+            drew.asked_pace,
+            drew.list_asks,
+            drew.idents
         ));
     }
     Ok(lines)

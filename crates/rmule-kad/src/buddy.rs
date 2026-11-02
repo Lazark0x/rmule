@@ -39,8 +39,8 @@
 //!
 //! For `buddy_id` that swap is invisible: a Kad ID is only ever echoed and
 //! self-compared, and every rmule [`KadId`] holds the wire order, so both ends
-//! of every comparison are in the same order (`source_result`'s `TAG_BUDDYHASH`
-//! is the one place a Kad ID is *printed* as an eD2k hash, and it swaps there).
+//! of every comparison are in the same order. `TAG_BUDDYHASH` prints those
+//! bytes as they are, the eMule layout (ADR-0061).
 //!
 //! The **user hash** and the **file hash** are different — they are the two
 //! fields in this cluster that cross namespaces. ADR-0061's open-node attach

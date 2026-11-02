@@ -27,6 +27,7 @@ fn take_through(
     let gate = Gate {
         filter,
         dial: state.dial,
+        own: Default::default(),
     };
     state.on_sightings(t0(), channel, sightings, &gate)
 }
@@ -39,11 +40,11 @@ fn unstarted(peer_concurrency: usize) -> DownloadState {
         no_facts(),
         QUIET_POSTURE,
         CALLBACK_TIMEOUT,
-        peer_concurrency,
+        crate::download::connection_budget::BudgetSeat::ceiling(peer_concurrency),
     )
 }
 
-fn every_channel() -> [Channel; 6] {
+fn every_channel() -> [Channel; 7] {
     [
         Channel::Link,
         Channel::Seed,
@@ -51,6 +52,7 @@ fn every_channel() -> [Channel; 6] {
         Channel::Global(source_server(9)),
         Channel::Kad,
         Channel::Exchanged(peer(1)),
+        Channel::Prober,
     ]
 }
 
@@ -62,7 +64,10 @@ fn known_ipv6() -> DialPosition {
 
 fn ipv6_only() -> (Ipv6Endpoint, SourceSighting) {
     let endpoint = Ipv6Endpoint::new("2a01:4f8::7".parse().unwrap(), 4662);
-    (endpoint, SourceSighting::plain(PeerSource::Ipv6(endpoint)))
+    (
+        endpoint,
+        SourceSighting::plain(PeerSource::Ipv6(endpoint), rmule_primitives::Informant::Own),
+    )
 }
 
 /// A filtered High ID never pools, whichever channel names it, and its
@@ -127,41 +132,33 @@ fn an_ipv6_only_source_pools_on_no_channel_while_we_hold_no_ipv6() {
 /// A Low-ID row has no address to judge and passes the filter on every
 /// channel; the channel decides whose server calls it back.
 #[test]
-fn a_low_id_row_passes_the_filter_and_is_called_back_through_its_channels_server() {
+fn a_low_id_row_passes_the_filter_and_only_our_own_server_calls_it_back() {
     let filter = blocking(&[1, 2, 3, 4, 5, 6, 7, 8, 9]);
-    let row = SourceSighting::plain(PeerSource::new(low(7), 4662));
+    let row = SourceSighting::plain(
+        PeerSource::new(low(7), 4662),
+        rmule_primitives::Informant::Own,
+    );
     for channel in every_channel() {
         let mut state = callback_state(Vec::new(), Vec::new(), true, 1);
         let taken = take_through(&mut state, channel, vec![row], &filter);
         assert_eq!(taken.tally.admitted, 1, "{channel:?}");
         let asked = taken.decisions.iter().find_map(|decision| match decision {
             Decision::RequestCallback { low_id, .. } => Some(connected_key(*low_id)),
-            Decision::RequestGlobalCallback {
-                low_id,
-                source_server,
-                ..
-            } => Some(CallbackKey {
-                server: Some(*source_server),
-                low_id: *low_id,
-            }),
             _ => None,
         });
         let expected = match channel {
-            Channel::Global(server) => CallbackKey {
-                server: Some(server),
-                low_id: low(7),
-            },
-            _ => connected_key(low(7)),
+            Channel::Global(_) => None,
+            _ => Some(connected_key(low(7))),
         };
-        assert_eq!(asked, Some(expected), "{channel:?}: {:?}", taken.decisions);
+        assert_eq!(asked, expected, "{channel:?}: {:?}", taken.decisions);
     }
 }
 
 /// A source-exchange row's Low ID is read in the namespace of the server the
 /// row itself names (stock 2.3.3 `PartFile.cpp:2771`, `:2815`), never ours:
 /// one our server assigned is called back through our server, and one the
-/// server we left assigned — a link that outlived our server move — through
-/// that server.
+/// server we left assigned — a link that outlived our server move — has no
+/// road.
 #[test]
 fn an_exchanged_low_id_row_is_called_back_through_the_server_it_names() {
     let ours = source_server(1);
@@ -187,33 +184,26 @@ fn an_exchanged_low_id_row_is_called_back_through_the_server_it_names() {
             Vec::new(),
         );
         let _ = state.start(t0());
-        let row = SourceSighting::plain(PeerSource::new(low(7), 4662)).with_server(Some(named));
+        let row = SourceSighting::plain(
+            PeerSource::new(low(7), 4662),
+            rmule_primitives::Informant::Own,
+        )
+        .with_server(Some(named));
         let asked: Vec<CallbackKey> = via_exchange(&mut state, peer(1), vec![row])
             .iter()
             .filter_map(|decision| match decision {
-                Decision::RequestCallback { low_id, .. } => Some(CallbackKey {
+                Decision::RequestCallback { low_id, .. } => Some(CallbackKey::Server {
                     server: Some(ours),
-                    low_id: *low_id,
-                }),
-                Decision::RequestGlobalCallback {
-                    low_id,
-                    source_server,
-                    ..
-                } => Some(CallbackKey {
-                    server: Some(*source_server),
                     low_id: *low_id,
                 }),
                 _ => None,
             })
             .collect();
-        assert_eq!(
-            asked,
-            vec![CallbackKey {
-                server: Some(named),
-                low_id: low(7)
-            }],
-            "a row naming {named}"
-        );
+        let expected = (named == ours).then_some(CallbackKey::Server {
+            server: Some(ours),
+            low_id: low(7),
+        });
+        assert_eq!(asked, Vec::from_iter(expected), "a row naming {named}");
     }
 }
 
@@ -361,6 +351,7 @@ fn the_start_pools_seeds_then_link_then_server_and_a_shared_source_once() {
         }),
         Some(UserHash::from_bytes([0x5F; UserHash::BYTE_LEN])),
         Some(SourceCryptOptions::from_byte(0x03)),
+        rmule_primitives::Informant::Own,
     );
     let seeds = take(&mut state, Channel::Seed, plain_sightings(&[peer(1)]));
     let link = take(
@@ -389,4 +380,102 @@ fn the_start_pools_seeds_then_link_then_server_and_a_shared_source_once() {
     );
     assert_eq!(state.peer_crypt(peer(3)), answered.peer_crypt());
     assert!(state.is_remembered(peer(1)));
+}
+
+/// The `n`th of many High-ID sources, past what [`peer`] can number:
+/// `10.1.<n % 256>.<n / 256 + 1>`.
+fn nth_source(n: u32) -> SourceSighting {
+    let [low, high, ..] = n.to_le_bytes();
+    let ip = u32::from_le_bytes([10, 1, low, high + 1]);
+    SourceSighting::plain(
+        PeerSource::new(rmule_primitives::ClientId::from_u32(ip), 4662),
+        rmule_primitives::Informant::Own,
+    )
+}
+
+/// The **Source Limit** holds every channel (ADR-0116 invariant 6): a
+/// prober joins once, and at 300 sources no channel's sighting is taken, as
+/// every aMule intake reads `MaxSourcesPerFile`.
+#[test]
+fn no_channel_joins_past_the_source_limit() {
+    use crate::download::state::sightings::SOURCE_LIMIT;
+
+    let mut state = unstarted(1);
+    let below: Vec<SourceSighting> = (0..SOURCE_LIMIT - 1).map(nth_source).collect();
+    take(&mut state, Channel::Server, below);
+    let prober = nth_source(SOURCE_LIMIT);
+    for _ in 0..2 {
+        take(&mut state, Channel::Prober, vec![prober]);
+    }
+    assert_eq!(
+        state.known_sources(),
+        SOURCE_LIMIT,
+        "the prober joined once"
+    );
+
+    for channel in [Channel::Prober, Channel::Server, Channel::Kad] {
+        let taken = take(&mut state, channel, vec![nth_source(SOURCE_LIMIT + 1)]);
+        assert_eq!(state.known_sources(), SOURCE_LIMIT, "none past the limit");
+        assert_eq!((taken.tally.received, taken.tally.admitted), (1, 0));
+    }
+}
+
+/// No channel's row naming us dials, pools or counts as admitted: a started
+/// download with a free slot is left holding nothing (ADR-0090).
+#[test]
+fn no_channel_dials_a_row_naming_our_user_hash() {
+    let ours = rmule_primitives::UserHash::from_bytes([0x77; 16]);
+    let at = Ipv4Endpoint::new(std::net::Ipv4Addr::new(45, 55, 200, 9), 4662);
+    let row = rmule_primitives::SourceClaim::new(PeerSource::HighId(at), Some(ours), None)
+        .stated_by(Informant::Own);
+    let filter = IpFilter::default();
+    for channel in every_channel() {
+        let mut state = unstarted(1);
+        let _ = state.start(t0());
+        let gate = Gate {
+            filter: &filter,
+            dial: state.dial,
+            own: crate::download::source_book::OwnPosition {
+                user_hash: Some(ours),
+                ..Default::default()
+            },
+        };
+        let taken = state.on_sightings(t0(), channel, [row], &gate);
+        assert!(spawned(&taken.decisions).is_empty(), "{channel:?}");
+        assert_eq!(taken.tally.admitted, 0, "{channel:?}");
+        assert_eq!(state.known_sources(), 0, "{channel:?}");
+    }
+}
+
+/// A global answer's Low-ID row is read in that server's namespace, so our
+/// own id is refused from our server's answer and pooled from another's.
+#[test]
+fn a_global_row_is_ours_only_from_the_server_that_gave_us_the_id() {
+    let our_id = rmule_primitives::ClientId::from_u32(42);
+    let row = SourceSighting::plain(PeerSource::new(our_id, 4662), Informant::Own);
+    let filter = IpFilter::default();
+    let ours = source_server(9);
+    let gate = |state: &DownloadState| {
+        (
+            state.dial,
+            crate::download::source_book::OwnPosition {
+                session: Some(crate::own_identity::ConnectedSession {
+                    server: Some(ours),
+                    client_id: our_id,
+                }),
+                ..Default::default()
+            },
+        )
+    };
+    for (server, known) in [(ours, 0), (source_server(8), 1)] {
+        let mut state = unstarted(1);
+        let (dial, own) = gate(&state);
+        let gate = Gate {
+            filter: &filter,
+            dial,
+            own,
+        };
+        let _ = state.on_sightings(t0(), Channel::Global(server), [row], &gate);
+        assert_eq!(state.known_sources(), known, "{server}");
+    }
 }

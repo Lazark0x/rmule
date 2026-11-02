@@ -6,8 +6,11 @@
 //! owns their lifecycle and the runtime they share.
 
 mod client_udp;
+mod clock_watch;
+mod credit_flush;
 mod download;
 mod kad;
+mod offer_check;
 mod peer;
 mod prologue;
 mod quit;
@@ -15,6 +18,7 @@ mod registry_check;
 mod scan;
 mod search;
 mod serve;
+mod served;
 mod server;
 mod server_intent;
 mod server_udp_front;
@@ -27,40 +31,38 @@ pub use server_intent::RECONNECT_ATTEMPTS;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
-use std::time::Duration;
+use std::time::{Duration, Instant, SystemTime};
 
 use tokio::sync::{Mutex, mpsc, watch};
 
 use crate::adapters::{
     KadRuntimeFactory, PeerTransferService, RuntimeServerUdpTransport, ServeRuntimeService,
-    SharedDialedServeSink, SharedUdpPortsAdvert, SourceLookupService, relay_global_callbacks,
+    SharedDialedServeSink, SharedUdpPortsAdvert, SourceLookupService,
 };
 use crate::buddy_link::SharedBuddySlot;
 use crate::client_udp::{ClientUdpDatagram, ClientUdpSend};
 use crate::credit::SharedCreditStore;
-use crate::global_sources::{
-    GlobCallbackSend, GlobalDiscoveryChannel, GlobalSourceRegistry, SharedServerList,
-};
+use crate::global_sources::{GlobalDiscoveryChannel, GlobalSourceRegistry, SharedServerList};
 use crate::ip_filter::SharedIpFilter;
 use crate::kad_sources::KadSourceRegistry;
 use crate::own_identity::SharedOwnIdentity;
 use crate::search::LiveSearches;
 use crate::server_capabilities::SharedServerCapabilities;
-use crate::server_list::{ServerFacts, ServerListFetcher, SharedServerListStore};
+use crate::server_list::{ServerFacts, SharedServerListStore};
 use crate::server_session::SharedServerSession;
 use crate::server_udp::{ServerUdpEngine, ServerUdpSeal, StatusChallenges};
 use crate::source_discovery::SourceDiscovery;
 use crate::store::download::DurableDownloadRepository;
 use crate::store::registry::DurableSharedFileRegistry;
 
-use self::download::DownloadRuntime;
-use super::activity::{Activities, GlobalSearchContext, ServerUdpFront, unix_now};
+use self::download::{DownloadRuntime, Stopping};
+use super::activity::{Activities, GlobalSearchContext, ServerUdpFront};
 use super::{CoreCommand, CoreConfig, CoreEvent, FinishedActivity};
 
 pub(super) use self::prologue::run_core_with_adapters;
 
-async fn send_event(evt_tx: &mpsc::Sender<CoreEvent>, event: CoreEvent) {
-    let _ = evt_tx.send(event).await;
+fn send_event(evt_tx: &super::Outbox, event: CoreEvent) {
+    evt_tx.send(event);
 }
 
 /// Nudge the **Kad Publisher** to re-sweep the **Shared File
@@ -78,9 +80,9 @@ fn notify_kad_publisher<C>(kad: &Option<kad::KadActivity<C>>) {
 /// **Obfuscation Policy**: that key is live, and from build on it lives in its
 /// one cell (ADR-0046), so its start value is not kept where a reader could
 /// take it for the policy in force. The live keys kept here — the server
-/// policy, `Remember peers`, the download directory — are read once, at
-/// start, to seed the owner each live change then writes; the rest take
-/// effect at the next start.
+/// policy, `Remember peers`, the download directory, the Temp Directory —
+/// are read once, at start, to seed the owner each live change then writes;
+/// the rest take effect at the next start.
 pub(super) struct StartSettings {
     /// The nickname and TCP port every login, hello and Kad dial presents.
     pub(super) credentials: super::ClientCredentials,
@@ -94,18 +96,25 @@ pub(super) struct StartSettings {
     pub(super) server_policy: crate::ServerPolicy,
     /// The download directory, at start.
     pub(super) download_dir: Option<PathBuf>,
+    /// The Temp Directory in force at start: the one set, or the default in
+    /// the data directory; `None` with neither.
+    pub(super) temp_dir: Option<PathBuf>,
 }
 
 impl StartSettings {
     /// Split the settings a core is built under into the Obfuscation Policy,
-    /// which seeds its cell, and the rest. Every key is named, so a new one
-    /// does not compile until it is placed.
+    /// which seeds its cell, and the rest, the Temp Directory read in force
+    /// against `data_dir`. Every key is named, so a new one does not compile
+    /// until it is placed.
     pub(super) fn split(
         settings: crate::CoreSettings,
+        data_dir: Option<&std::path::Path>,
     ) -> (Self, Option<rmule_net::peer::ObfuscationPolicy>) {
         let credentials = settings.credentials();
+        let temp_dir = settings.effective_temp_dir(data_dir);
         let crate::CoreSettings {
             download_dir,
+            temp_dir: _,
             nickname: _,
             tcp_port: _,
             udp_port,
@@ -114,9 +123,9 @@ impl StartSettings {
             remember_peers,
             server_policy,
             server_met_url: _,
-            auto_fetch_server_met: _,
+            server_met_auto_update_urls: _,
             nodes_dat_url: _,
-            auto_fetch_nodes_dat: _,
+            flags: _,
         } = settings;
         let start = Self {
             credentials,
@@ -125,6 +134,7 @@ impl StartSettings {
             remember_peers,
             server_policy,
             download_dir,
+            temp_dir,
         };
         (start, obfuscation)
     }
@@ -145,7 +155,7 @@ pub(super) struct CoreWiring<S, P, L, K> {
     pub(super) store: Arc<DurableDownloadRepository>,
     pub(super) registry: Arc<DurableSharedFileRegistry>,
     pub(super) credit: SharedCreditStore,
-    /// The node's User Hash, fixed at build (ADR-0048 "Identity ownership"):
+    /// The node's User Hash, fixed at build (ADR-0048 "One identity per node, owned by the core"):
     /// the one every login and hello this actor starts presents.
     pub(super) user_hash: rmule_primitives::UserHash,
     pub(super) source_lookup: Arc<Mutex<S>>,
@@ -165,6 +175,9 @@ pub(super) struct CoreWiring<S, P, L, K> {
     /// every download, asked by the serve adapter's triage, told of a retired
     /// attempt by the NAT-T front.
     pub(super) awaited_inbound: crate::adapters::AwaitedInbound,
+    /// The **Peer Links** (ADR-0107): every download files the sources it
+    /// awaits a grant from in them, beside the links the adapters file.
+    pub(super) peer_links: crate::adapters::SharedPeerLinks,
     pub(super) udp_ports_advert: SharedUdpPortsAdvert,
     /// The **Advertised IPv6** (ADR-0087): the Advertised Endpoints chooser's
     /// IPv6 verdict, published once and read by the hello tag, the Kad publish
@@ -184,12 +197,19 @@ pub(super) struct CoreWiring<S, P, L, K> {
     /// the firewalled front reads it for its `0x99` gate without awaiting
     /// this actor.
     pub(super) file_known: crate::known_files::SharedFileKnown,
+    /// The **Served Downloads** (ADR-0113): the actor installs, leases, holds
+    /// back and ends every entry; each run writes its own through its lease.
+    pub(super) served_downloads: crate::served_downloads::ServedDownloads,
     /// Where a risen NAT-T **Tunnel** enters the serve pipeline (ADR-0091):
     /// filled by the serve adapter's accept pump, read by the NAT-T front.
     pub(super) tunnel_admit: crate::adapters::SharedTunnelAdmit,
     /// Where a refused peer hello is counted and raised (ADR-0050): the
     /// adapters hold clones; the prologue installs the bus and diagnostics.
     pub(super) hello_refusals: crate::hello_refusals::SharedHelloRefusals,
+    /// Where every link binds the Secure User Identification its session
+    /// verified (ADR-0041): the adapters hold clones; the prologue installs
+    /// the credit ledger and the bus.
+    pub(super) secured_identities: crate::secured_identity::SharedSecuredIdentities,
     pub(super) ip_filter: SharedIpFilter,
     /// The **Interface Source** (ADR-0084) core polls for the addresses this
     /// host holds. `Core::builder` installs the live enumeration; the
@@ -216,13 +236,16 @@ pub(super) struct CoreWiring<S, P, L, K> {
     /// Whether attach listens and starts again the downloads the last
     /// process left running (ADR-0094).
     pub(super) restore_at_attach: bool,
+    /// The Run Log level every event is written at, shared with the front
+    /// end that changes it (ADR-0069).
+    pub(super) run_log: crate::run_log::LevelHandle,
     /// The node's Kad ID, fixed at build (ADR-0043): the one every Kad node
     /// this core starts runs under.
     pub(super) kad_id: crate::KadId,
     /// The store's **Kad UDP Key**, read at build.
     pub(super) kad_udp_key: u32,
     pub(super) server_list: SharedServerListStore,
-    pub(super) server_list_fetcher: Option<Arc<dyn ServerListFetcher>>,
+    pub(super) server_list_fetcher: Option<Arc<dyn rmule_bootstrap::Fetcher>>,
 }
 
 /// The actor's loop-carried state: every seam, shared handle and activity the
@@ -233,7 +256,7 @@ pub(super) struct CoreWiring<S, P, L, K> {
 struct CoreActor<S, P, L, K: KadRuntimeFactory> {
     /// The builder's adapter set and shared handles, held whole.
     wiring: CoreWiring<S, P, L, K>,
-    evt_tx: mpsc::Sender<CoreEvent>,
+    evt_tx: crate::service::Outbox,
     diagnostics: crate::diagnostics::DiagnosticsState,
     /// One server-list update at a time (aMule's own posture). Set by the
     /// actor when it accepts an `UpdateServerList`, cleared by the update task
@@ -242,10 +265,14 @@ struct CoreActor<S, P, L, K: KadRuntimeFactory> {
     /// The same posture for the connect, and for the same reason:
     /// the dial runs off the actor, so the guard must outlive the arm.
     server_connect_in_flight: Arc<AtomicBool>,
+    /// The monotonic clock against the wall, for a suspend.
+    clock_watch: clock_watch::ClockWatch,
     finished_tx: mpsc::Sender<FinishedActivity>,
     /// The scan's and the Registry Check's report lane (ADR-0100), held for
     /// the actor's life.
     scan_tx: registry_check::RegistrySender,
+    /// The scans' registry writes waiting for their one commit.
+    scan_writes: scan::ScanWrites,
     /// The **Registry Check** (ADR-0106), running for the actor's life.
     registry_check: registry_check::RegistryCheckHandle,
     /// The **Shared Directory List** besides its scans (ADR-0101).
@@ -269,6 +296,9 @@ struct CoreActor<S, P, L, K: KadRuntimeFactory> {
     /// exists — a runner registers its sink unconditionally, and with Kad
     /// disabled nothing ever reads it.
     kad_source_registry: KadSourceRegistry,
+    /// The **Ask Clock** on Kad source searches: the actor's, so a Kad restart
+    /// keeps it (ADR-0064).
+    kad_ask_clock: crate::source_discovery::SharedAskClock,
     /// The **Kad Activity** (ADR-0093): `Some` exactly while a Kad node runs.
     /// It holds the one Kad Presence lease, so "is Kad running" — read
     /// through [`SharedSelfReach::kad_running`](crate::reachability::SharedSelfReach::kad_running)
@@ -291,6 +321,8 @@ struct CoreActor<S, P, L, K: KadRuntimeFactory> {
     /// builder wrote into `own_identity`; the Core Settings' credentials are
     /// composed with it into the wire identity ([`Self::identity`]).
     user_hash: rmule_primitives::UserHash,
+    /// The runs told to stop whose tasks have not ended.
+    stopping: Stopping,
     /// The spawn-invariant runner runtime, built once; the two
     /// download arms clone their `DownloadTask` out of it.
     download_runtime: DownloadRuntime<S, P>,
@@ -318,6 +350,8 @@ struct CoreActor<S, P, L, K: KadRuntimeFactory> {
     interface_refresh: Option<mpsc::Sender<()>>,
     /// The **Share Totals** flush, finished at Quit.
     share_flush: Option<share_flush::ShareFlush>,
+    /// The minute's credit write, stopped at Quit before the last one.
+    credit_flush: Option<credit_flush::CreditFlush>,
     /// The **Port Mapping** runtime (ADR-0086), or `None` when port mapping is
     /// off or no backend is installed. Held for two reasons: to tell it when a
     /// socket binds — the Desired Mapping Set grows over a session's life — and
@@ -330,6 +364,17 @@ struct CoreActor<S, P, L, K: KadRuntimeFactory> {
     /// How many peers each running download writes as its **Source Seeds**
     /// (ADR-0109): the settings' at start, then the operator's latest.
     remember_peers: crate::RememberPeers,
+    /// The **Offer Check**s started after the Registry Check's start look
+    /// and not yet applied or stopped (ADR-0113).
+    offer_checks: offer_check::OfferChecks,
+}
+
+/// What the activities the actor started tell it as they go: a run or a
+/// search that ended, and a download run's finished file in place
+/// (ADR-0115).
+pub(super) struct RunNotices {
+    pub(super) finished: mpsc::Receiver<FinishedActivity>,
+    pub(super) in_place: mpsc::Receiver<crate::download::FinalFileInPlace>,
 }
 
 impl<S, P, L, K> CoreActor<S, P, L, K>
@@ -352,7 +397,7 @@ where
     }
 
     /// The wire identity this node presents now: [`Self::credentials`] as
-    /// the build-time hash (ADR-0048 "Identity ownership").
+    /// the build-time hash (ADR-0048 "One identity per node, owned by the core").
     pub(super) fn identity(&self) -> rmule_primitives::ClientIdentity {
         self.credentials().identity(self.user_hash)
     }
@@ -390,12 +435,16 @@ where
     async fn run(
         mut self,
         mut inbox: super::inbox::Inbox,
-        mut finished_rx: mpsc::Receiver<FinishedActivity>,
+        runs: RunNotices,
         mut scan_rx: mpsc::UnboundedReceiver<registry_check::RegistryMessage>,
         mut download_reach_rx: mpsc::Receiver<crate::callback::DownloadReach>,
         mut serve_ended_rx: watch::Receiver<u64>,
         mut kad_ended_rx: watch::Receiver<u64>,
     ) {
+        let RunNotices {
+            finished: mut finished_rx,
+            in_place: mut in_place_rx,
+        } = runs;
         // The **Session Generation** (ADR-0095): each session the operator's
         // connect installs wakes the searches that waited for one.
         let mut session_rx = self.wiring.shared_server_session.session_changes();
@@ -408,13 +457,34 @@ where
             crate::download::source_seeds::SEED_WRITE_INTERVAL,
         );
         seed_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        let mut space_tick = tokio::time::interval(crate::content::free_space::SPACE_RECHECK);
+        space_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        let mut clock_tick = tokio::time::interval(clock_watch::CLOCK_LOOK);
+        clock_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        let mut served_offers = self.wiring.served_downloads.offer_changes();
         loop {
             tokio::select! {
+                changed = served_offers.changed() => {
+                    if changed.is_err() {
+                        // Unreachable: the cell this actor holds owns the sender.
+                        break;
+                    }
+                    // A run's write moved a Partial Share's offer (ADR-0113).
+                    self.served_moved().await;
+                }
                 _ = seed_tick.tick(), if !self.activities.downloads_idle() => {
                     self.write_source_seeds();
                 }
                 _ = restore_tick.tick(), if self.activities.restore_pending() => {
                     self.restore_next().await;
+                }
+                _ = clock_tick.tick() => {
+                    if self.clock_watch.jumped(Instant::now(), SystemTime::now()) {
+                        self.on_clock_jump().await;
+                    }
+                }
+                _ = space_tick.tick(), if self.activities.space_awaited() => {
+                    self.resume_for_space().await;
                 }
                 Some(reach) = download_reach_rx.recv() => {
                     // A download's callback has been silent for twelve seconds
@@ -476,17 +546,11 @@ where
                             crate::adapters::request_kad_recheck(&self.wiring.kad_pump);
                         }
                         CoreCommand::DumpDiagnostics => {
-                            let snapshot = self.diagnostics.snapshot();
-                            send_event(&self.evt_tx, CoreEvent::DiagnosticsSnapshot { snapshot }).await;
+                            let snapshot = Box::new(self.diagnostics.snapshot());
+                            send_event(&self.evt_tx, CoreEvent::DiagnosticsSnapshot { snapshot });
                         }
                         CoreCommand::DumpFileHistory => {
-                            let history = crate::file_history::read(
-                                &*self.wiring.registry,
-                                &self.registry_check.withheld,
-                                &self.wiring.registry.had_set(),
-                                &*self.wiring.store,
-                            );
-                            send_event(&self.evt_tx, CoreEvent::FileHistory { history }).await;
+                            self.read_file_history();
                         }
                         CoreCommand::Search(command) => {
                             self.on_search_command(command).await;
@@ -498,6 +562,11 @@ where
                     }
                 }
                 Some(message) = scan_rx.recv() => self.on_registry_message(message).await,
+                () = tokio::time::sleep_until(self.scan_writes.due()),
+                    if self.scan_writes.waiting() =>
+                {
+                    self.commit_scan_writes().await;
+                }
                 Some(news) = intent_news.recv() => self.on_intent_news(news).await,
                 Some(lost) = lost_legs.recv() => self.on_server_leg_lost(lost).await,
                 () = server_intent::until_retry(self.intent.retry_at()) => {
@@ -537,16 +606,16 @@ where
                     let generation = *kad_ended_rx.borrow_and_update();
                     self.on_kad_ended(generation).await;
                 }
+                // A stopped run's task has ended: its act finishes here, not
+                // in the command arm that told it (ADR-0069).
+                download_id = self.stopping.next_ended() => self.on_run_ended(download_id).await,
+                // A run's finished file is in place (ADR-0115): its row and
+                // the end of its Served Download are one step.
+                Some(report) = in_place_rx.recv() => self.on_final_file_in_place(report).await,
                 Some(finished) = finished_rx.recv() => {
                     let download_id = match finished {
-                        FinishedActivity::Download(download_id, run) => {
-                            // A download that ended on its own (a death,
-                            // ADR-0093) retires here; one a stop already
-                            // retired is gone from the ledger, or replaced by
-                            // a later run, so its late notice retires nothing.
-                            if self.activities.download(download_id).is_some_and(|active| active.run == run) {
-                                self.retire_download(download_id);
-                            }
+                        FinishedActivity::Download(download_id, run, awaits_space) => {
+                            self.on_run_finished(download_id, run, awaits_space);
                             download_id
                         }
                         FinishedActivity::Search(search_id, run) => {
@@ -558,8 +627,9 @@ where
                     };
                     // The join point where the download and serve halves meet
                     // (ADR-0031): a download that reached `Completed` auto-shares,
-                    // unless it finished under a refused entry (ADR-0101).
-                    self.share_completed(download_id).await;
+                    // unless it finished under a refused entry (ADR-0101), and
+                    // its Served Download ends (ADR-0113).
+                    self.download_finished(download_id).await;
                 }
                 else => break,
             }
@@ -570,29 +640,12 @@ where
         if let Some(share_flush) = self.share_flush.take() {
             share_flush.finish().await;
         }
-        // Shutdown flush: make the ring durable, then snapshot it
-        // back to `clients.met`. Runs on the command-channel-close path above;
-        // the event sender drops when this function returns, which is what
-        // `Core::shutdown` awaits. The checkpoint is unconditional — the ring
-        // is durable whether or not a `clients.met` copy was asked for.
-        if let Err(error) = self.wiring.credit.checkpoint() {
-            tracing::warn!(%error, "credit checkpoint failed; the last accrual may not be durable");
+        if let Some(credit_flush) = self.credit_flush.take() {
+            credit_flush.finish().await;
         }
-        if let Some(dir) = self.wiring.clients_met_dir.as_deref() {
-            let snapshot = self.wiring.credit.snapshot();
-            match snapshot {
-                Ok(snapshot) => {
-                    if let Err(error) =
-                        crate::clients_met::save_clients_met(dir, &snapshot, unix_now())
-                    {
-                        tracing::warn!(%error, "clients.met save failed; credit ring not persisted");
-                    }
-                }
-                Err(error) => {
-                    tracing::warn!(%error, "credit snapshot failed; clients.met not written");
-                }
-            }
-        }
+        // Last, for what the stops themselves accrued. The event sender drops
+        // when this function returns, which is what `Core::shutdown` awaits.
+        self.credit_flush().await;
         // The event stream's end is `Core::shutdown`'s completion, so the
         // last sender drops after everything else the actor holds — the store
         // views above all — whatever order the fields would drop in.

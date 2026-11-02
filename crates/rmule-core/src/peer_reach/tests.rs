@@ -12,6 +12,8 @@ use rmule_peer::DirectCallbackReq;
 use rmule_peer::natt::CALLBACK_SILENCE_FALLBACK;
 use rmule_primitives::{ClientId, Ipv4Endpoint, PeerEndpoint, UserHash};
 
+use crate::service::ReachAddress;
+
 use super::*;
 use crate::adapters::{KadPresenceLease, KadPresenceView, KadPumpCommand};
 use crate::callback::CallbackSilence;
@@ -45,8 +47,7 @@ fn file_hash() -> FileHash {
 /// user hash the rendezvous ledger is keyed by.
 fn punchable() -> PeerReach {
     PeerReach {
-        id: ClientId::from_u32(42),
-        tcp: PeerEndpoint::V4(Ipv4Endpoint::new(Ipv4Addr::UNSPECIFIED, 4662)),
+        address: ReachAddress::LowId(ClientId::from_u32(42)),
         supports_direct_udp_callback: false,
         kad_udp: None,
         on_our_server: false,
@@ -56,6 +57,7 @@ fn punchable() -> PeerReach {
         }),
         ipv6: None,
         supports_natt: true,
+        crypt: None,
         user_hash: Some(hash(0xAB)),
     }
 }
@@ -91,14 +93,16 @@ fn pending(
     mpsc::Receiver<(CallbackKey, NattRetirement)>,
 ) {
     let (retire_tx, retire_rx) = mpsc::channel(4);
+    let (held_tx, _) = mpsc::channel(4);
     (
         PendingCallback {
             road,
-            key: CallbackKey {
+            key: CallbackKey::Server {
                 server: None,
                 low_id: ClientId::from_u32(77),
             },
             retire_tx,
+            held_tx,
         },
         retire_rx,
     )
@@ -133,7 +137,7 @@ struct Rig {
     udp: mpsc::Receiver<ClientUdpSend>,
     natt: mpsc::Receiver<NattCommand>,
     kad: mpsc::Receiver<KadPumpCommand>,
-    events: mpsc::Receiver<CoreEvent>,
+    events: crate::service::EventStream,
     kad_lease: Option<KadPresenceLease>,
     session: Option<(
         crate::server_session::ServerSessionHandle,
@@ -181,7 +185,7 @@ impl Rig {
         let kad_pump = SharedKadPump::default();
         let (kad_tx, kad) = mpsc::channel(4);
         kad_pump.install_for_good(kad_tx);
-        let (events_tx, events) = mpsc::channel(8);
+        let (events_tx, events) = crate::service::outbox(Default::default());
         let diagnostics = DiagnosticsState::default();
         let policy = crate::obfuscation_policy::SharedObfuscationPolicy::default();
         let reacher = PeerReacher::new(PeerReachWiring {
@@ -328,7 +332,7 @@ async fn a_reach_peers_buddy_and_server_roads_are_reported_and_not_sent() {
     assert_eq!(
         rig.reacher.reach(&on_our_server, None).await,
         PeerReachRoute::Server {
-            low_id: on_our_server.id
+            low_id: on_our_server.address.low_id().unwrap()
         }
     );
     assert!(rig.kad.try_recv().is_err() && rig.natt.try_recv().is_err());
@@ -393,6 +397,9 @@ async fn a_download_buddy_callback_reaches_the_kad_node_or_walks_toward_the_budd
     let (ask, mut retire_rx) = pending(DownloadAsk::BuddyCallback {
         file_hash: file_hash(),
     });
+    let key = ask.key;
+    let retire_tx = ask.retire_tx.clone();
+    let held_tx = ask.held_tx.clone();
     assert_eq!(
         rig.reacher.reach(&punchable(), Some(ask)).await,
         PeerReachRoute::Buddy {
@@ -410,6 +417,11 @@ async fn a_download_buddy_callback_reaches_the_kad_node_or_walks_toward_the_budd
             buddy_id: buddy_id(),
             file_hash: file_hash(),
             tcp_port: LISTEN_PORT,
+            reply: crate::adapters::CallbackReply {
+                key,
+                retire_tx,
+                held_tx,
+            },
         }
     );
     assert!(retire_rx.try_recv().is_err());
@@ -495,6 +507,32 @@ async fn a_buddy_callback_that_cannot_leave_retires_its_road_at_once() {
     );
 }
 
+/// A running node whose pump refuses the ask — its task gone, or its inbox
+/// full — sends no `0x52` and starts no walk, so the road ends at once as one
+/// that never left, for the known endpoint and the ID-only buddy alike.
+#[tokio::test]
+async fn a_buddy_callback_the_pump_refuses_retires_its_road_at_once() {
+    let mut rig = Rig::new();
+    // The pump's task is gone: its inbox has no reader.
+    drop(std::mem::replace(&mut rig.kad, mpsc::channel(1).1));
+    for peer in [punchable(), id_only_buddy()] {
+        let (ask, mut retire_rx) = pending(DownloadAsk::BuddyCallback {
+            file_hash: file_hash(),
+        });
+        assert_eq!(
+            rig.reacher.reach(&peer, Some(ask.clone())).await,
+            PeerReachRoute::Buddy {
+                buddy_id: buddy_id(),
+                emitted_to: None,
+            }
+        );
+        assert_eq!(
+            retire_rx.try_recv(),
+            Ok((ask.key, NattRetirement::CallbackNotSent))
+        );
+    }
+}
+
 /// The fallback seam: a callback twelve seconds silent, with no server that
 /// speaks the punch, falls to the candidate's own buddy — and what reaches
 /// the NAT-T Front is one traversal naming that buddy, owned by an attempt
@@ -504,7 +542,9 @@ async fn a_buddy_callback_that_cannot_leave_retires_its_road_at_once() {
 async fn a_silent_callback_falls_to_the_records_buddy_and_the_front_gets_the_traversal() {
     let mut rig = Rig::new();
     let peer = punchable();
-    let (ask, mut retire_rx) = pending(silent(PeerReachRoute::Server { low_id: peer.id }));
+    let (ask, mut retire_rx) = pending(silent(PeerReachRoute::Server {
+        low_id: peer.address.low_id().unwrap(),
+    }));
 
     let routed = rig.reacher.reach(&peer, Some(ask)).await;
 
@@ -558,7 +598,7 @@ async fn a_candidate_no_callback_could_reach_is_introduced_by_our_server_at_once
     assert_eq!(
         rig.reacher.reach(&on_server, Some(ask)).await,
         PeerReachRoute::ServerPunch {
-            low_id: on_server.id
+            low_id: on_server.address.low_id().unwrap()
         }
     );
     assert!(matches!(
@@ -566,7 +606,7 @@ async fn a_candidate_no_callback_could_reach_is_introduced_by_our_server_at_once
         Ok(NattCommand::Traverse {
             coordinator: AttemptCoordinator::Server { low_id },
             owner: Some(AttemptOwner { target, .. }),
-        }) if low_id == on_server.id && target == hash(0xAB)
+        }) if Some(low_id) == on_server.address.low_id() && target == hash(0xAB)
     ));
     assert!(retire_rx.try_recv().is_err(), "the front owns the attempt");
 
@@ -578,7 +618,7 @@ async fn a_candidate_no_callback_could_reach_is_introduced_by_our_server_at_once
     assert_eq!(
         rig.reacher.reach(&hashless, Some(ask.clone())).await,
         PeerReachRoute::ServerPunch {
-            low_id: hashless.id
+            low_id: hashless.address.low_id().unwrap()
         }
     );
     assert!(matches!(
@@ -600,7 +640,7 @@ async fn a_candidate_no_callback_could_reach_is_introduced_by_our_server_at_once
     assert_eq!(
         frontless.reacher.reach(&on_server, Some(ask.clone())).await,
         PeerReachRoute::ServerPunchUnavailable {
-            low_id: on_server.id
+            low_id: on_server.address.low_id().unwrap()
         }
     );
     assert_eq!(
@@ -619,7 +659,7 @@ async fn a_rendezvous_that_cannot_begin_retires_its_candidate_with_the_reason() 
     let mut rig = Rig::new();
     let silent_server = || {
         pending(silent(PeerReachRoute::Server {
-            low_id: punchable().id,
+            low_id: punchable().address.low_id().unwrap(),
         }))
     };
 
@@ -735,6 +775,7 @@ async fn a_server_punch_reaches_the_session_as_a_0x60_through_a_running_front() 
                 admit: crate::adapters::SharedTunnelAdmit::default(),
                 claims: crate::adapters::AwaitedInbound::default(),
                 peer_pin: crate::adapters::SharedPeerPin::default(),
+                roster: crate::peer_roster::SharedPeerRoster::default(),
                 diagnostics: DiagnosticsState::default(),
                 prediction: None,
                 events: None,
@@ -743,7 +784,7 @@ async fn a_server_punch_reaches_the_session_as_a_0x60_through_a_running_front() 
         )
         .expect("the front starts"),
     );
-    let (events, mut reported) = mpsc::channel(4);
+    let (events, mut reported) = crate::service::outbox(Default::default());
     let reacher = PeerReacher::new(PeerReachWiring {
         reach: rig.reach.clone(),
         client_udp: None,
@@ -764,7 +805,7 @@ async fn a_server_punch_reaches_the_session_as_a_0x60_through_a_running_front() 
     let routed = reacher.reach(&on_server, Some(ask)).await;
 
     let taken = PeerReachRoute::ServerPunch {
-        low_id: on_server.id,
+        low_id: on_server.address.low_id().unwrap(),
     };
     assert_eq!(routed, taken);
     assert!(matches!(
@@ -785,7 +826,10 @@ async fn a_server_punch_reaches_the_session_as_a_0x60_through_a_running_front() 
     })
     .await
     .expect("the 0x60 reached the server");
-    assert_eq!(asked, (on_server.id, socket.local_port()));
+    assert_eq!(
+        asked,
+        (on_server.address.low_id().unwrap(), socket.local_port())
+    );
 }
 
 /// A HighID peer is dialed at the endpoint its record carries, and Peer
@@ -795,8 +839,7 @@ async fn a_high_id_peer_is_routed_direct_at_its_own_endpoint() {
     let rig = Rig::new();
     let tcp = PeerEndpoint::V4(Ipv4Endpoint::new(Ipv4Addr::new(203, 0, 113, 4), 4662));
     let peer = PeerReach {
-        id: ClientId::from_u32(0x0102_0304),
-        tcp,
+        address: ReachAddress::Dial(tcp),
         buddy: None,
         ..punchable()
     };

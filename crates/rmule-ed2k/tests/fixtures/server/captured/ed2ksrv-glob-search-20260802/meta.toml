@@ -12,8 +12,7 @@
 # **Two** server-udp rows, both previously **ADR-0045-EXEMPT**:
 # `OP_GLOBSEARCHREQ 0x98` (E) and `OP_GLOBSEARCHRES 0x99` (C). The parity
 # verdict's basis was "no admissible counterparty" — Lugdunum won't answer a
-# `0x98`, and eNode implements a `0x99` handler but crashes on the login its
-# precondition needs. This server serves the leg end to end (`udp.rs:517`,
+# `0x98`. This server serves the leg end to end (`udp.rs:517`,
 # `:1263-1348`) and its precondition is reachable here: no login cap, no crash,
 # `OP_OFFERFILES` works. Per ADR-0045 point 2 the same datagram is the evidence
 # for both rows — for the emit row the `0x99` **is** the observable reaction.

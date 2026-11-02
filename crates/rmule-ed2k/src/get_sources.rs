@@ -28,8 +28,10 @@ pub enum GetSourcesRequest {
     },
     /// Hash plus a 4-byte size.
     Normal {
-        /// The file being looked up, hash and size.
-        target: SourceLookupTarget,
+        /// The file being looked up.
+        file_hash: FileHash,
+        /// Its size, which this form holds in four bytes.
+        file_size: u32,
     },
     /// Hash plus a zero 4-byte size and an 8-byte size — the large-file form.
     Large {
@@ -39,6 +41,34 @@ pub enum GetSourcesRequest {
 }
 
 impl GetSourcesRequest {
+    /// The form aMule's `SendLocalSrcRequest` writes for `target`: the large
+    /// form for an `IsLargeFile` file, which a `u32` may still hold
+    /// (`DownloadQueue.cpp:1083-1098`), the normal form for any other.
+    #[must_use]
+    pub fn sized(target: SourceLookupTarget) -> Self {
+        match u32::try_from(target.file_size()) {
+            Ok(file_size) if !rmule_primitives::is_large_file(target.file_size()) => Self::Normal {
+                file_hash: target.file_hash(),
+                file_size,
+            },
+            _ => Self::Large { target },
+        }
+    }
+
+    /// The file asked about, hash and size; `None` for the legacy form, which
+    /// carries no size.
+    #[must_use]
+    pub fn target(&self) -> Option<SourceLookupTarget> {
+        match self {
+            Self::Legacy { .. } => None,
+            Self::Normal {
+                file_hash,
+                file_size,
+            } => Some(SourceLookupTarget::new(*file_hash, u64::from(*file_size))),
+            Self::Large { target } => Some(*target),
+        }
+    }
+
     /// Decode this packet's payload.
     ///
     /// # Errors
@@ -46,22 +76,12 @@ impl GetSourcesRequest {
     /// body layout is not this packet's.
     pub fn decode_packet(packet: &Packet) -> Result<Self> {
         let opcode = Opcode::GetSources.as_u8();
-        if packet.protocol() != PacketProtocol::Edonkey {
-            return Err(Ed2kError::InvalidPayload {
-                opcode,
-                reason: "unsupported packet protocol",
-            });
-        }
         // `OP_GETSOURCES` (`0x19`) and `OP_GETSOURCES_OBFU` (`0x23`) carry a
         // byte-identical body; the obfu opcode only asks the server to answer
         // with the obfuscation-aware `0x44` reply (ADR-0046). Accept both.
-        if packet.opcode() != opcode && packet.opcode() != Opcode::GetSourcesObfu.as_u8() {
-            return Err(Ed2kError::InvalidPayload {
-                opcode,
-                reason: "wrong opcode for OP_GETSOURCES",
-            });
-        }
-        let payload = packet.payload();
+        let payload = packet
+            .body_of(PacketProtocol::Edonkey, opcode)
+            .or_else(|_| packet.body_of(PacketProtocol::Edonkey, Opcode::GetSourcesObfu.as_u8()))?;
         let mut hash_bytes = [0u8; FileHash::BYTE_LEN];
         match payload.len() {
             LEGACY_LEN => {
@@ -78,10 +98,8 @@ impl GetSourcesRequest {
                         .expect("validated normal slice"),
                 );
                 Ok(Self::Normal {
-                    target: SourceLookupTarget::new(
-                        FileHash::from_bytes(hash_bytes),
-                        u64::from(size),
-                    ),
+                    file_hash: FileHash::from_bytes(hash_bytes),
+                    file_size: size,
                 })
             }
             LARGE_LEN => {
@@ -130,12 +148,13 @@ impl GetSourcesRequest {
     fn encode_with_opcode(&self, opcode: u8) -> Packet {
         let payload = match self {
             Self::Legacy { file_hash } => file_hash.as_bytes().to_vec(),
-            Self::Normal { target } => {
+            Self::Normal {
+                file_hash,
+                file_size,
+            } => {
                 let mut bytes = Vec::with_capacity(NORMAL_LEN);
-                bytes.extend_from_slice(target.file_hash().as_bytes());
-                let size = u32::try_from(target.file_size())
-                    .expect("GetSourcesRequest::Normal requires file_size <= u32::MAX");
-                bytes.extend_from_slice(&size.to_le_bytes());
+                bytes.extend_from_slice(file_hash.as_bytes());
+                bytes.extend_from_slice(&file_size.to_le_bytes());
                 bytes
             }
             Self::Large { target } => {

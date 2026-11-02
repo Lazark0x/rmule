@@ -51,9 +51,10 @@ fn poll_until(
     }
 }
 
-/// Poll `docker logs` until `pattern` appears or `timeout` elapses. Generic over
-/// container role (unlike [`wait_for_amule_ready`], which reads the aMule log
-/// files) — used for the rust-image registrant container.
+/// Poll `docker logs` until `pattern` appears, the container exits without it,
+/// or `timeout` elapses. Generic over container role (unlike
+/// [`wait_for_amule_ready`], which reads the aMule log files) — used for the
+/// rust-image registrant container.
 pub(crate) fn wait_for_container_log(
     docker: &Docker,
     container: &str,
@@ -61,6 +62,18 @@ pub(crate) fn wait_for_container_log(
     timeout: Duration,
 ) -> Result<String> {
     let polled = poll_until(timeout, Duration::from_millis(500), pattern, || {
+        // The state is read before the logs: logs read after an exit are
+        // whole, so an exited container whose logs lack the pattern will never
+        // print it, and the wait ends there instead of at its deadline.
+        let state = docker
+            .inspect_state(container)
+            .to_command()
+            .output()
+            .with_context(|| format!("docker inspect {container}"))?;
+        let exited = matches!(
+            String::from_utf8_lossy(&state.stdout).trim(),
+            "exited" | "dead"
+        );
         let output = docker
             .logs(container)
             .to_command()
@@ -68,6 +81,11 @@ pub(crate) fn wait_for_container_log(
             .with_context(|| format!("docker logs {container}"))?;
         let mut logs = String::from_utf8_lossy(&output.stdout).into_owned();
         logs.push_str(&String::from_utf8_lossy(&output.stderr));
+        if exited && !logs.contains(pattern) {
+            bail!(
+                "container {container} exited before its log carried {pattern:?}; last logs:\n{logs}"
+            );
+        }
         Ok(logs)
     })?;
     match polled {

@@ -7,7 +7,7 @@ mod sentinel;
 mod sighting;
 
 pub use sentinel::SourceListTail;
-pub use sighting::{SightedBuddy, SourceRoad, SourceSighting};
+pub use sighting::{SightedBuddy, SourceClaim, SourceRoad, SourceSighting};
 
 use crate::{ClientId, CryptStance, FileHash, Ipv4Endpoint, Ipv6Endpoint, PeerEndpoint};
 
@@ -81,11 +81,7 @@ impl PeerSource {
     #[must_use]
     pub const fn new(client_id: ClientId, tcp_port: u16) -> Self {
         if client_id.is_high_id() {
-            let octets = client_id.as_u32().to_le_bytes();
-            Self::HighId(Ipv4Endpoint::new(
-                std::net::Ipv4Addr::new(octets[0], octets[1], octets[2], octets[3]),
-                tcp_port,
-            ))
+            Self::HighId(Ipv4Endpoint::new(client_id.to_ipv4(), tcp_port))
         } else {
             Self::LowId {
                 id: client_id,
@@ -99,7 +95,7 @@ impl PeerSource {
     #[must_use]
     pub const fn wire_id(self) -> u32 {
         match self {
-            Self::HighId(endpoint) => u32::from_le_bytes(endpoint.ip.octets()),
+            Self::HighId(endpoint) => ClientId::from_ipv4(endpoint.ip).as_u32(),
             Self::LowId { id, .. } => id.as_u32(),
             Self::Ipv6(_) => Self::IPV6_SENTINEL,
         }

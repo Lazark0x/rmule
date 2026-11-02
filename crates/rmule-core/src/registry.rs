@@ -6,12 +6,11 @@
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
-use rmule_primitives::{FileHash, PartHash};
-use tokio::sync::mpsc;
+use rmule_primitives::{FileHash, MAX_ED2K_FILE_SIZE, PartHash};
 
 use crate::registry_check::{WithheldReason, WithheldRows};
-use crate::service::{CoreEvent, DownloadId, ServeEvent};
-use crate::storage::{DownloadRepository, ResolvedAuthority};
+use crate::service::{DownloadId, ServeEvent};
+use crate::storage::DownloadRepository;
 use crate::{CoreError, DownloadLifecycle, DurableDownloadRecord};
 
 /// How a file came to be shared. Distinguishes a row a lone-file share wrote
@@ -30,6 +29,31 @@ pub enum ShareSource {
     /// The **Download Directory Scan** found the file under the download
     /// directory and hashed it (ADR-0102).
     DownloadDirectory,
+}
+
+/// Why a file on disk is not shared, ruled from what is known of it before a
+/// byte is read.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ShareRefusal {
+    /// It is larger than eD2k addresses, so no server, peer or Kad node could
+    /// be told its size, and a stock client skips it the same way.
+    PastSizeLimit {
+        /// The file's size.
+        file_size: u64,
+    },
+}
+
+impl ShareRefusal {
+    /// The refusal a file of `file_size` bytes meets, if any. The one gate:
+    /// a scan rules with it before it reads, and the Registry Check rules
+    /// with it on a stored row.
+    pub(crate) const fn of(file_size: u64) -> Option<Self> {
+        if file_size > MAX_ED2K_FILE_SIZE {
+            Some(Self::PastSizeLimit { file_size })
+        } else {
+            None
+        }
+    }
 }
 
 /// One row of the **Shared File Registry**: a file we serve, identified by
@@ -60,27 +84,83 @@ pub struct SharedFileEntry {
     pub modified: Option<SystemTime>,
 }
 
+/// A [`SharedFileEntry`] less its part hash set: what every reader of the
+/// whole share set but the one that serves hashes wants, read for what it
+/// uses. Empty `part_hashes` would mean a file below one part, so a row that
+/// was not read with its set has no such field.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SharedRow {
+    /// `SharedFileEntry::file_hash`.
+    pub file_hash: FileHash,
+    /// [`SharedFileEntry::file_size`].
+    pub file_size: u64,
+    /// [`SharedFileEntry::path`].
+    pub path: PathBuf,
+    /// [`SharedFileEntry::name`].
+    pub name: String,
+    /// [`SharedFileEntry::source`].
+    pub source: ShareSource,
+    /// [`SharedFileEntry::modified`].
+    pub modified: Option<SystemTime>,
+}
+
+impl From<&SharedFileEntry> for SharedRow {
+    fn from(entry: &SharedFileEntry) -> Self {
+        Self {
+            file_hash: entry.file_hash,
+            file_size: entry.file_size,
+            path: entry.path.clone(),
+            name: entry.name.clone(),
+            source: entry.source,
+            modified: entry.modified,
+        }
+    }
+}
+
+/// A row of the share set, whichever read it came from.
+pub(crate) trait ShareSetRow {
+    /// The row's key.
+    fn file_hash(&self) -> FileHash;
+}
+
+impl ShareSetRow for SharedFileEntry {
+    fn file_hash(&self) -> FileHash {
+        self.file_hash
+    }
+}
+
+impl ShareSetRow for SharedRow {
+    fn file_hash(&self) -> FileHash {
+        self.file_hash
+    }
+}
+
 impl SharedFileEntry {
-    /// Build a registry entry from a completed download. The record already
-    /// carries the verified file hash and size, so no re-hash is needed; the
-    /// served bytes live at `final_path`.
+    /// The name a row whose file is at `path` is announced under: the path's
+    /// file name, empty for a path that has none.
+    pub(crate) fn name_of(path: &Path) -> String {
+        path.file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_default()
+    }
+
+    /// Build a registry entry from a download whose finished file is in place
+    /// at `path`, the destination its completion move chose (ADR-0115). The
+    /// record already carries the verified file hash, size and part hash
+    /// set, so nothing is read but the file's modification time.
     pub(crate) fn from_completed_download(
         record: &DurableDownloadRecord,
+        path: &Path,
         part_hashes: Vec<PartHash>,
     ) -> Self {
-        let path = record.paths().final_path().to_path_buf();
-        let name = path
-            .file_name()
-            .map(|name| name.to_string_lossy().into_owned())
-            .unwrap_or_default();
         Self {
             file_hash: record.file_hash(),
             file_size: record.file_size(),
-            path,
-            name,
+            path: path.to_path_buf(),
+            name: Self::name_of(path),
             source: ShareSource::CompletedDownload,
             part_hashes,
-            modified: modified_time(record.paths().final_path()),
+            modified: modified_time(path),
         }
     }
 }
@@ -94,8 +174,8 @@ pub(crate) fn modified_time(path: &std::path::Path) -> Option<SystemTime> {
         .ok()
 }
 
-/// What became of a completed download's file: its registry row is written,
-/// and either offered or withheld.
+/// What became of a completing download's file: its registry row is
+/// written, and either offered or withheld.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum AutoShared {
     /// The row is offered.
@@ -106,12 +186,12 @@ pub(crate) enum AutoShared {
     Refused(FileHash),
 }
 
-/// Auto-share a completed download into the **Shared File Registry** (ADR-0031),
-/// the join point where the download and serve halves meet. A
-/// download that reached [`DownloadLifecycle::Completed`] registers the file it
-/// just verified so the serve side answers probes for it; a load miss or any
-/// non-`Completed` lifecycle is a no-op returning `None` (the caller reaches
-/// here for every finished download, completed or not).
+/// Auto-share a download whose finished file is in place into the **Shared
+/// File Registry** (ADR-0031), the join point where the download and serve
+/// halves meet: the completion move's in-place step (ADR-0115) registers the
+/// file at `path` from the download record, so the serve side answers probes
+/// for it. A load miss or any lifecycle but `Completing` is a no-op returning
+/// `None`.
 ///
 /// A file whose path `refuses` names lies under a refused entry: its row is
 /// withheld as refused in `withheld` before the row is written, so no offer
@@ -127,27 +207,27 @@ pub(crate) enum AutoShared {
 /// file-known predicate — exactly once per successful auto-share.
 pub(crate) async fn auto_share_completed_download<R, G>(
     download_id: DownloadId,
+    path: &Path,
     store: &R,
     registry: &G,
     refuses: impl FnOnce(&Path) -> bool,
     withheld: &WithheldRows,
-    evt_tx: &mpsc::Sender<CoreEvent>,
+    evt_tx: &crate::service::Outbox,
 ) -> Option<AutoShared>
 where
     R: DownloadRepository,
     G: SharedFileRegistry,
 {
-    // The record already holds the verified file hash, size, and `final_path`,
-    // so beyond the completion gate this needs no re-read.
+    // The record already holds the verified file hash and size, so beyond
+    // the completion gate this needs no re-read.
     let record = match store.load_download(download_id) {
-        Ok(record) if record.lifecycle() == DownloadLifecycle::Completed => record,
+        Ok(record) if record.lifecycle() == DownloadLifecycle::Completing => record,
         _ => return None,
     };
     // Ask the seam one question — the effective per-part authority — and map its
     // answer to the hashes the auto-shared file replies to hash-set probes with.
     let part_hashes = match store.hash_authority(download_id) {
-        Ok(ResolvedAuthority::Link(hashes) | ResolvedAuthority::Provisional(hashes)) => hashes,
-        Ok(ResolvedAuthority::FileHashOnly) => Vec::new(),
+        Ok(authority) => authority.into_part_hashes(),
         Err(error) => {
             tracing::warn!(
                 download_id = download_id.as_u64(),
@@ -158,7 +238,7 @@ where
             Vec::new()
         }
     };
-    let entry = SharedFileEntry::from_completed_download(&record, part_hashes);
+    let entry = SharedFileEntry::from_completed_download(&record, path, part_hashes);
     let file_hash = entry.file_hash;
     let refused = refuses(&entry.path).then(|| {
         let (was, since) = (withheld.get(file_hash), SystemTime::now());
@@ -193,7 +273,7 @@ where
                     (event, AutoShared::Refused(file_hash))
                 }
             };
-            let _ = evt_tx.send(event.into()).await;
+            evt_tx.send(event.into());
             Some(shared)
         }
         // No command issuer to reject to on auto-share, but a durable registry
@@ -245,6 +325,10 @@ pub trait SharedFileRegistry: Send + Sync + 'static {
     /// shared with.
     fn list(&self) -> Result<Vec<SharedFileEntry>, CoreError>;
 
+    /// Every shared row less its part hash set, for a caller that serves no
+    /// hash: one read per table rather than one per row.
+    fn rows(&self) -> Result<Vec<SharedRow>, CoreError>;
+
     /// The stored ED2K part hash set for `file_hash`, or `None` if not
     /// shared — the projection of [`get`](Self::get) for a caller that wants
     /// only the set. An empty `Vec` means a shared file below one part (no
@@ -265,14 +349,13 @@ mod tests {
     };
     use std::path::Path;
     use std::sync::Arc;
-    use tokio::sync::mpsc;
 
     fn server() -> ServerEndpoint {
         ServerEndpoint::new("127.0.0.1", 4661).unwrap()
     }
 
-    /// Drive one download to `Completed` — Queued → Active → Completed is the
-    /// only path the lifecycle admits — and return its id.
+    /// Drive one download to `Completing` — its finished file in place,
+    /// its row not yet written — and return its id.
     fn complete(
         store: &DurableDownloadRepository,
         link: &Ed2kFileLink,
@@ -284,12 +367,13 @@ mod tests {
             link,
             Some(&server()),
             &DownloadPaths::from_final_path(dir.join(name)),
+            None,
         )
         .unwrap()
         .id();
         store.set_lifecycle(id, DownloadLifecycle::Active).unwrap();
         store
-            .set_lifecycle(id, DownloadLifecycle::Completed)
+            .set_lifecycle(id, DownloadLifecycle::Completing)
             .unwrap();
         id
     }
@@ -301,15 +385,13 @@ mod tests {
         let mut bytes = vec![0xAB; ED2K_PART_SIZE as usize];
         bytes.extend_from_slice(b"tail");
         let summary = FileHashSummary::digest_bytes(&bytes);
-        let link = Ed2kFileLink {
-            name: Ed2kText::from_utf8("autoshare-link.bin"),
-            size: summary.file_size(),
-            file_hash: summary.file_hash(),
-            part_hash_set: summary.part_hash_set().cloned(),
-            aich_root: None,
-            ipv6_sources: Vec::new(),
-            sources: Default::default(),
-        };
+        let link = Ed2kFileLink::new(
+            Ed2kText::from_utf8("autoshare-link.bin"),
+            summary.file_size(),
+            summary.file_hash(),
+        )
+        .expect("a size eD2k addresses")
+        .with_part_hash_set(summary.part_hash_set().cloned());
         let expected = link.part_hash_set.as_ref().unwrap().hashes().to_vec();
 
         let dir = tempfile::tempdir().unwrap();
@@ -320,11 +402,12 @@ mod tests {
         let registry = DurableSharedFileRegistry::new(handle);
         let observed = registry.clone();
         let registry = Arc::new(registry);
-        let (evt_tx, _evt_rx) = mpsc::channel(4);
+        let (evt_tx, _evt_rx) = crate::service::outbox(Default::default());
 
         assert!(
             auto_share_completed_download(
                 id,
+                store.load_download(id).unwrap().paths().final_path(),
                 &*store,
                 &*registry,
                 |_| false,
@@ -347,15 +430,12 @@ mod tests {
             PartHash::from_bytes([0x11; PartHash::BYTE_LEN]),
             PartHash::from_bytes([0x22; PartHash::BYTE_LEN]),
         ];
-        let link = Ed2kFileLink {
-            name: Ed2kText::from_utf8("autoshare-provisional.bin"),
-            size: ED2K_PART_SIZE + 4,
-            file_hash: FileHash::from_bytes([0x33; FileHash::BYTE_LEN]),
-            part_hash_set: None,
-            aich_root: None,
-            ipv6_sources: Vec::new(),
-            sources: Default::default(),
-        };
+        let link = Ed2kFileLink::new(
+            Ed2kText::from_utf8("autoshare-provisional.bin"),
+            ED2K_PART_SIZE + 4,
+            FileHash::from_bytes([0x33; FileHash::BYTE_LEN]),
+        )
+        .expect("a size eD2k addresses");
 
         let dir = tempfile::tempdir().unwrap();
         let handle = rmule_testkit::memory_store();
@@ -365,6 +445,7 @@ mod tests {
             &link,
             Some(&server()),
             &DownloadPaths::from_final_path(dir.path().join("autoshare-provisional.bin")),
+            None,
         )
         .unwrap()
         .id();
@@ -373,17 +454,18 @@ mod tests {
             .unwrap();
         store.set_lifecycle(id, DownloadLifecycle::Active).unwrap();
         store
-            .set_lifecycle(id, DownloadLifecycle::Completed)
+            .set_lifecycle(id, DownloadLifecycle::Completing)
             .unwrap();
         let store = Arc::new(store);
         let registry = DurableSharedFileRegistry::new(handle);
         let observed = registry.clone();
         let registry = Arc::new(registry);
-        let (evt_tx, _evt_rx) = mpsc::channel(4);
+        let (evt_tx, _evt_rx) = crate::service::outbox(Default::default());
 
         assert!(
             auto_share_completed_download(
                 id,
+                store.load_download(id).unwrap().paths().final_path(),
                 &*store,
                 &*registry,
                 |_| false,

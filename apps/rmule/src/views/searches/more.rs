@@ -38,9 +38,7 @@ impl SearchesView {
             return ViewOutcome::Ignored;
         };
         if super::no_core::absent(state).is_some() {
-            return ViewOutcome::Emit(Action::Flash(crate::words::search::nothing_sent(
-                state.ui_only,
-            )));
+            return ViewOutcome::Emit(Action::Flash(crate::words::search::NOTHING_SENT));
         }
         match offered(state, search_id) {
             Some(more) if more.asks_left > 0 => ViewOutcome::Emit(Action::Command(

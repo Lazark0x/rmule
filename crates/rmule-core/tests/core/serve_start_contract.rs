@@ -214,7 +214,8 @@ async fn a_stopped_serve_starts_again_on_the_port_it_released() {
     identify_against(bound).await;
 }
 
-/// The node's User Hash is fixed at build time (ADR-0048 "Identity ownership"):
+/// The node's User Hash is fixed at build time (ADR-0048 "One identity per node, owned by the
+/// core"):
 /// credentials carry only a nickname, a port and a version — there is no
 /// field a command or a setting could name another hash in (the
 /// `ClientCredentials` doc's `compile_fail` block) — and the hello a peer

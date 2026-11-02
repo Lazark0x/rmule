@@ -76,6 +76,15 @@ fn dht_mesh() -> KadMeshSim {
     sim
 }
 
+fn rejoin(sim: &mut KadMeshSim, label: &'static str) {
+    sim.command(
+        label,
+        KadCommand::Bootstrap {
+            endpoint: hub_endpoint(),
+        },
+    );
+}
+
 fn sources_found_for(trace: &[TraceEntry], label: &str) -> Vec<KadEvent> {
     trace
         .iter()
@@ -96,7 +105,10 @@ fn indexed_by(trace: &[TraceEntry], label: &str) -> Vec<KadEvent> {
 /// sealed projection: the storer-substituted observed IP plus A's TCP port.
 fn assert_sources_are_a(founds: &[KadEvent]) {
     for event in founds {
-        let KadEvent::SourcesFound { target, candidates } = event else {
+        let KadEvent::SourcesFound {
+            target, candidates, ..
+        } = event
+        else {
             unreachable!()
         };
         assert_eq!(*target, search_request().target());
@@ -198,6 +210,11 @@ fn mesh_republish_keeps_the_source_discoverable_past_expiry() {
             start + KadNode::SOURCE_REPUBLISH_INTERVAL + Duration::from_secs(60),
             200_000,
         );
+        // A silent mesh leaves everyone unjoined, and an unjoined node starts
+        // no walk: hearing the hub again is what lets both go on.
+        rejoin(&mut sim, A);
+        rejoin(&mut sim, C);
+        sim.run_until(sim.now() + Duration::from_secs(30), 50_000);
         sim.command(
             C,
             KadCommand::SearchSources {
@@ -287,6 +304,8 @@ fn mesh_expiry_misses_then_a_late_republish_hits_again() {
             first_publish_at + KadNode::STORED_SOURCE_LIFETIME + Duration::from_secs(5),
             50_000,
         );
+        rejoin(&mut sim, C);
+        sim.run_until(sim.now() + Duration::from_secs(1), 10_000);
         sim.command(
             C,
             KadCommand::SearchSources {

@@ -14,7 +14,7 @@ use std::time::Duration;
 use crate::fixture::search_query;
 use crate::fixture::{connect_server, list_server};
 use rmule_core::{
-    Core, CoreCommand, CoreCommandRejectReason, CoreConfig, CoreEvent, ManagedServer,
+    Core, CoreCommand, CoreCommandRejectReason, CoreConfig, CoreEvent, ManagedServer, QuitStep,
     SearchCommand, SearchEvent, ServerConnectFailure, ServerConnectionEvent, ServerListCommand,
 };
 use rmule_primitives::ServerEndpoint;
@@ -479,5 +479,45 @@ async fn an_answered_search_survives_its_session_being_switched_out() {
     assert!(
         matches!(ended, SearchEvent::SearchCancelled { search_id: id } if id == search_id),
         "the answered search is cancelled, not failed: {ended:?}"
+    );
+}
+
+/// Quit ends the server session itself, inside the quit: the session is down
+/// before the credit checkpoint, as aMule disconnects in `ShutDown` before it
+/// deletes its port mappings and saves (`amule.cpp:1412-1423`). Left to the
+/// process's exit, the server's session would outlive every other quit step.
+#[tokio::test(flavor = "multi_thread")]
+async fn quit_ends_the_server_session_before_the_credit_checkpoint() {
+    let server = FakeEd2kServer::start_scripted().await;
+    let endpoint = server.endpoint();
+    let mut core = Core::builder(connect_only(), rmule_testkit::memory_store())
+        .settings(rmule_core::CoreSettings::default())
+        .build();
+    list_server(&core, &endpoint).await;
+    connect_server(&core, &endpoint).await;
+    settle_connect(&mut core).await;
+
+    let mut quit = core.quit();
+    let mut down = false;
+    let mut checkpoint_saw_it_down = None;
+    while let Some(event) = timeout(HANG_GUARD, quit.recv())
+        .await
+        .expect("quit ends within the deadline")
+    {
+        match event {
+            CoreEvent::ServerConnection(ServerConnectionEvent::Disconnected { server }) => {
+                assert_eq!(server, endpoint);
+                down = true;
+            }
+            CoreEvent::Quitting {
+                step: QuitStep::CreditCheckpoint,
+            } => checkpoint_saw_it_down = Some(down),
+            _ => {}
+        }
+    }
+    assert_eq!(
+        checkpoint_saw_it_down,
+        Some(true),
+        "the session ended before the credit checkpoint"
     );
 }

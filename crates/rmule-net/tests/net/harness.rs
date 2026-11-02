@@ -7,7 +7,8 @@ use std::collections::VecDeque;
 use std::sync::Arc;
 use std::time::Duration;
 
-use rmule_net::driver::{DrivenSession, DriverOutput, run_driver};
+use rmule_net::driver::{DrivenSession, run_driver};
+use rmule_primitives::SessionOutput;
 use tokio::io::{AsyncReadExt, AsyncWriteExt, duplex};
 use tokio::sync::mpsc;
 
@@ -34,7 +35,7 @@ enum FakeReason {
 /// and I/O closes are synthesized by the harness itself.
 #[derive(Default)]
 struct Fake {
-    out: VecDeque<DriverOutput<FakeEvent, FakeReason>>,
+    out: VecDeque<SessionOutput<FakeEvent, FakeReason>>,
 }
 
 impl Fake {
@@ -43,20 +44,21 @@ impl Fake {
     /// close.
     fn close(&mut self, reason: FakeReason) {
         self.out
-            .push_back(DriverOutput::Event(FakeEvent::Bye(reason)));
-        self.out.push_back(DriverOutput::Close(reason));
+            .push_back(SessionOutput::Event(FakeEvent::Bye(reason)));
+        self.out.push_back(SessionOutput::Close(reason));
     }
 }
 
 impl DrivenSession for Fake {
+    const LINK: &'static str = "fake";
     type Command = ();
     type Event = FakeEvent;
     type CloseReason = FakeReason;
 
     fn start(&mut self) {
-        self.out.push_back(DriverOutput::Event(FakeEvent::Hello));
+        self.out.push_back(SessionOutput::Event(FakeEvent::Hello));
         self.out
-            .push_back(DriverOutput::Write(Arc::from(&b"HELLO"[..])));
+            .push_back(SessionOutput::Write(Arc::from(&b"HELLO"[..])));
     }
     fn handle_command(&mut self, _command: ()) {
         self.close(FakeReason::Done);
@@ -64,13 +66,15 @@ impl DrivenSession for Fake {
     fn handle_bytes(&mut self, bytes: &[u8]) {
         for &b in bytes {
             match b {
-                1 => self.out.push_back(DriverOutput::Event(FakeEvent::Got(b))),
-                9 => self.out.push_back(DriverOutput::Event(FakeEvent::Resolved)),
+                1 => self.out.push_back(SessionOutput::Event(FakeEvent::Got(b))),
+                9 => self
+                    .out
+                    .push_back(SessionOutput::Event(FakeEvent::Resolved)),
                 _ => self.close(FakeReason::Done),
             }
         }
     }
-    fn poll_output(&mut self) -> Option<DriverOutput<FakeEvent, FakeReason>> {
+    fn poll_output(&mut self) -> Option<SessionOutput<FakeEvent, FakeReason>> {
         self.out.pop_front()
     }
     fn disconnect_command() {}

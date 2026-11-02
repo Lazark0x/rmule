@@ -3,6 +3,11 @@
 //! the counterparty's Kad UDP port is really dropped) both the container env
 //! and the verdict read.
 
+use anyhow::Result;
+
+use crate::flow::kad_buddy::stock_buddy::{
+    STOCK_BUDDY_HELPERS, STOCK_BUDDY_HOST, STOCK_BUDDY_RMULE_KAD_ID,
+};
 use crate::flow::mesh::KadCaptureOptions;
 use crate::rmule::RmuleServeContainer;
 
@@ -84,6 +89,9 @@ pub struct KadCoreBuddyOptions<'a> {
     /// none; the two targets are different points in the keyspace and need two
     /// different nodes.
     pub publish_source: bool,
+    /// The aMule stands open on both ports and its routing zone holds rmule
+    /// and the helpers, whose dial-backs settle its TCP verdict open.
+    pub publisher_open: bool,
     /// Placed `rmule-tools kad join-node` members added to the swarm as extra
     /// **routing contacts** for the counterparty.
     ///
@@ -166,6 +174,30 @@ pub struct KadCoreBuddyOptions<'a> {
     /// takes the `FINDSOURCE` road to a body that shares the file. Requires
     /// [`omit_buddy_endpoint`](Self::omit_buddy_endpoint).
     pub findsource_transfer: bool,
+    /// Run the buddy reask leg
+    /// (`flow::kad_buddy::buddy_reask`) as the third
+    /// party: two holders take the aMule's upload slots, a downloader on an
+    /// `ed2ksrv` High ID is queued, the server stops, and the downloader's
+    /// reask must take the buddy road. Requires
+    /// [`publish_source`](Self::publish_source); excludes the other askers.
+    pub buddy_reask: Option<BuddyReaskServer<'a>>,
+    /// The firewalled aMule's buddy is a **stock aMule**: an open node takes
+    /// `~aMuleKadID` and rmule is an ordinary far node, the downloader or the
+    /// reask body the only rmule asking (`flow::kad_buddy::stock_buddy`). Needs
+    /// [`publish_source`](Self::publish_source) and
+    /// [`callback_downloader`](Self::callback_downloader) or
+    /// [`buddy_reask`](Self::buddy_reask).
+    pub stock_buddy: bool,
+    /// Further small files rmule shares, read for `0x21` floods at stock.
+    pub shared_files: usize,
+}
+
+/// The `ed2ksrv` the buddy reask leg's downloader logs in to.
+pub struct BuddyReaskServer<'a> {
+    /// Its image, refused unless its commit label matches the pin.
+    pub image: &'a str,
+    /// Its bench config; `this_ip` is rendered per run.
+    pub config: &'a std::path::Path,
 }
 
 impl KadCoreBuddyOptions<'_> {
@@ -173,11 +205,50 @@ impl KadCoreBuddyOptions<'_> {
     /// force it (see [`helper_count`](Self::helper_count)), so the requested flag
     /// is not what ran — both the container env and the verdict read this.
     pub(crate) fn block_udp_effective(&self) -> bool {
-        self.block_udp || self.helper_count > 0
+        self.block_udp || self.helpers_effective() > 0
     }
 
-    /// Whether a third party asks for a relay — either asker.
+    /// The stock helpers that run: the stock buddy's world needs
+    /// [`STOCK_BUDDY_HELPERS`] whatever was asked for.
+    pub(crate) fn helpers_effective(&self) -> usize {
+        if self.stock_buddy {
+            self.helper_count.max(STOCK_BUDDY_HELPERS)
+        } else {
+            self.helper_count
+        }
+    }
+
+    /// rmule's Kad ID: the FindBuddy target, unless a stock buddy holds it.
+    pub(crate) fn rmule_kad_id(&self) -> [u8; 16] {
+        if self.stock_buddy {
+            STOCK_BUDDY_RMULE_KAD_ID
+        } else {
+            KAD_CORE_BUDDY_RMULE_KAD_ID
+        }
+    }
+
+    /// The `offset`-th third-party body's address. A stock buddy's helpers
+    /// and members use up the `/24`'s planned hosts, so its third party
+    /// stands past them; the next node index would open the next range.
+    ///
+    /// # Errors
+    /// If the node count exhausts the documentation ranges.
+    pub(crate) fn third_party_v4(&self, amule_ip: [u8; 4], offset: usize) -> Result<String> {
+        if self.stock_buddy {
+            let [a, b, c, _] = amule_ip;
+            return Ok(format!(
+                "{a}.{b}.{c}.{}",
+                STOCK_BUDDY_HOST as usize + 1 + offset
+            ));
+        }
+        Ok(crate::fake_public::fake_public_address(
+            2 + self.helper_count + self.mesh_members + offset,
+        )?
+        .ip)
+    }
+
+    /// Whether a third party asks for a relay — any asker.
     pub(crate) fn third_party(&self) -> bool {
-        self.callback_downloader || self.amule_requester
+        self.callback_downloader || self.amule_requester || self.buddy_reask.is_some()
     }
 }

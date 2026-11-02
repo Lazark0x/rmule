@@ -19,7 +19,7 @@
 //! every one; none park as `Unknown`.
 //!
 //! Each decoded answer entry retains its declaring server endpoint alongside
-//! its [`SourceSighting`](rmule_primitives::SourceSighting) provenance (the
+//! its [`SourceClaim`](rmule_primitives::SourceClaim) provenance (the
 //! ADR-0046 model — see [`SourceExchangeEntry`]); the aMule-mirrored sanity
 //! filter, Low-ID routing rule and per-file cap that decide which entries the
 //! session surfaces live in `admission` ([`sanitize_and_route`]).
@@ -39,6 +39,8 @@ mod tests;
 
 use rmule_primitives::{FileHash, Packet, WireReader, WireTruncated};
 use thiserror::Error;
+
+use crate::error::WireFault;
 
 pub(crate) use self::admission::sanitize_and_route;
 pub use self::entry::{SourceExchangeEntry, SourceExchangeVersion};
@@ -141,7 +143,7 @@ impl ServedSourcesVersion {
 
     /// The per-entry codec version this answer encodes at — the hybrid-id and
     /// field-width choice both follow it (`SourceExchangeVersion::uses_hybrid_id`
-    /// etc.), the ADR-0055 "uniform id rule: hybrid iff `byUsedVersion >= 3`".
+    /// etc.), the ADR-0055.
     #[must_use]
     pub const fn entry_version(self) -> SourceExchangeVersion {
         match self {
@@ -152,21 +154,6 @@ impl ServedSourcesVersion {
             Self::Ext { .. } => SourceExchangeVersion::V1,
         }
     }
-}
-
-/// Why an `OP_REQUESTSOURCES` could not be read.
-#[derive(Clone, Debug, PartialEq, Eq, Error)]
-pub enum RequestSourcesDecodeError {
-    /// The payload was not exactly one file hash.
-    #[error(
-        "OP_REQUESTSOURCES payload is {actual} bytes, not the {expected} a bare file hash requires"
-    )]
-    WrongSize {
-        /// What the shape requires.
-        expected: usize,
-        /// What arrived.
-        actual: usize,
-    },
 }
 
 /// `OP_REQUESTSOURCES` — ask a peer for more sources of `file_hash`. Payload is
@@ -191,21 +178,22 @@ impl RequestSources {
     }
 
     /// Read a peer's ask, or say why the payload is not one.
-    pub fn decode_packet(packet: &Packet) -> Result<Self, RequestSourcesDecodeError> {
+    pub fn decode_packet(packet: &Packet) -> Result<Self, WireFault> {
         let payload = packet.payload();
         if payload.len() != FileHash::BYTE_LEN {
-            return Err(RequestSourcesDecodeError::WrongSize {
+            return Err(WireFault::WrongSize {
                 expected: FileHash::BYTE_LEN,
                 actual: payload.len(),
             });
         }
         let mut reader = WireReader::new(payload);
-        let file_hash = reader.read_file_hash("file hash").map_err(|truncated| {
-            RequestSourcesDecodeError::WrongSize {
-                expected: FileHash::BYTE_LEN,
-                actual: truncated.available,
-            }
-        })?;
+        let file_hash =
+            reader
+                .read_file_hash("file hash")
+                .map_err(|truncated| WireFault::WrongSize {
+                    expected: FileHash::BYTE_LEN,
+                    actual: truncated.available,
+                })?;
         Ok(Self { file_hash })
     }
 }
@@ -257,7 +245,7 @@ pub enum AnswerSourcesDecodeError {
 /// `[file_hash 16][count u16]` then `count` sources at whichever version the
 /// answer resolves to (see [`AnswerSources::decode_packet`]). Each source is
 /// a [`SourceExchangeEntry`] — the
-/// [`SourceSighting`](rmule_primitives::SourceSighting) provenance plus the
+/// [`SourceClaim`](rmule_primitives::SourceClaim) provenance plus the
 /// declaring server the consume-side Low-ID routing rule reads (ADR-0055).
 /// Low-ID sources survive here; the High-ID filter is the caller's
 /// `as_peer_endpoint` projection (the session's consume path, ADR-0055).
@@ -471,7 +459,7 @@ pub enum AnswerSources2DecodeError {
 /// both wire forms (`PartFile.cpp` @4e8f2b3c), so a bad `0x82`
 /// ([`AnswerSourcesDecodeError`]) or `0x84` ([`AnswerSources2DecodeError`]) is
 /// a non-terminal diagnostic, never a protocol-violation close — one skip
-/// taxonomy across both opcodes, the ADR-0055 "one semantic core" applied to
+/// taxonomy across both opcodes, the ADR-0054 "one semantic core" applied to
 /// the consume-error path too.
 #[derive(Clone, Debug, PartialEq, Eq, Error)]
 pub enum AnswerSourcesSkip {
@@ -492,7 +480,7 @@ pub enum AnswerSourcesSkip {
 /// a different version on a size mismatch.
 ///
 /// Each source is a [`SourceExchangeEntry`] — the
-/// [`SourceSighting`](rmule_primitives::SourceSighting) provenance plus the
+/// [`SourceClaim`](rmule_primitives::SourceClaim) provenance plus the
 /// declaring server every version's entry carries, exactly
 /// as [`AnswerSources`] (`0x82`) holds it. aMule reads the same
 /// `[srvIP4][srvPort2]` for SX2 as SX1 (`CPartFile::AddClientSources`,
@@ -630,21 +618,6 @@ fn wire_count<T>(sources: &[T]) -> (u16, &[T]) {
     (count, &sources[..usize::from(count)])
 }
 
-/// Why an `OP_REQUESTSOURCES2` could not be read.
-#[derive(Clone, Debug, PartialEq, Eq, Error)]
-pub enum RequestSources2DecodeError {
-    /// The payload was not the standalone shape's 19 bytes.
-    #[error(
-        "OP_REQUESTSOURCES2 payload is {actual} bytes, not the {expected} the standalone shape requires"
-    )]
-    WrongSize {
-        /// What the shape requires.
-        expected: usize,
-        /// What arrived.
-        actual: usize,
-    },
-}
-
 /// `OP_REQUESTSOURCES2` (SX2) — standalone shape
 /// `<version 1><options 2><file_hash 16>` (19 bytes;
 /// `DownloadClient.cpp::SendFileRequest`/`SendBlockRequests` @4e8f2b3c, both
@@ -694,17 +667,27 @@ impl RequestSources2 {
         )
     }
 
+    /// The `<ver 1>` of a peer's ask, read after confirming the three-byte
+    /// trailer aMule reads before anything decides
+    /// (`ClientTCPSocket.cpp:1447-1450`) is there.
+    pub(crate) fn requested_version(packet: &Packet) -> Result<u8, WireFault> {
+        let mut reader = WireReader::new(packet.payload());
+        let version = reader.read_u8("version")?;
+        reader.read_u16_le("options")?;
+        Ok(version)
+    }
+
     /// Read a peer's standalone ask, requiring the full 19 bytes rather
     /// than aMule's `size != 16` check (see the type docs).
-    pub fn decode_packet(packet: &Packet) -> Result<Self, RequestSources2DecodeError> {
+    pub fn decode_packet(packet: &Packet) -> Result<Self, WireFault> {
         let payload = packet.payload();
         if payload.len() != Self::WIRE_LEN {
-            return Err(RequestSources2DecodeError::WrongSize {
+            return Err(WireFault::WrongSize {
                 expected: Self::WIRE_LEN,
                 actual: payload.len(),
             });
         }
-        let wrong_size = |truncated: WireTruncated| RequestSources2DecodeError::WrongSize {
+        let wrong_size = |truncated: WireTruncated| WireFault::WrongSize {
             expected: Self::WIRE_LEN,
             actual: truncated.available,
         };

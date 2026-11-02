@@ -123,7 +123,11 @@ impl RendezvousRequester {
         let Some(sent_at) = attempt.sent_at else {
             return HintVerdict::Refuse(HintRefusal::NotExpected);
         };
-        if !hint.is_from(&attempt.buddy_id, attempt.buddy_udp, from) {
+        if !hint.is_from(
+            &super::rendezvous_key(attempt.buddy_id),
+            attempt.buddy_udp,
+            from,
+        ) {
             return HintVerdict::Refuse(HintRefusal::UntrustedSource);
         }
         let target = hint.target_endpoint;
@@ -264,6 +268,38 @@ mod tests {
         );
         requester.on_sent(&target(), now);
         requester
+    }
+
+    /// A buddy echoes the key the rendezvous went out under (eMuleAI
+    /// `ClientUDPSocket.cpp:1274`), not the order the row's ID is held in.
+    #[test]
+    fn a_hint_is_believed_on_the_key_the_rendezvous_went_out_under() {
+        let t0 = Instant::now();
+        let buddy_id: [u8; 16] = core::array::from_fn(|byte| byte as u8);
+        let hint = |buddy_id| EndpointHint {
+            buddy_id,
+            ..hint_naming(at(3, 4662))
+        };
+        let begun = || {
+            let mut requester = RendezvousRequester::default();
+            let _ = requester.begin(target(), buddy_id, at(2, 4672), t0, jitter());
+            requester.on_sent(&target(), t0);
+            requester
+        };
+        let untrusted = HintVerdict::Refuse(HintRefusal::UntrustedSource);
+        assert_eq!(
+            begun().on_hint(&hint(buddy_id), at(2, 4672), |_| false, t0),
+            untrusted
+        );
+        assert_ne!(
+            begun().on_hint(
+                &hint(crate::natt::rendezvous_key(buddy_id)),
+                at(2, 4672),
+                |_| false,
+                t0
+            ),
+            untrusted
+        );
     }
 
     /// The exchange itself is the measurement: the hint arrives one relay

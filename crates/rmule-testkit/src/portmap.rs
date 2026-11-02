@@ -10,13 +10,14 @@
 //! epoch re-add are all driven deterministically — and the one behaviour that
 //! decides High-ID, *which external port the gateway grants*, becomes a knob.
 
+use parking_lot::Mutex;
 use std::net::{IpAddr, Ipv4Addr};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 
 use rmule_net::portmap::{
     EpochVerdict, Gateway, GatewaySource, MappingBackend, MappingError, MappingFuture,
-    MappingGrant, MappingProtocol, MappingRequest, ProbeReport,
+    MappingGrant, MappingProtocol, MappingRequest, ProbeReport, ReleaseOutcome,
 };
 use rmule_primitives::{AddressFamily, Ipv4Endpoint, PeerEndpoint};
 
@@ -51,18 +52,20 @@ impl FakeGateways {
 
 impl GatewaySource for FakeGateways {
     fn gateways(&self) -> Vec<Gateway> {
-        self.0.lock().expect("fake gateway mutex").clone()
+        self.0.lock().clone()
     }
 }
 
 /// What a scripted backend does with a mapping request.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum GrantPolicy {
-    /// Grant the exact port asked for — the High-ID answer.
+    /// Grant the external port the request suggests — the internal port on a
+    /// first map, the granted one on a renewal: the High-ID answer.
     Exact,
-    /// Grant every mapping, but on the internal port plus this offset: the
-    /// router had the port taken, or simply reassigns. On the TCP listener this
-    /// is a silent LowID, which is the whole reason the grade exists.
+    /// Grant every mapping, but this far from the internal port — above it,
+    /// or below it where above would leave the port range: the router had the
+    /// port taken, or simply reassigns. On the TCP listener this is a silent
+    /// LowID, which is the whole reason the grade exists. Never port 0.
     Shifted(u16),
     /// Grant nothing.
     Refuse,
@@ -88,6 +91,8 @@ struct Script {
     /// the runtime actually enacted.
     asked: Vec<MappingRequest>,
     released: Vec<(MappingRequest, u16)>,
+    /// What every release answers, and how long it takes to.
+    release: (ReleaseOutcome, Duration),
     /// The local address each map and release was spoken from, with the
     /// request — the PCP source a v6 pinhole is keyed by.
     spoken_from: Vec<(MappingRequest, IpAddr)>,
@@ -108,6 +113,7 @@ impl ScriptedBackend {
                 external_address: IpAddr::V4(Ipv4Addr::new(203, 0, 113, 7)),
                 asked: Vec::new(),
                 released: Vec::new(),
+                release: (ReleaseOutcome::Sent, Duration::ZERO),
                 spoken_from: Vec::new(),
             })),
         }
@@ -117,21 +123,21 @@ impl ScriptedBackend {
     #[must_use]
     pub fn absent(protocol: MappingProtocol) -> Self {
         let backend = Self::available(protocol);
-        backend.script.lock().expect("script mutex").families = None;
+        backend.script.lock().families = None;
         backend
     }
 
     /// Report that it maps `families` — both, for a dual-stack PCP gateway.
     #[must_use]
     pub fn mapping(self, families: &[AddressFamily]) -> Self {
-        self.script.lock().expect("script mutex").families = Some(families.to_vec());
+        self.script.lock().families = Some(families.to_vec());
         self
     }
 
     /// Change what it grants.
     #[must_use]
     pub fn granting(self, policy: GrantPolicy) -> Self {
-        self.script.lock().expect("script mutex").grants = policy;
+        self.script.lock().grants = policy;
         self
     }
 
@@ -139,13 +145,22 @@ impl ScriptedBackend {
     /// `100.64/10` one drives the double-NAT and carrier-grade paths.
     #[must_use]
     pub fn at_external_address(self, address: IpAddr) -> Self {
-        self.script.lock().expect("script mutex").external_address = address;
+        self.script.lock().external_address = address;
+        self
+    }
+
+    /// Answer every release with `outcome`, `latency` after it was asked: a
+    /// UPnP release that found the port another host's, a slow gateway at
+    /// quit.
+    #[must_use]
+    pub fn releasing(self, outcome: ReleaseOutcome, latency: Duration) -> Self {
+        self.script.lock().release = (outcome, latency);
         self
     }
 
     /// Report a gateway epoch reset on every answer from now on.
     pub fn report_epoch_reset(&self, reset: bool) {
-        self.script.lock().expect("script mutex").epoch = if reset {
+        self.script.lock().epoch = if reset {
             EpochVerdict::Reset
         } else {
             EpochVerdict::Consistent
@@ -155,40 +170,50 @@ impl ScriptedBackend {
     /// Every mapping request this backend was asked for, in order.
     #[must_use]
     pub fn asked(&self) -> Vec<MappingRequest> {
-        self.script.lock().expect("script mutex").asked.clone()
+        self.script.lock().asked.clone()
     }
 
     /// Every release this backend was asked for, with the external port.
     #[must_use]
     pub fn released(&self) -> Vec<(MappingRequest, u16)> {
-        self.script.lock().expect("script mutex").released.clone()
+        self.script.lock().released.clone()
     }
 
     /// Every map and release, with the local address its gateway was spoken
     /// to from, in order.
     #[must_use]
     pub fn spoken_from(&self) -> Vec<(MappingRequest, IpAddr)> {
-        self.script
-            .lock()
-            .expect("script mutex")
-            .spoken_from
-            .clone()
+        self.script.lock().spoken_from.clone()
     }
 
     fn answer(&self, request: MappingRequest) -> Result<MappingGrant, MappingError> {
-        let mut script = self.script.lock().expect("script mutex");
+        let mut script = self.script.lock();
         script.asked.push(request);
-        let external_port = match script.grants {
-            GrantPolicy::Exact => request.internal_port,
-            GrantPolicy::Shifted(offset) => request.internal_port.wrapping_add(offset),
-            GrantPolicy::Refuse => {
-                return Err(MappingError::Refused {
-                    protocol: self.protocol,
-                    refusal: rmule_net::portmap::MappingRefusal::NoResources,
-                    hold_off: None,
-                });
-            }
+        // A gateway maps only in the families its probe answered for.
+        if !script
+            .families
+            .as_ref()
+            .is_some_and(|families| families.contains(&request.family))
+        {
+            return Err(MappingError::Unsupported(self.protocol));
+        }
+        let refused = MappingError::Refused {
+            protocol: self.protocol,
+            refusal: rmule_net::portmap::MappingRefusal::NoResources,
+            hold_off: None,
         };
+        let external_port = match script.grants {
+            GrantPolicy::Exact => request.suggested_external_port,
+            GrantPolicy::Shifted(offset) => request
+                .internal_port
+                .checked_add(offset)
+                .or_else(|| request.internal_port.checked_sub(offset))
+                .unwrap_or(0),
+            GrantPolicy::Refuse => return Err(refused),
+        };
+        if external_port == 0 {
+            return Err(refused);
+        }
         let external = match script.external_address {
             IpAddr::V4(address) => PeerEndpoint::V4(Ipv4Endpoint::new(address, external_port)),
             IpAddr::V6(address) => {
@@ -212,7 +237,7 @@ impl MappingBackend for ScriptedBackend {
         self: Arc<Self>,
         _gateway: Gateway,
     ) -> MappingFuture<'static, Result<ProbeReport, MappingError>> {
-        let script = self.script.lock().expect("script mutex").clone();
+        let script = self.script.lock().clone();
         let protocol = self.protocol;
         Box::pin(async move {
             script
@@ -234,7 +259,6 @@ impl MappingBackend for ScriptedBackend {
     ) -> MappingFuture<'static, Result<MappingGrant, MappingError>> {
         self.script
             .lock()
-            .expect("script mutex")
             .spoken_from
             .push((request, gateway.local_address));
         let answer = self.answer(request);
@@ -246,11 +270,17 @@ impl MappingBackend for ScriptedBackend {
         gateway: Gateway,
         request: MappingRequest,
         external_port: u16,
-    ) -> MappingFuture<'static, ()> {
-        let mut script = self.script.lock().expect("script mutex");
+    ) -> MappingFuture<'static, ReleaseOutcome> {
+        let mut script = self.script.lock();
         script.released.push((request, external_port));
         script.spoken_from.push((request, gateway.local_address));
+        let (outcome, latency) = script.release.clone();
         drop(script);
-        Box::pin(async {})
+        Box::pin(async move {
+            if !latency.is_zero() {
+                tokio::time::sleep(latency).await;
+            }
+            outcome
+        })
     }
 }

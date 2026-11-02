@@ -17,17 +17,19 @@ use std::time::Duration;
 use anyhow::{Context, Result, bail};
 
 use crate::artifacts::RunLayout;
-use crate::bench_doctor::{BenchDoctor, CAP_DAEMON_IPV6, DoctorReport, SkipReason};
+use crate::bench_doctor::{CAP_DAEMON_IPV6, DoctorReport, SkipReason};
 use crate::docker::{InternalNetwork, RunContainer};
 use crate::fake_public::subnet_cidr;
 use crate::fake_public_v6::FakePublicV6Plan;
 use crate::flow::bench::{Bench, DEFAULT_TAP_INTERFACE, run_checked};
-use crate::flow::ed2ksrv::Ed2ksrvImage;
+use crate::flow::ed2ksrv::{self, ED2KSRV};
 use crate::flow::gate::wait_for_container_log;
 use crate::flow::nat::dialect::verdict::{Body, Claim, Ipv6Verdict, label, write};
 use crate::flow::nat::dialect::{Ipv6Flow, WAN_SUBNET_INDEX, WAN_V6_NET};
 use crate::flow::nat::synthetic::{SyntheticFile, write_hashed};
+use crate::flow::pinned_image::{AMULE_KNO, EMULEQT};
 use crate::flow::taps::{Attachment, PerAttachmentTaps, TapRole, TapsRecord, write_taps_record};
+use crate::verdict::Verdict;
 
 /// Every tap records all IP traffic on the body's own attachment. A dialect
 /// exchange is TCP hello and UDP reask at once, so a protocol-narrowed filter
@@ -161,9 +163,14 @@ pub struct Ipv6DialectOptions<'a> {
     pub rmule_tools_build_context: &'a Path,
     /// The `natgw` image, which is what **Bench Doctor** probes the kernel with.
     pub natgw_image: &'a str,
+    /// Build context for the natgw image, built before the doctor runs.
+    pub natgw_build_context: &'a Path,
     /// `ipv6-kad-tags`: arm Kad datagram obfuscation on the emule-qt leg's
     /// rmule bodies, for the verify-key three-way.
     pub rmule_kad_crypt: bool,
+    /// `ipv6-asker`: emule-qt's IPv4 dial reaches rmule's listener beside its
+    /// IPv6 one, so the leg reads one client on two links.
+    pub asker_both_dials: bool,
     /// Keep containers after the run.
     pub keep_containers: bool,
     /// Per-step readiness budget.
@@ -226,16 +233,21 @@ pub(crate) fn run(options: Ipv6DialectOptions<'_>) -> Result<()> {
 
 fn drive(bench: &mut Bench, options: &Ipv6DialectOptions<'_>) -> Result<()> {
     let flow = options.flow;
-    build_images(bench, options)?;
-
     let suffix = run_suffix(options.layout)?;
-    let doctor = BenchDoctor::new(&bench.docker, options.natgw_image, &suffix).examine()?;
+    // The doctor decides before anything but its own image is built.
+    let doctor = bench.examine_doctor(
+        "natgw",
+        options.natgw_image,
+        options.natgw_build_context,
+        &suffix,
+    )?;
     if let Err(skip) = doctor.require(
         &[CAP_DAEMON_IPV6],
         "an IPv6 dialect exchange against a pinned counterparty",
     ) {
         return write_skip(options.layout, flow, &doctor, &skip);
     }
+    build_images(bench, options)?;
 
     let leg_dir = options.layout.ipv6_dir().join(flow.name());
     fs::create_dir_all(&leg_dir).with_context(|| format!("create {}", leg_dir.display()))?;
@@ -334,7 +346,7 @@ fn drive(bench: &mut Bench, options: &Ipv6DialectOptions<'_>) -> Result<()> {
             claim: claims,
         },
     )?;
-    if verdict == "FAIL" {
+    if verdict == Verdict::Fail {
         bail!(
             "{} did not hold every claim the bench can drive; see {}-verdict.toml",
             flow.name(),
@@ -348,15 +360,10 @@ fn build_images(bench: &Bench, options: &Ipv6DialectOptions<'_>) -> Result<()> {
     let flow = options.flow;
     if options.build_images {
         if flow.needs_amule_kno() {
-            bench
-                .build_amule_kno_image(options.amule_kno_image, options.amule_kno_build_context)?;
+            AMULE_KNO.build(options.amule_kno_image, options.amule_kno_build_context)?;
         }
         if flow.needs_emuleqt() {
-            bench.build_image(
-                "emuleqt",
-                options.emuleqt_image,
-                options.emuleqt_build_context,
-            )?;
+            EMULEQT.build(options.emuleqt_image, options.emuleqt_build_context)?;
         }
         if flow.needs_legacy_amule() {
             bench.build_image("aMule", options.amule_image, options.amule_build_context)?;
@@ -402,7 +409,7 @@ fn start_bodies(
     if flow == Ipv6Flow::ExtSxEmit {
         return super::ext_sx_emit::start(bench, options, stage, suffix, timeout).map(Some);
     }
-    if flow == Ipv6Flow::DownloadRung0 {
+    if matches!(flow, Ipv6Flow::DownloadRung0 | Ipv6Flow::Asker) {
         return super::download_rung0::start(bench, options, stage, suffix, timeout).map(Some);
     }
     if flow == Ipv6Flow::ExtSxCore {
@@ -415,9 +422,10 @@ fn start_bodies(
 
     if flow.needs_amule_kno() {
         let name = format!("rmule-interop-v6kno-{suffix}");
+        let kno = AMULE_KNO.check(&bench.docker, options.amule_kno_image)?;
         bench.start_extra(
             &name,
-            RunContainer::new(options.amule_kno_image)
+            kno.container()
                 .detach()
                 .name(&name)
                 .network(&stage.network)
@@ -430,7 +438,7 @@ fn start_bodies(
         stage.bodies.push(Body {
             name: "amule-kno".to_owned(),
             image: options.amule_kno_image.to_owned(),
-            pin: "kno/amule integration/network-parity ab483654".to_owned(),
+            pin: kno.pin(),
             address_v4: stage.v4(HOST_AMULE_KNO).to_owned(),
             address_v6: stage.v6(HOST_AMULE_KNO).to_owned(),
         });
@@ -439,7 +447,9 @@ fn start_bodies(
 
     if flow.needs_emuleqt() {
         let name = format!("rmule-interop-v6qt-{suffix}");
-        let mut container = RunContainer::new(options.emuleqt_image)
+        let qt = EMULEQT.check(&bench.docker, options.emuleqt_image)?;
+        let mut container = qt
+            .container()
             .detach()
             .name(&name)
             .network(&stage.network)
@@ -468,7 +478,7 @@ fn start_bodies(
         stage.bodies.push(Body {
             name: "emuleqt".to_owned(),
             image: options.emuleqt_image.to_owned(),
-            pin: "ModderMule/emule-qt 73fff714".to_owned(),
+            pin: qt.pin(),
             address_v4: stage.v4(HOST_EMULEQT).to_owned(),
             address_v6: stage.v6(HOST_EMULEQT).to_owned(),
         });
@@ -508,11 +518,10 @@ fn start_bodies(
     if flow.needs_ed2ksrv() && image_present(bench, options.ed2ksrv_image) {
         stage.ed2ksrv_present = true;
         let name = format!("rmule-interop-v6srv-{suffix}");
-        let ed2ksrv = Ed2ksrvImage::check(&bench.docker, options.ed2ksrv_image)?;
+        let ed2ksrv = ED2KSRV.check(&bench.docker, options.ed2ksrv_image)?;
         bench.start_extra(
             &name,
-            ed2ksrv
-                .container()
+            ed2ksrv::configured(&ed2ksrv, &stage.leg_dir, stage.v4(HOST_ED2KSRV))?
                 .detach()
                 .name(&name)
                 .network(&stage.network)
@@ -578,7 +587,7 @@ fn wan_v4(host: usize) -> Result<String> {
 fn image_present(bench: &Bench, tag: &str) -> bool {
     bench
         .docker
-        .inspect_image(tag.to_owned())
+        .image_id(tag.to_owned())
         .to_command()
         .output()
         .is_ok_and(|output| output.status.success())
@@ -644,6 +653,21 @@ pub(crate) fn start_detached_driver(
     args: &[String],
     marker: &str,
 ) -> Result<(String, bool)> {
+    start_detached_driver_with_env(bench, options, stage, role, host, args, marker, &[])
+}
+
+/// [`start_detached_driver`] with variables set for its entrypoint.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn start_detached_driver_with_env(
+    bench: &mut Bench,
+    options: &Ipv6DialectOptions<'_>,
+    stage: &Stage,
+    role: &str,
+    host: usize,
+    args: &[String],
+    marker: &str,
+    env: &[(&str, String)],
+) -> Result<(String, bool)> {
     let name = container_name(options.layout, role)?;
     let mut container = RunContainer::new(options.rmule_tools_image)
         .detach()
@@ -653,6 +677,9 @@ pub(crate) fn start_detached_driver(
         .ip6(stage.v6(host))
         .cap_add("NET_ADMIN")
         .volume(&stage.leg_dir, "/out");
+    for (name, value) in env {
+        container = container.env(name, value);
+    }
     for arg in args {
         container = container.arg(arg.clone());
     }
@@ -722,7 +749,7 @@ fn write_skip(
         layout.root(),
         &Ipv6Verdict {
             flow: flow.name(),
-            verdict: "SKIPPED",
+            verdict: Verdict::Skipped,
             detail: "the bench lacks a capability this flow needs; nothing was measured."
                 .to_owned(),
             note: String::new(),

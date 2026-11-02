@@ -1,6 +1,6 @@
 //! Session **establishment** and the server switch: the one dial + login path,
-//! the operator's `connect_to_server` (ADR-0093, "Connecting is the operator's
-//! act"). It ends the live session and reports the `Disconnected(old)` →
+//! the operator's `connect_to_server` (ADR-0095, "Connecting is the operator's act"). It ends the
+//! live session and reports the `Disconnected(old)` →
 //! `Connecting(new)` → `Connected`/`ConnectFailed` trail; no activity dials,
 //! each rides [`SharedServerSession::live_session`] or waits for one. The IP-filter gate refuses a filtered
 //! (or filtered-after-resolve) server before any dial; each dial's link,
@@ -9,6 +9,7 @@
 //! (`link`). The login's products are projected into the peer handshake
 //! context peers are dialed with.
 
+use std::future::Future;
 use std::net::Ipv4Addr;
 
 use rmule_ed2k::{Ed2kEvent, ServerGrants};
@@ -35,18 +36,22 @@ use crate::service::{
 /// login rmule makes (ADR-0095, "Connecting is the operator's act"; the actor
 /// binds the listener and waits for its mapping before calling this).
 ///
-/// Under one slot lock, **a live session is ended before the new one is
-/// dialed**, and waited for, so the trail is always `Disconnected(old)` →
-/// `Connecting(new)` → `Connected`/`ConnectFailed`, and the connected marker is
-/// never briefly the wrong server.
+/// **A live session is ended before the new one is dialed**, and waited for,
+/// so the trail is always `Disconnected(old)` → `Connecting(new)` →
+/// `Connected`/`ConnectFailed`, and the connected marker is never briefly the
+/// wrong server. The caller's in-flight flag makes this the only dial, so the
+/// slot lock guards no more than the take and the install: everything between
+/// them may wait on a silent server, and every reader of the slot, the
+/// operator's Disconnect above all, answers meanwhile. A Disconnect ends the
+/// dial at [`SharedServerSession::cancel_dial`]'s word, said as `Disconnected`.
 pub(crate) async fn connect_to_server(
     shared: &SharedServerSession,
     server: ServerEndpoint,
     identity: ClientIdentity,
     ip_filter: &SharedIpFilter,
 ) -> Result<ServerSessionHandle, DownloadFailure> {
-    let mut slot = shared.slot().lock().await;
-    let leaving = match slot.take() {
+    let live = shared.slot().lock().await.take();
+    let leaving = match live {
         Some(live) => {
             let left = live.server().clone();
             live.disconnect().await;
@@ -55,14 +60,25 @@ pub(crate) async fn connect_to_server(
         }
         None => None,
     };
-    establish_into(shared, &mut slot, server, identity, ip_filter, leaving).await
+    establish_into(shared, server, identity, ip_filter, leaving).await
 }
 
-/// Dial, log in, spawn the session task and install it in the held `slot`,
-/// then bump the **Session Generation** so every follower meets it.
+/// `work`, or `None` once the dial is cancelled.
+async fn unless_cancelled<T>(
+    shared: &SharedServerSession,
+    work: impl Future<Output = T>,
+) -> Option<T> {
+    tokio::select! {
+        biased;
+        () = shared.dial_cancelled() => None,
+        done = work => Some(done),
+    }
+}
+
+/// Dial, log in, spawn the session task and install it in the slot, then bump
+/// the **Session Generation** so every follower meets it.
 async fn establish_into(
     shared: &SharedServerSession,
-    slot: &mut Option<ServerSessionHandle>,
     server: ServerEndpoint,
     identity: ClientIdentity,
     ip_filter: &SharedIpFilter,
@@ -84,19 +100,15 @@ async fn establish_into(
     let resolved: Vec<Ipv4Addr> = match server.host().parse::<Ipv4Addr>() {
         Ok(ip) => vec![ip],
         Err(_) => {
-            let gate_armed = ip_filter
-                .read()
-                .expect("ip filter lock")
-                .has_server_blocks();
+            let gate_armed = ip_filter.read().has_server_blocks();
             if gate_armed {
-                match tokio::net::lookup_host((server.host(), server.port())).await {
-                    Ok(addrs) => addrs
-                        .filter_map(|addr| match addr {
-                            std::net::SocketAddr::V4(v4) => Some(*v4.ip()),
-                            std::net::SocketAddr::V6(_) => None,
-                        })
-                        .collect(),
-                    Err(_) => Vec::new(),
+                let lookup = shared
+                    .resolver()
+                    .resolve_every_ipv4(server.host().to_owned());
+                match unless_cancelled(shared, lookup).await {
+                    Some(addresses) => addresses,
+                    // Nothing was said of this dial yet.
+                    None => return Err(DownloadFailure::ServerDisconnected),
                 }
             } else {
                 Vec::new()
@@ -104,7 +116,7 @@ async fn establish_into(
         }
     };
     let server_filtered = {
-        let filter = ip_filter.read().expect("ip filter lock");
+        let filter = ip_filter.read();
         resolved.iter().any(|ip| filter.is_filtered_server(*ip))
     };
     if server_filtered {
@@ -118,8 +130,7 @@ async fn establish_into(
     }
     facts.connecting(&server, leaving).await;
     // ADR-0087 §4.1: the login advertises our Known IPv6 only when the
-    // Advertised Endpoints chooser has settled one — and then both signals
-    // ride, because a server may gate on either.
+    // Advertised Endpoints chooser has settled one.
     let advertised_ipv6 = shared.ipv6_advert().get();
     // ADR-0091: the login's `0xF9` is a claim that we can be punched, so it
     // rides only when the socket a punch would land on is really there — an
@@ -156,18 +167,22 @@ async fn establish_into(
             advertised_ipv6,
             udp_ports,
         };
-        let reason = match establish(
+        let attempt = establish(
             server.clone(),
             identity.clone(),
             plan,
             shared.login_timeout(),
             &own,
             &facts,
-        )
-        .await
-        {
-            Ok(established) => break established,
-            Err(reason) => reason,
+        );
+        let reason = match unless_cancelled(shared, attempt).await {
+            Some(Ok(established)) => break established,
+            Some(Err(reason)) => reason,
+            None => {
+                // The operator's act, so nothing counts against the server.
+                facts.disconnected(&server).await;
+                return Err(DownloadFailure::ServerDisconnected);
+            }
         };
         policy = shared.obfuscation().get();
         match link.after_failure(policy, reason) {
@@ -199,9 +214,15 @@ async fn establish_into(
             punch: punch.clone(),
             grants,
             reach: shared.reach(),
+            dial_backs: shared.dial_backs().clone(),
+            tcp_port: identity.tcp_port(),
+            ipv6_told: (!over_ipv6).then(|| super::multiplexer::Ipv6Told {
+                told: advertised_ipv6,
+                follow: shared.ipv6_advert().follow(),
+            }),
         },
     );
-    *slot = Some(handle.clone());
+    *shared.slot().lock().await = Some(handle.clone());
     // The login is the only source of either half (ADR-0032): the id says
     // whether we are Low-ID, the server says whose hello names *ours*. Both
     // are published the moment the session exists and cleared as it ends, so
@@ -229,8 +250,10 @@ async fn establish_into(
     shared.session_established();
     // IPv4 only, and by type: the punch is IPv4, and a session over IPv6
     // says nothing about our IPv4 mapping — so there is nothing to keep alive
-    // and the chooser is never told the server can introduce us.
+    // and the chooser is never told the server can introduce us. And only on
+    // a server that said it coordinates: `0x20000` is the whole gate (ADR-0091).
     if udp_ports.is_some()
+        && grants.lowid_holepunch
         && let Some(std::net::SocketAddr::V4(server_addr)) = resolved
     {
         // The server's own port, not the one dialed: an obfuscated link
@@ -353,6 +376,7 @@ async fn establish(
         obfuscated_port: link.obfuscated_port(),
         advertised_ipv6,
         udp_ports,
+        offer_pace: true,
         login_timeout,
         ..Ed2kConnectOptions::default()
     };
@@ -481,16 +505,17 @@ async fn await_answer(
 /// Why a dial did not come up, as the login step names it.
 fn dial_failure(error: &rmule_net::ed2k::Ed2kNetError) -> DialFailure {
     use rmule_net::driver::DriverError;
+    use rmule_net::ed2k::Ed2kNetError;
     match error {
-        rmule_net::ed2k::Ed2kNetError::Driver(DriverError::ConnectTimeout) => DialFailure::TimedOut,
-        rmule_net::ed2k::Ed2kNetError::Driver(DriverError::Io(error)) => DialFailure::Os {
+        Ed2kNetError::Driver(DriverError::ConnectTimeout) => DialFailure::TimedOut,
+        Ed2kNetError::Driver(DriverError::Io(error)) => DialFailure::Os {
             kind: error.kind(),
             os_code: error.raw_os_error(),
         },
-        rmule_net::ed2k::Ed2kNetError::CryptHandshake(error) => {
-            DialFailure::CryptHandshake { kind: error.kind() }
+        Ed2kNetError::CryptHandshake(error) => DialFailure::CryptHandshake { kind: error.kind() },
+        Ed2kNetError::Driver(DriverError::DriverDied | DriverError::Closed) => {
+            DialFailure::DriverEnded
         }
-        _ => DialFailure::DriverEnded,
     }
 }
 

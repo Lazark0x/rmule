@@ -9,13 +9,11 @@
 //! Generation wakes. The runner samples at start, on every
 //! **Reach Generation**, and on its one-second tick, and hands the brain a
 //! new [`CallbackCapability`]
-//! when the sample moves; the enactment of a per-server global callback reads
-//! the requester contact from the same session, so the road the brain admits
-//! and the payload the runner sends never disagree.
+//! when the sample moves.
 //!
 //! [`SharedSelfReach::callback_capability`]: crate::reachability::SharedSelfReach::callback_capability
 
-use rmule_primitives::{Ipv4Endpoint, PeerSource};
+use rmule_primitives::Ipv4Endpoint;
 
 use crate::download::state::CallbackCapability;
 
@@ -23,10 +21,6 @@ use crate::download::state::CallbackCapability;
 pub(crate) struct CallbackFacts {
     /// **Self Reach**: the owner that answers `CanDoCallback`.
     pub(crate) reach: crate::reachability::SharedSelfReach,
-    /// The TCP port the Core Settings name; a `0` presents the port the
-    /// listener holds bound as each request is sent — the one a called-back
-    /// peer dials.
-    pub(crate) our_tcp_port: u16,
 }
 
 impl CallbackFacts {
@@ -35,26 +29,16 @@ impl CallbackFacts {
         self.reach.callback_capability()
     }
 
-    /// The server we are logged into now, when its host is an IPv4 literal —
+    /// The server we are logged into now, by the IPv4 address it reached —
     /// the brain's [`CallbackCapability::server`], read live.
     pub(crate) fn server(&self) -> Option<Ipv4Endpoint> {
         self.reach.session().and_then(|session| session.server)
-    }
-
-    /// Our own contact for an `OP_GLOBCALLBACKREQUEST` payload (ADR-0051): our
-    /// High-ID address (decoded exactly as a source is) and the TCP port a
-    /// hello presents now. `None` off a server High ID, which is also when
-    /// [`CallbackCapability::server_relays`] admits no global callback.
-    pub(crate) fn requester(&self) -> Option<Ipv4Endpoint> {
-        let session = self.reach.session()?;
-        let port = self.reach.presented_tcp_port(self.our_tcp_port);
-        PeerSource::new(session.client_id, port).high_id()
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use rmule_primitives::{ClientId, SourceSighting};
+    use rmule_primitives::{ClientId, Informant, SourceSighting};
 
     use super::*;
     use crate::KadReachLevel;
@@ -83,38 +67,13 @@ mod tests {
 
     fn low_id_candidate() -> LowIdCandidate {
         LowIdCandidate::from_sighting(
-            SourceSighting::plain(PeerSource::new(ClientId::from_u32(9), 4662)),
+            SourceSighting::plain(
+                rmule_primitives::PeerSource::new(ClientId::from_u32(9), 4662),
+                Informant::Own,
+            ),
             None,
         )
         .expect("a Low-ID source is a candidate")
-    }
-
-    /// A settings port of `0` gives the called-back peer the port the
-    /// listener holds bound as the request is sent, as the hello does: a
-    /// listener restarted on another port is named from then on.
-    #[test]
-    fn a_requester_port_of_zero_is_the_port_the_listener_holds_now() {
-        let own = SharedOwnIdentity::default();
-        own.set_connected_session(Some(ConnectedSession {
-            server: None,
-            client_id: ClientId::from_u32(0x0A00_0001),
-        }));
-        let facts = CallbackFacts {
-            reach: reach_over(&own, KadReachLevel::fixed(false)),
-            our_tcp_port: 0,
-        };
-        let v4 = rmule_net::family::FamilyBinds {
-            bound: vec![rmule_primitives::AddressFamily::V4],
-            refused: Vec::new(),
-        };
-        for port in [51_234, 51_235] {
-            own.addresses()
-                .record_bind(crate::address_learning::SocketRole::Tcp, &v4, port);
-            assert_eq!(
-                facts.requester().map(|requester| requester.port),
-                Some(port)
-            );
-        }
     }
 
     /// The login-snapshot defect, for this reader: the capability used to be computed from
@@ -130,15 +89,12 @@ mod tests {
         }));
         let facts = CallbackFacts {
             reach: reach_over(&own, KadReachLevel::fixed(false)),
-            our_tcp_port: 4662,
         };
         let handle = live_listener(&facts.reach);
         assert!(facts.sample().server_relays());
-        assert!(facts.requester().is_some());
 
         own.reassign_client_id(ClientId::from_u32(7));
         assert!(!facts.sample().server_relays(), "the Low ID is read live");
-        assert_eq!(facts.requester(), None, "a Low ID has no contact to give");
 
         own.set_connected_session(None);
         assert_eq!(facts.sample(), CallbackCapability::of(true, None, false));
@@ -153,7 +109,6 @@ mod tests {
     async fn a_serve_started_mid_download_admits_a_waiting_low_id_row_on_the_next_sample() {
         let facts = CallbackFacts {
             reach: reach_over(&SharedOwnIdentity::default(), KadReachLevel::fixed(true)),
-            our_tcp_port: 4662,
         };
         let candidate = low_id_candidate();
         assert!(
@@ -179,7 +134,6 @@ mod tests {
     async fn a_stopped_serve_withdraws_the_capability_for_new_admissions() {
         let facts = CallbackFacts {
             reach: reach_over(&SharedOwnIdentity::default(), KadReachLevel::fixed(true)),
-            our_tcp_port: 4662,
         };
         let handle = live_listener(&facts.reach);
         let candidate = low_id_candidate();
@@ -210,11 +164,15 @@ mod tests {
         let kad = SharedKadVerdicts::default();
         let facts = CallbackFacts {
             reach: reach_over(&own, KadReachLevel::published(kad.clone())),
-            our_tcp_port: 4662,
         };
         let handle = live_listener(&facts.reach);
         let row = LowIdCandidate {
-            from_kad: true,
+            id: crate::adapters::CallbackKey::KadRow {
+                observed: rmule_primitives::Ipv4Endpoint::new(
+                    std::net::Ipv4Addr::new(198, 51, 100, 7),
+                    4672,
+                ),
+            },
             ..low_id_candidate()
         };
         assert!(!facts.sample().admits(&row), "Low ID and Kad firewalled");

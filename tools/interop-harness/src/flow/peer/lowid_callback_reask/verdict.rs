@@ -11,8 +11,9 @@
 //! second callback request that must not come is a documented absence
 //! (ADR-0045).
 
+use crate::flow::evidence::read_toml;
+use crate::verdict::Verdict;
 use std::collections::BTreeSet;
-use std::fs;
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
 use std::path::Path;
 
@@ -122,10 +123,10 @@ pub(crate) struct Rows {
 
 /// The verdict file.
 #[derive(Debug, Serialize)]
-struct Verdict<'a> {
+struct VerdictFile<'a> {
     #[serde(rename = "scenario")]
     flow: &'static str,
-    verdict: &'static str,
+    verdict: Verdict,
     detail: String,
     ed2ksrv_pin: &'a str,
     rows: &'a Rows,
@@ -143,18 +144,13 @@ pub(crate) fn verdict_path(run_dir: &Path) -> std::path::PathBuf {
 /// # Errors
 /// If an address file, a tap or a log the run must have kept is missing or
 /// unreadable — a broken run, never a zero.
-pub fn score_run_dir(run_dir: &Path) -> Result<&'static str> {
+pub fn score_run_dir(run_dir: &Path) -> Result<Verdict> {
     let root = run_dir.join(ROOT_DIR);
-    let addresses_path = root.join(ADDRESSES);
-    let addresses: Addresses = toml::from_str(
-        &fs::read_to_string(&addresses_path)
-            .with_context(|| format!("read {}", addresses_path.display()))?,
-    )
-    .with_context(|| format!("parse {}", addresses_path.display()))?;
+    let addresses: Addresses = read_toml(&root.join(ADDRESSES))?;
     let observed = observe(run_dir, &addresses)?;
     let (claims, rows) = claims(&addresses, &observed);
     let (verdict, detail) = label(&claims);
-    let text = toml::to_string_pretty(&Verdict {
+    let text = toml::to_string_pretty(&VerdictFile {
         flow: FLOW,
         verdict,
         detail,
@@ -164,7 +160,7 @@ pub fn score_run_dir(run_dir: &Path) -> Result<&'static str> {
     })
     .context("serialize the verdict")?;
     let path = verdict_path(run_dir);
-    fs::write(&path, &text).with_context(|| format!("write {}", path.display()))?;
+    crate::verdict::write(&path, &text)?;
     println!("{text}");
     Ok(verdict)
 }

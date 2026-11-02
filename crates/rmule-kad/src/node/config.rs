@@ -74,18 +74,15 @@ impl std::fmt::Debug for KadContactAdmission {
 /// publish-gate and storer-refusal inputs (ADR-0062).
 ///
 /// aMule reads these from ADR-0058 `Reachability` and ADR-0061 buddy state.
-/// Only the reachability *responder* exists (which proves *other* peers
-/// reachable), not a self-check requester, so the node has no self-verdict to
-/// thread — it holds this **injected** value ([`KadNode::set_reachability`](crate::KadNode::set_reachability)),
-/// defaulting to the assume-open posture the hello misc-options already present
-/// (not firewalled, no buddy). The moment a self-check requester lands the
-/// driver feeds a real verdict through the same seam — the conservative bool
-/// seam ADR-0062 calls for.
+/// The driver states them through [`KadNode::set_reachability`](crate::KadNode::set_reachability),
+/// defaulting to open with no buddy. A running UDP check's own firewalled
+/// verdict counts beside `udp_firewalled`.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub struct KadReachability {
     /// This node's UDP port is firewalled: the **Kad Storer** silently refuses
-    /// inbound keyword publishes (a firewalled node could not be found to serve
-    /// the rows it stored) — aMule's `Process2PublishKeyRequest` early return.
+    /// inbound publishes (a firewalled node could not be found to serve the
+    /// rows it stored), as aMule's `Process2Publish*Request` return early, and
+    /// its hello says so.
     pub udp_firewalled: bool,
     /// This node's TCP port is firewalled: the **Kad Publisher** stays silent
     /// unless a buddy is connected (a firewalled node's rows would carry buddy

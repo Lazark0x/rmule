@@ -187,10 +187,14 @@ impl SharedSelfReach {
             .is_some_and(|session| session.client_id.is_high_id())
     }
 
-    /// The live session's self-facts as the High-ID family reads them —
-    /// for a reader that also needs *which* id (a global callback's
-    /// requester contact), so it asks the same owner rather than a second
-    /// handle.
+    /// Our own User Hash, `None` only on a test cell no builder fixed.
+    pub(crate) fn user_hash(&self) -> Option<rmule_primitives::UserHash> {
+        self.own.user_hash()
+    }
+
+    /// The live session's self-facts as the High-ID family reads them, for
+    /// a reader that also needs *which* id or server, so it asks the same
+    /// owner rather than a second handle.
     pub(crate) fn session(&self) -> Option<ConnectedSession> {
         self.own.connected_session()
     }
@@ -225,7 +229,7 @@ impl SharedSelfReach {
             && self.kad_tcp_open()
             && let Some(address) = self.own.public_ip()
         {
-            return ClientId::from_u32(u32::from_le_bytes(address.octets()));
+            return ClientId::from_ipv4(address);
         }
         if let Some(session) = self.own.connected_session() {
             return session.client_id;
@@ -368,12 +372,13 @@ impl SharedSelfReach {
 
 /// A running Kad Activity's hold on the Kad half of Self Reach (ADR-0093):
 /// present exactly as long as this is, and nothing proven once it drops.
-/// Fields drop in declaration order: Kad Presence clears, then the verdicts
-/// reset.
+/// Fields drop in declaration order: the verdicts reset, then Kad Presence
+/// clears, so between the two a reader sees a running node that has proven
+/// nothing, never a stopped one with a live verdict.
 #[must_use = "dropping the lease is the Kad node's end"]
 pub(crate) struct KadRunLease {
-    _presence: KadPresenceLease,
     _verdicts: Option<KadVerdictsLease>,
+    _presence: KadPresenceLease,
 }
 
 /// A subscription to the **Reach Generation**.

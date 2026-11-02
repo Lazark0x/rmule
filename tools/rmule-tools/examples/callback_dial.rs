@@ -48,6 +48,7 @@ async fn main() -> anyhow::Result<()> {
             obfuscated_port: None,
             advertised_ipv6: None,
             udp_ports: None,
+            offer_pace: false,
         },
     )
     .await?;

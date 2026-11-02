@@ -11,8 +11,8 @@ use std::sync::Arc;
 
 use rmule_primitives::{
     CT_EMULE_SERVINGBUDDYIPV6, CT_MOD_IP_V6, CT_MOD_MISCOPTIONS, Capabilities, ClientId,
-    ClientIdentity, CryptStance, Ed2kText, Ipv4Endpoint, SecureIdentKey, Tag, TagName, TagValue,
-    ipv6_address_tag,
+    ClientIdentity, CryptStance, Ed2kIp, Ed2kText, Ipv4Endpoint, SecureIdentKey, Tag, TagName,
+    TagValue, ipv6_address_tag,
 };
 
 use crate::capability::{
@@ -21,6 +21,7 @@ use crate::capability::{
 };
 use crate::hello::PeerHelloBody;
 use crate::hello_tag::{CT_EMULE_VERSION, CT_MOD_VERSION, CT_NAME, CT_VERSION};
+use crate::identity::PeerIdentity;
 use crate::software::RMULE_MOD_VERSION;
 
 /// The Secure User Identification material the application supplies for one peer
@@ -35,6 +36,27 @@ pub struct SecureIdentConfig {
     pub key: Arc<SecureIdentKey>,
     /// This connection's challenge, injected so the session draws no randomness of its own.
     pub challenge: u32,
+}
+
+/// Whether an accepting session may answer a hello it just read (ADR-0107
+/// invariant 7): the node keeps its links, and decides in the step that reads
+/// the hello, so nothing it dials can overtake the answer. A session with no
+/// gate answers at once.
+pub trait HelloGate: Send + Sync + std::fmt::Debug {
+    /// Whether the hello `identity` read on the link from `peer` is answered
+    /// now. `false` leaves it owed until
+    /// [`ConnectionCommand::AnswerHello`](crate::ConnectionCommand::AnswerHello).
+    fn may_answer(&self, peer: rmule_primitives::PeerEndpoint, identity: &PeerIdentity) -> bool;
+
+    /// Whether a dialing session may open its link as the peer's answer comes.
+    /// `false` leaves the link's first words, Secure User Identification
+    /// among them, for
+    /// [`ConnectionCommand::AnswerCrossedHello`](crate::ConnectionCommand::AnswerCrossedHello):
+    /// a far end that took this link over has an answer of its own pending,
+    /// and drops a link that says them first (`ClientTCPSocket.cpp:1298-1302`).
+    fn may_open_dial(&self) -> bool {
+        true
+    }
 }
 
 /// The `CT_EMULE_VERSION` value rmule advertises:
@@ -164,7 +186,7 @@ impl PeerHelloBody {
         if let Some(buddy) = serving_buddy {
             tags.push(Tag::new(
                 TagName::length_prefixed_id(CT_EMULE_BUDDYIP),
-                TagValue::U32(u32::from_le_bytes(buddy.buddy_udp.ip.octets())),
+                TagValue::U32(Ed2kIp::new(buddy.buddy_udp.ip).wire()),
             ));
             tags.push(Tag::new(
                 TagName::length_prefixed_id(CT_EMULE_BUDDYUDP),
@@ -185,16 +207,18 @@ impl PeerHelloBody {
         }
         tags.push(misc1.to_tag());
         // Honest Capability Advertisement (ADR-0054/0055): rmule implements
-        // ExtMultiPacket (bit 5) and SourceExchange2 (bit 10), so those ride the
-        // MiscOptions2 word independently of the crypt stance. Fold them onto
+        // large files (bit 4), ExtMultiPacket (bit 5) and SourceExchange2
+        // (bit 10), so those ride the MiscOptions2 word independently of the
+        // crypt stance. Fold them onto
         // the protocol-obfuscation crypt advert (ADR-0042) when the connection
         // carries an obfuscation policy — `supports` is truthful, rmule accepts
         // obfuscated inbound — or onto an otherwise-empty word when
-        // it does not: a hello with no crypt policy must still advertise the two
+        // it does not: a hello with no crypt policy must still advertise the
         // capabilities it implements. The tag rides whenever any bit is set; an
         // all-zero word is still omitted.
         let mut misc2 = crypt_advert
             .unwrap_or(MiscOptions2::from_bits(0))
+            .with_large_files()
             .with_multipacket_ext()
             .with_source_exchange2()
             .with_direct_udp_callback(direct_udp_callback);

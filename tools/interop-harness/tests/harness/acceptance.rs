@@ -60,7 +60,10 @@ fn bench_enabled(flow: &str) -> bool {
 fn run_flow(flow: &str, extra_args: &[&str]) -> PathBuf {
     let configured = std::env::var("RMULE_BENCH_VERDICT_DIR").ok();
     match verdict_override_run_dir(configured.as_deref()) {
-        Ok(Some(run_dir)) => return run_dir,
+        Ok(Some(run_dir)) => {
+            rmule_interop_harness::run_record::rescored(&run_dir);
+            return run_dir;
+        }
         Ok(None) => {}
         Err(message) => panic!("{message}"),
     }

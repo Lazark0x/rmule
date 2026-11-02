@@ -134,3 +134,26 @@ async fn a_buddy_the_slot_refuses_is_never_dialled() {
         "nothing seated, nothing dialled"
     );
 }
+
+/// A relay too short for stock's first read costs the buddy link, as a thrown
+/// read does; one that reads that far and no further keeps it.
+#[tokio::test(start_paused = true)]
+async fn a_relay_cut_short_costs_the_held_link() {
+    let unread = |opcode, payload_len| {
+        PeerEvent::Notice(rmule_peer::NoticeEvent::UnknownPacket {
+            protocol: rmule_primitives::PacketProtocol::Emule,
+            opcode,
+            payload_len,
+        })
+    };
+    for (opcode, kept, cut) in [(0x99, 16, 15), (0x9A, 22, 21)] {
+        let mut h = quiet_harness();
+        let side = h.hold().await;
+        side.send(unread(opcode, kept)).await;
+        settle().await;
+        assert_ne!(h.buddy.snapshot().state, BuddyState::None, "0x{opcode:02X}");
+        side.send(unread(opcode, cut)).await;
+        settle().await;
+        assert_eq!(h.buddy.snapshot().state, BuddyState::None, "0x{opcode:02X}");
+    }
+}

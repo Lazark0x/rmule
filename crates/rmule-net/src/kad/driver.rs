@@ -331,11 +331,13 @@ fn node_start(
 ) -> KadNodeStart {
     // Join: the forced self-lookup fires 3 min after start, then every 4 h;
     // the small-timer hello pass reaches a *merged* table (a v1/v2 nodes.dat
-    // seeds contacts, not dial candidates). The bootstrap dial loop arms
+    // seeds contacts, not dial candidates); the big timer refreshes what went
+    // quiet. The bootstrap dial loop arms
     // itself separately, when the driver seeds the dial list.
     let mut start = KadNodeStart::new(node, KadInstant::EPOCH)
         .self_lookup()
-        .small_timer();
+        .small_timer()
+        .big_timer(os_random_kad_id);
     if let Some(admission) = contact_admission {
         start = start.admission(admission);
     }
@@ -448,13 +450,17 @@ async fn run_driver(
                 // pair's IPv6 socket has no dialect to feed: a datagram that
                 // does arrive on it is counted and dropped at the transport,
                 // never inside the node.
-                KadReceive::Datagram { from, len } => {
+                KadReceive::Datagram { from, len, hushed } => {
                     receive_errors.record_success();
                     summary.datagrams_in += 1;
                     let addr = SocketAddr::new(IpAddr::V4(from.ip), from.port);
                     record(&capture, start, Direction::Inbound, addr, &buf[..len]).await;
                     let endpoint = KadNodeEndpoint::new(from.ip, from.port);
-                    node.handle_datagram(instant_at(start), endpoint, &buf[..len]);
+                    if hushed {
+                        node.handle_hushed_datagram(instant_at(start), endpoint, &buf[..len]);
+                    } else {
+                        node.handle_datagram(instant_at(start), endpoint, &buf[..len]);
+                    }
                 }
                 KadReceive::NonIpv4 => {
                     receive_errors.record_success();

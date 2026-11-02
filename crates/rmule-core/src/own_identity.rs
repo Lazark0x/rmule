@@ -18,7 +18,8 @@
 //! - the **user hash** is fixed at build time: `CoreBuilder::build` writes
 //!   the store's (or a tool's named) hash here once, before the actor spawns,
 //!   and no command carries one — [`ClientCredentials`](crate::ClientCredentials)
-//!   holds only the nickname, port and version (ADR-0048 "Identity ownership");
+//!   holds only the nickname, port and version (ADR-0048 "One identity per
+//!   node, owned by the core");
 //! - the **address** arrives with the connected server's `OP_IDCHANGE`
 //!   (`ServerAssignedFacts::public_ip`, ADR-0047) — or, once the other feeders
 //!   land, from any tier of the ladder.
@@ -52,9 +53,10 @@ use crate::address_learning::SharedAddressLearning;
 /// same posture the references take with `clientid == 0`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct ConnectedSession {
-    /// The server, in the form a peer's hello encodes — `None` when its host
-    /// is not an IPv4 literal, in which case no peer can be *proven* to share
-    /// it (neither can we prove it of ourselves).
+    /// The server, in the form a peer's hello encodes: the IPv4 address the
+    /// login reached, a server listed by name included. `None` for a session
+    /// reached over IPv6, in which case no peer can be *proven* to share it
+    /// (neither can we prove it of ourselves).
     pub(crate) server: Option<Ipv4Endpoint>,
     /// The id the server assigned us at login.
     pub(crate) client_id: ClientId,
@@ -70,7 +72,7 @@ pub(crate) struct SharedOwnIdentity(Arc<OwnIdentityCell>);
 struct OwnIdentityCell {
     /// Our own eD2k user hash, fixed by the builder; `None` only on an
     /// adapter-level test cell.
-    user_hash: std::sync::Mutex<Option<UserHash>>,
+    user_hash: parking_lot::Mutex<Option<UserHash>>,
     /// The live session's [`ConnectedSession`], or `None` between sessions.
     /// Written by establishment when the login is accepted, re-written by the
     /// session task on a mid-session re-assignment and cleared by it as it
@@ -98,20 +100,20 @@ impl SharedOwnIdentity {
         &self.0.addresses
     }
 
-    /// Fix `user_hash` as ours (ADR-0048 "Identity ownership").
+    /// Fix `user_hash` as ours (ADR-0048 "One identity per node, owned by the core").
     /// `CoreBuilder::build` is the one production writer, once, before the
     /// actor spawns — a node has one identity (ADR-0032), as aMule's user
     /// hash is read once from `preferences.dat` and never set again
     /// (`Preferences.cpp:925-953`). No command carries a hash, so nothing can
     /// ask to change it.
     pub(crate) fn set_user_hash(&self, user_hash: UserHash) {
-        *self.0.user_hash.lock().expect("own user-hash mutex") = Some(user_hash);
+        *self.0.user_hash.lock() = Some(user_hash);
     }
 
     /// Our own user hash, or `None` on an adapter-level test cell no builder
     /// fixed.
     pub(crate) fn user_hash(&self) -> Option<UserHash> {
-        *self.0.user_hash.lock().expect("own user-hash mutex")
+        *self.0.user_hash.lock()
     }
 
     /// Publish the live session's self-facts, or clear them as it ends.

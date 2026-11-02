@@ -174,7 +174,6 @@ impl InstalledDirectory {
         let state = match &self.state {
             InstalledState::Scan(cell) => cell
                 .lock()
-                .expect("scan progress")
                 .as_ref()
                 .map_or(crate::DirectoryState::Starting, |progress| {
                     crate::DirectoryState::Scan(progress.phase.clone())

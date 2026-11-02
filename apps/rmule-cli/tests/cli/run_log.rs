@@ -65,7 +65,7 @@ fn add_writes_the_full_level_the_shared_preference_chose() {
     rmule_core::CoreSettingsHandle::open(rmule_core::open_durable_store(data.path()).unwrap())
         .set_front_end_value(
             rmule_core::run_log::PREFERENCE_KEY,
-            rmule_core::run_log::Level::Full.preference(),
+            rmule_core::flag_text(true),
         )
         .unwrap();
     cli(data.path())

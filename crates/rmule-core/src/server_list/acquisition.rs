@@ -14,69 +14,16 @@
 //!
 //! Core never links reqwest: it depends on `rmule-bootstrap` with
 //! `default-features = false` and receives the fetch capability as an injected
-//! [`ServerListFetcher`] — the object-safe form of the crate's [`Fetcher`]
-//! seam, so an actor can hold one without a generic parameter.
+//! [`Fetcher`], which the actor holds as a trait object.
 
-use std::future::Future;
-use std::pin::Pin;
-use std::sync::Arc;
-
-use rmule_bootstrap::{FetchError, Fetcher, ServerMetInstall, ServerMetPipelineError};
+use rmule_bootstrap::{
+    FetchError, Fetcher, Seeds, ServerMetInstall, ServerMetPipelineError, UrlWalkOutcome,
+};
 use thiserror::Error;
 
 use crate::CoreError;
 
 use super::{ManagedServer, ServerListStore};
-
-/// Core's object-safe view of `rmule-bootstrap`'s [`Fetcher`] seam.
-///
-/// [`Fetcher::get`] returns an RPITIT future, so a `dyn Fetcher` does not
-/// exist — but the actor must hold its fetch capability in a plain field
-/// (a generic parameter would spread across every `CoreBuilder` setter for one
-/// HTTP GET a session). This is that seam boxed once: the blanket impl below
-/// accepts any [`Fetcher`], so a front-end still injects
-/// `rmule_bootstrap::ReqwestFetcher` directly and core links no HTTP client.
-/// The fetch owns what it needs (an `Arc` of itself and the URL), so the boxed
-/// future borrows nothing — which is what lets it be handed to a spawned task.
-pub trait ServerListFetcher: Send + Sync + 'static {
-    /// `GET url`, returning up to `max_bytes` of body — [`Fetcher::get`]'s
-    /// contract, boxed.
-    fn fetch(
-        self: Arc<Self>,
-        url: String,
-        max_bytes: usize,
-    ) -> Pin<Box<dyn Future<Output = Result<Vec<u8>, FetchError>> + Send>>;
-}
-
-impl<F> ServerListFetcher for F
-where
-    F: Fetcher + Send + Sync + 'static,
-{
-    fn fetch(
-        self: Arc<Self>,
-        url: String,
-        max_bytes: usize,
-    ) -> Pin<Box<dyn Future<Output = Result<Vec<u8>, FetchError>> + Send>> {
-        Box::pin(async move { self.get(&url, max_bytes).await })
-    }
-}
-
-/// Adapts the boxed seam back onto [`Fetcher`] so the actor's update task runs
-/// the *same* `rmule-bootstrap` pipeline the Join Sequence does, rather than a
-/// second copy of it.
-pub(crate) struct ErasedFetcher(pub(crate) Arc<dyn ServerListFetcher>);
-
-impl Fetcher for ErasedFetcher {
-    fn get(
-        &self,
-        url: &str,
-        max_bytes: usize,
-    ) -> impl Future<Output = Result<Vec<u8>, FetchError>> + Send {
-        let fetcher = Arc::clone(&self.0);
-        let url = url.to_owned();
-        async move { fetcher.fetch(url, max_bytes).await }
-    }
-}
 
 /// What one server.met acquisition did to the list.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -117,6 +64,7 @@ impl ServerListUpdateError {
             Self::Acquisition(ServerMetPipelineError::Decode(_)) => {
                 ServerListUpdateFailure::NotServerMet
             }
+            Self::Acquisition(ServerMetPipelineError::Odd(_)) => ServerListUpdateFailure::OddList,
             Self::Store(_) => ServerListUpdateFailure::StoreFailed,
         }
     }
@@ -143,8 +91,81 @@ pub enum ServerListUpdateFailure {
     /// What came back is not a server.met rmule reads: empty, a bad header,
     /// corrupt, or a zip archive.
     NotServerMet,
+    /// It parsed, but has a shape no mirror serves, and was refused whole
+    /// (ADR-0120).
+    OddList,
     /// The list was good but the store would not take it.
     StoreFailed,
+}
+
+/// What one URL of a server.met auto-update walk gave (ADR-0065): what its
+/// list merged, or why it gave none. The walk goes on either way.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AutoUpdateFetch {
+    /// Its list merged into the walk's.
+    Merged {
+        /// Rows whose endpoint the list had not held.
+        added: usize,
+        /// Rows folded into an already-listed endpoint.
+        updated: usize,
+    },
+    /// It gave no list, for this reason.
+    Failed(ServerListUpdateFailure),
+}
+
+/// A server.met auto-update walk, acquired: each URL with what it gave, in
+/// walk order, and the plan every list that merged adds up to.
+pub(crate) struct AutoUpdateWalk {
+    /// Each URL walked, with what it gave.
+    pub(crate) fetched: Vec<(String, AutoUpdateFetch)>,
+    /// What [`install_server_met_plan`] folds into the list.
+    pub(crate) plan: ServerMetInstall,
+}
+
+/// Step 1 of an auto-update — **acquire** every URL of `urls` in order:
+/// `rmule-bootstrap`'s walk, each URL merged onto the rows before it, one
+/// failure not stopping it, and every row judged by its own URL's host
+/// (ADR-0085). Touches no store, as [`acquire_server_met`] does not.
+pub(crate) async fn acquire_server_met_walk(
+    fetcher: &dyn Fetcher,
+    urls: &[String],
+    max_bytes: usize,
+    installed: &[ManagedServer],
+) -> AutoUpdateWalk {
+    let installed = installed.iter().filter_map(ManagedServer::to_met).collect();
+    let walk =
+        rmule_bootstrap::fetch_server_met_auto_update(fetcher, urls, max_bytes, installed).await;
+    let fetched = urls
+        .iter()
+        .cloned()
+        .zip(walk.per_url)
+        .map(|(url, outcome)| {
+            let fetch = match outcome {
+                UrlWalkOutcome::Ok(install) => AutoUpdateFetch::Merged {
+                    added: install.added(),
+                    updated: install.updated(),
+                },
+                UrlWalkOutcome::Err(error) => {
+                    tracing::warn!(%error, %url, "a server list auto-update address gave no list");
+                    AutoUpdateFetch::Failed(ServerListUpdateError::from(error).failure())
+                }
+            };
+            (url, fetch)
+        })
+        .collect();
+    AutoUpdateWalk {
+        fetched,
+        plan: walk.merged,
+    }
+}
+
+/// List the seed servers on a cold start (ADR-0120), before any fetch.
+pub(crate) fn install_seed_servers<S>(store: &S, seeds: &Seeds) -> Result<(), CoreError>
+where
+    S: ServerListStore + ?Sized,
+{
+    let rows = seeds.servers().iter().cloned();
+    store.merge_servers(rows.map(ManagedServer::seed).collect())
 }
 
 /// Step 1 of an update — **acquire**: run `rmule-bootstrap`'s server.met
@@ -155,15 +176,12 @@ pub enum ServerListUpdateFailure {
 /// no lock across the fetch. DNS-named rows are not projected into the
 /// reconciliation (they have no `(ip, port)` key) and are simply left alone by
 /// [`install_server_met_plan`].
-pub(crate) async fn acquire_server_met<F>(
-    fetcher: &F,
+pub(crate) async fn acquire_server_met(
+    fetcher: &dyn Fetcher,
     url: &str,
     max_bytes: usize,
     installed: &[ManagedServer],
-) -> Result<ServerMetInstall, ServerMetPipelineError>
-where
-    F: Fetcher + Sync,
-{
+) -> Result<ServerMetInstall, ServerMetPipelineError> {
     let installed = installed.iter().filter_map(ManagedServer::to_met).collect();
     rmule_bootstrap::fetch_server_met(fetcher, url, max_bytes, installed).await
 }
@@ -185,11 +203,12 @@ where
     S: ServerListStore + ?Sized,
 {
     let now = std::time::SystemTime::now();
-    for entry in plan.servers() {
-        if let Some(server) = ManagedServer::from_met(entry, now) {
-            store.merge_server(server)?;
-        }
-    }
+    let servers = plan
+        .servers()
+        .iter()
+        .filter_map(|entry| ManagedServer::from_met(entry, now))
+        .collect();
+    store.merge_servers(servers)?;
     Ok(ServerListUpdate {
         added: plan.added(),
         updated: plan.updated(),
@@ -246,13 +265,9 @@ mod tests {
     struct FakeFetcher(Result<Vec<u8>, FetchError>);
 
     impl Fetcher for FakeFetcher {
-        fn get(
-            &self,
-            _url: &str,
-            _max_bytes: usize,
-        ) -> impl Future<Output = Result<Vec<u8>, FetchError>> + Send {
+        fn get<'a>(&'a self, _url: &'a str, _max_bytes: usize) -> rmule_bootstrap::FetchFuture<'a> {
             let result = self.0.clone();
-            async move { result }
+            Box::pin(async move { result })
         }
     }
 
@@ -345,28 +360,5 @@ mod tests {
         assert_eq!(plan.added(), 2, "the decoder tolerates both rows");
         assert_eq!(update.total, 1, "only one of them forms an endpoint");
         assert_eq!(store.servers().unwrap()[0].endpoint.port(), 4662);
-    }
-
-    /// The boxed seam runs the same pipeline as a direct `Fetcher`: an actor
-    /// holding `Arc<dyn ServerListFetcher>` acquires exactly what the Join
-    /// Sequence's static-dispatch call would.
-    #[tokio::test]
-    async fn the_boxed_seam_acquires_like_a_direct_fetcher() {
-        let boxed: Arc<dyn ServerListFetcher> = Arc::new(FakeFetcher(Ok(met_bytes(&[met_row(
-            Ipv4Addr::new(1, 2, 3, 4),
-            4661,
-            "Through the seam",
-            "",
-        )]))));
-
-        let plan = acquire_server_met(&ErasedFetcher(boxed), "http://mirror", 4096, &[])
-            .await
-            .expect("acquisition through the boxed seam");
-
-        assert_eq!(plan.added(), 1);
-        assert_eq!(
-            plan.servers()[0].name().to_display_string(),
-            "Through the seam"
-        );
     }
 }

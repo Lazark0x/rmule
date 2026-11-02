@@ -14,8 +14,10 @@ use std::task::{Context, Poll, ready};
 
 use rand::rngs::OsRng;
 use rand::{Rng, RngCore};
-use rmule_primitives::{CryptStance, is_plaintext_marker};
+use rmule_primitives::{CryptStance, ObfuscationStream, is_plaintext_marker};
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
+
+use super::{SendProgress, SendSide};
 
 /// Longest random padding tail rmule appends to a handshake message. `[pending]`
 /// (eMule's `GetCryptTCPPaddingLength`); any value interoperates because the
@@ -51,19 +53,36 @@ pub fn random_padding() -> Vec<u8> {
 /// drives. Implemented by the peer and server forms in the protocol crates via
 /// runtime adapters; `CryptStream` never names RC4 or a protocol.
 pub trait ObfuscationTransport {
+    /// The keyed streams a finished handshake hands over.
+    type Stream: StreamCipher + Unpin;
+
     /// Bytes to send immediately on connect, before any inbound — the
     /// initiator's opening. Empty for a responder.
     fn initial_output(&mut self) -> Vec<u8>;
     /// Feed inbound handshake bytes.
-    fn feed_handshake(&mut self, input: &[u8]) -> HandshakeProgress;
-    /// Encrypt outgoing app bytes in place (post-handshake).
+    fn feed_handshake(&mut self, input: &[u8]) -> HandshakeProgress<Self::Stream>;
+}
+
+/// The stream transform only a finished handshake yields, so an established
+/// link holds keys by type.
+pub trait StreamCipher {
+    /// Encrypt outgoing app bytes in place.
     fn transform_outgoing(&mut self, buf: &mut [u8]);
-    /// Decrypt incoming app bytes in place (post-handshake).
+    /// Decrypt incoming app bytes in place.
     fn transform_incoming(&mut self, buf: &mut [u8]);
 }
 
+impl StreamCipher for ObfuscationStream {
+    fn transform_outgoing(&mut self, buf: &mut [u8]) {
+        self.transform_send(buf);
+    }
+    fn transform_incoming(&mut self, buf: &mut [u8]) {
+        self.transform_recv(buf);
+    }
+}
+
 /// Progress of an [`ObfuscationTransport`] handshake.
-pub enum HandshakeProgress {
+pub enum HandshakeProgress<K> {
     /// Need more inbound bytes before the handshake resolves. `write` is any
     /// bytes to send back first — empty for a one-shot responder, but the server
     /// DH form sends its `[G^B][enc]` here and then awaits the client's reply.
@@ -79,6 +98,8 @@ pub enum HandshakeProgress {
         write: Vec<u8>,
         /// Decrypted app bytes that trailed the handshake in the same read.
         leftover: Vec<u8>,
+        /// The keyed streams, for every byte from here on.
+        stream: K,
     },
     /// Handshake failed to authenticate; the connection must drop.
     Failed,
@@ -132,19 +153,19 @@ pub struct ObfuscationConfig {
 
 const READ_CHUNK: usize = 8192;
 
-enum Phase {
+enum Phase<K> {
     Handshaking { started: bool },
-    Established,
+    Established(K),
     Failed,
 }
 
 /// An `AsyncRead + AsyncWrite` adapter that runs an [`ObfuscationTransport`]
 /// handshake below the session, then transparently streams. Constructed around
 /// an accepted/dialed `TcpStream` (or any `AsyncRead + AsyncWrite + Unpin`).
-pub struct CryptStream<S, H> {
+pub struct CryptStream<S, H: ObfuscationTransport> {
     inner: S,
     transport: H,
-    phase: Phase,
+    phase: Phase<H::Stream>,
     /// Ciphertext queued for `inner`: handshake output, plus the encrypted tail
     /// of a partial app write (the stream cipher can't re-encrypt, so unwritten
     /// ciphertext must be buffered rather than dropped).
@@ -155,7 +176,7 @@ pub struct CryptStream<S, H> {
     in_pos: usize,
 }
 
-impl<S, H> CryptStream<S, H> {
+impl<S, H: ObfuscationTransport> CryptStream<S, H> {
     /// Wrap `inner`, driving `transport` through the obfuscation handshake on
     /// the first read or write.
     pub fn new(inner: S, transport: H) -> Self {
@@ -196,7 +217,7 @@ where
     fn poll_handshake(&mut self, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
         loop {
             match self.phase {
-                Phase::Established => return Poll::Ready(Ok(())),
+                Phase::Established(_) => return Poll::Ready(Ok(())),
                 Phase::Failed => return Poll::Ready(Err(handshake_failed())),
                 Phase::Handshaking { started } => {
                     if !started {
@@ -219,10 +240,14 @@ where
                             ready!(self.flush_out(cx))?;
                             continue;
                         }
-                        HandshakeProgress::Done { write, leftover } => {
+                        HandshakeProgress::Done {
+                            write,
+                            leftover,
+                            stream,
+                        } => {
                             self.out_buf.extend_from_slice(&write);
                             self.in_plain.extend_from_slice(&leftover);
-                            self.phase = Phase::Established;
+                            self.phase = Phase::Established(stream);
                             ready!(self.flush_out(cx))?;
                             return Poll::Ready(Ok(()));
                         }
@@ -248,6 +273,12 @@ fn handshake_failed() -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, "obfuscation handshake failed")
 }
 
+impl<S: SendSide, H: ObfuscationTransport> SendSide for CryptStream<S, H> {
+    fn send_progress(&self) -> Option<SendProgress> {
+        self.inner.send_progress()
+    }
+}
+
 impl<S, H> AsyncRead for CryptStream<S, H>
 where
     S: AsyncRead + AsyncWrite + Unpin,
@@ -260,6 +291,9 @@ where
     ) -> Poll<io::Result<()>> {
         let this = self.get_mut();
         ready!(this.poll_handshake(cx))?;
+        let Phase::Established(stream) = &mut this.phase else {
+            return Poll::Ready(Err(handshake_failed()));
+        };
         // Deliver decrypted handshake leftover before touching the socket.
         if this.in_pos < this.in_plain.len() {
             let avail = &this.in_plain[this.in_pos..];
@@ -275,7 +309,7 @@ where
         let start = buf.filled().len();
         ready!(Pin::new(&mut this.inner).poll_read(cx, buf))?;
         let fresh = &mut buf.filled_mut()[start..];
-        this.transport.transform_incoming(fresh);
+        stream.transform_incoming(fresh);
         Poll::Ready(Ok(()))
     }
 }
@@ -297,8 +331,11 @@ where
         if data.is_empty() {
             return Poll::Ready(Ok(0));
         }
+        let Phase::Established(stream) = &mut this.phase else {
+            return Poll::Ready(Err(handshake_failed()));
+        };
         let mut enc = data.to_vec();
-        this.transport.transform_outgoing(&mut enc);
+        stream.transform_outgoing(&mut enc);
         this.out_buf.extend_from_slice(&enc);
         // The cipher consumed all of `data`; report it consumed and flush what
         // we can. Any unwritten ciphertext stays queued for the next flush.
@@ -353,7 +390,25 @@ mod tests {
             }
         }
     }
+    struct XorStream {
+        send_key: u8,
+        recv_key: u8,
+    }
+    impl StreamCipher for XorStream {
+        fn transform_outgoing(&mut self, buf: &mut [u8]) {
+            for b in buf.iter_mut() {
+                *b ^= self.send_key;
+            }
+        }
+        fn transform_incoming(&mut self, buf: &mut [u8]) {
+            for b in buf.iter_mut() {
+                *b ^= self.recv_key;
+            }
+        }
+    }
     impl ObfuscationTransport for XorTransport {
+        type Stream = XorStream;
+
         fn initial_output(&mut self) -> Vec<u8> {
             if self.initiator {
                 vec![SYNC ^ self.send_key]
@@ -361,7 +416,7 @@ mod tests {
                 Vec::new()
             }
         }
-        fn feed_handshake(&mut self, input: &[u8]) -> HandshakeProgress {
+        fn feed_handshake(&mut self, input: &[u8]) -> HandshakeProgress<XorStream> {
             if input.is_empty() {
                 return HandshakeProgress::NeedMore { write: Vec::new() };
             }
@@ -373,20 +428,38 @@ mod tests {
             } else {
                 vec![SYNC ^ self.send_key]
             };
+            let mut stream = XorStream {
+                send_key: self.send_key,
+                recv_key: self.recv_key,
+            };
             let mut leftover = input[1..].to_vec();
-            self.transform_incoming(&mut leftover);
-            HandshakeProgress::Done { write, leftover }
-        }
-        fn transform_outgoing(&mut self, buf: &mut [u8]) {
-            for b in buf.iter_mut() {
-                *b ^= self.send_key;
+            stream.transform_incoming(&mut leftover);
+            HandshakeProgress::Done {
+                write,
+                leftover,
+                stream,
             }
         }
-        fn transform_incoming(&mut self, buf: &mut [u8]) {
-            for b in buf.iter_mut() {
-                *b ^= self.recv_key;
-            }
-        }
+    }
+
+    /// The driver sees only the top of the stack: the reading comes off the
+    /// socket under it.
+    #[tokio::test]
+    async fn a_stream_over_a_socket_answers_for_that_socket() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let dialed = tokio::net::TcpStream::connect(listener.local_addr().unwrap())
+            .await
+            .unwrap();
+        let (_accepted, _) = listener.accept().await.unwrap();
+        let bare = dialed.send_progress();
+        assert!(bare.is_some());
+
+        let stack = CryptStream::new(
+            crate::peer::PushBack::new(dialed, None),
+            XorTransport::initiator(),
+        );
+
+        assert_eq!(stack.send_progress(), bare);
     }
 
     #[tokio::test]

@@ -36,10 +36,11 @@ use std::fmt;
 use std::time::{Duration, Instant};
 
 use rmule_net::portmap::MappedTransport;
-/// What a diagnostics row's failure is made of, re-exported so a front end
-/// words it without linking the net crate.
+/// What a diagnostics row's failure, and a release that sent no delete, are
+/// made of, re-exported so a front end words them without linking the net
+/// crate.
 pub use rmule_net::portmap::{
-    MappingError, MappingProtocol, MappingRefusal, MappingTransportFault,
+    MappingError, MappingProtocol, MappingRefusal, MappingTransportFault, ReleaseKept,
 };
 use rmule_primitives::{AddressFamily, PeerEndpoint};
 
@@ -54,6 +55,19 @@ mod tests;
 
 pub(crate) use desired::DesiredMappingSet;
 pub(crate) use mapper::PortMapper;
+
+/// The deadline every backend probe and map runs under (ADR-0086, "Every
+/// grant has one owner and one end"), answered as
+/// [`Timeout`](MappingError::Timeout) when it passes.
+///
+/// A trial is judged only once every row has answered, so one silent call
+/// would hold the whole race open for the rest of the session. The two UDP
+/// backends bound themselves with their own retransmit ladder, but the UPnP
+/// one makes a blocking HTTP request to a device that can simply stop
+/// replying — and a cancelled `spawn_blocking` keeps running, so this bounds
+/// the *answer*, not the thread. Comfortably past the race's own 15-second
+/// cap, so it never pre-empts a slow-but-live gateway.
+pub(crate) const BACKEND_DEADLINE: Duration = Duration::from_secs(20);
 
 /// Whether rmule maps its own ports at all (ADR-0086).
 ///
@@ -229,6 +243,18 @@ impl fmt::Display for MappingStatus {
     }
 }
 
+/// Which probe round asked. A set change can open a round while the last one's
+/// probes are still out, and only this tells their answers from the new ones.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct ProbeRound(u64);
+
+impl ProbeRound {
+    /// The round after this one.
+    const fn next(self) -> Self {
+        Self(self.0.wrapping_add(1))
+    }
+}
+
 /// What the sans-I/O [`PortMapper`] asks its runtime to do. The runtime turns
 /// each into one [`MappingBackend`](rmule_net::portmap::MappingBackend) call —
 /// except the last, which reaches the Kad node instead.
@@ -238,6 +264,8 @@ pub(crate) enum MappingCommand {
     Probe {
         /// The protocol to ask.
         protocol: MappingProtocol,
+        /// The round asking, echoed on the answer.
+        round: ProbeRound,
     },
     /// Request one mapping, or renew one by suggesting the granted port.
     Map {
@@ -277,6 +305,8 @@ pub(crate) enum MappingResult {
     Probed {
         /// Which protocol answered.
         protocol: MappingProtocol,
+        /// The round that asked.
+        round: ProbeRound,
         /// The families it can map through this gateway, and its epoch
         /// verdict — or why it cannot.
         outcome: Result<ProbeAnswer, MappingError>,

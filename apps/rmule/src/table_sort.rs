@@ -22,10 +22,13 @@ use std::borrow::Cow;
 use std::cmp::Ordering;
 
 pub use cursor::{RowCursor, RowMove};
+pub(crate) use memo::Memo;
+pub(crate) use name::fold;
 pub use stored::TableSorts;
 
 mod cursor;
 mod keys;
+mod memo;
 mod name;
 mod stored;
 #[cfg(test)]
@@ -163,9 +166,12 @@ pub trait SortedTable {
     const TABLE: &'static str;
     /// The visible columns, left to right — the order `s` walks.
     const COLUMNS: &'static [ColumnSpec<Self::Column>];
-    /// The name column: the default sort, and the Tie Chain's first link.
-    /// Must be a [`ColumnKind::Text`] column.
+    /// The name column: the Tie Chain's first link. Must be a
+    /// [`ColumnKind::Text`] column.
     const NAME: Self::Column;
+    /// The column the table opens sorted by, in its Natural Direction: the
+    /// name, unless a table is read by another fact.
+    const OPENS_BY: Self::Column = Self::NAME;
 
     /// The column's listing.
     ///
@@ -208,8 +214,8 @@ pub trait SortedTable {
     fn identity(row: &Self::Row) -> Self::Identity;
 }
 
-/// One table's sort: a column and a direction. The default is name ascending,
-/// in every table.
+/// One table's sort: a column and a direction. The default is the table's
+/// [`SortedTable::OPENS_BY`] in its Natural Direction.
 pub struct TableSort<T: SortedTable> {
     column: T::Column,
     direction: Direction,
@@ -241,8 +247,8 @@ impl<T: SortedTable> PartialEq for TableSort<T> {
 impl<T: SortedTable> Default for TableSort<T> {
     fn default() -> Self {
         Self {
-            column: T::NAME,
-            direction: T::kind(T::NAME).natural_direction(),
+            column: T::OPENS_BY,
+            direction: T::kind(T::OPENS_BY).natural_direction(),
         }
     }
 }
@@ -299,13 +305,19 @@ impl<T: SortedTable> TableSort<T> {
     #[must_use]
     pub fn order(&self, rows: &[T::Row]) -> Vec<usize> {
         // Decorate once: folding a name allocates, and a comparator would
-        // otherwise fold each row O(log n) times.
+        // otherwise fold each row O(log n) times. Sorted by the name, its
+        // link of the Tie Chain has nothing to add.
+        let by_name = self.column == T::NAME;
         let keyed: Vec<Keyed<T::Identity>> = rows
             .iter()
             .map(|row| Keyed {
                 rank: T::rank(self.column, row),
                 sort: T::value(self.column, row).map(Key::from),
-                name: T::value(T::NAME, row).map(Key::from),
+                name: if by_name {
+                    None
+                } else {
+                    T::value(T::NAME, row).map(Key::from)
+                },
                 identity: T::identity(row),
             })
             .collect();
@@ -416,13 +428,17 @@ fn missing_last<V>(a: Option<&V>, b: Option<&V>, present: impl Fn(&V, &V) -> Ord
 }
 
 /// Which column a click `x` cells right of the first column's left edge lands
-/// on, for a header laid out as `widths` separated by `gap` blank cells. A
-/// click in a gap lands on nothing.
+/// on, for a header laid out as `widths` with `gap` blank cells between shown
+/// columns. A click in a gap lands on nothing.
 #[must_use]
 pub fn column_at(x: u16, widths: &[usize], gap: usize) -> Option<usize> {
     let mut left = 0usize;
     let x = usize::from(x);
     for (index, width) in widths.iter().enumerate() {
+        // A column that gave way draws nothing and costs no gap.
+        if *width == 0 {
+            continue;
+        }
         if x < left + width {
             return Some(index);
         }
@@ -448,7 +464,7 @@ const ARROW_W: usize = 2;
 
 /// Each column's header width as [`header_label`] draws it under `sort`: the
 /// label, and the arrow's cells on the column holding the sort. What the
-/// greedy widths never split (`wrap::TableColumns::headers`).
+/// greedy widths never split (`table::TableColumns::headers`).
 #[must_use]
 pub fn header_widths<T: SortedTable>(sort: &TableSort<T>) -> Vec<usize> {
     T::COLUMNS
@@ -462,27 +478,4 @@ pub fn header_widths<T: SortedTable>(sort: &TableSort<T>) -> Vec<usize> {
             spec.label.chars().count() + arrow
         })
         .collect()
-}
-
-/// A table's column floors with the sorted column's raised to hold its label
-/// and the arrow on one line. The name column at `flex` pays for the raise,
-/// so the floors' sum — and with it every other column at every width — is
-/// what it was: only the arrow's two cells move with the sort.
-#[must_use]
-pub fn arrow_floors<T: SortedTable>(
-    sort: &TableSort<T>,
-    declared: &[usize],
-    flex: usize,
-) -> Vec<usize> {
-    let mut floors = declared.to_vec();
-    let sorted = T::COLUMNS
-        .iter()
-        .position(|spec| spec.column == sort.column());
-    if let Some(at) = sorted.filter(|at| *at != flex && *at < floors.len()) {
-        let need = T::label(sort.column()).chars().count() + ARROW_W;
-        let raise = need.saturating_sub(floors[at]);
-        floors[at] += raise;
-        floors[flex] = floors[flex].saturating_sub(raise).max(1);
-    }
-    floors
 }

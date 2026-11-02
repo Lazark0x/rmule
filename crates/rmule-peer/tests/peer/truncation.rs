@@ -9,15 +9,15 @@ use rmule_peer::{
     AichAnswer, AichFileHashAns, AichFileHashReq, AichRequest, AnswerItem, AnswerSources,
     AnswerSources2, BundleCut, Callback, ChangeClientId, CompressedPart, DirectCallbackReq,
     EmuleInfo, ExtendedRequests, FileReqAnsNoFil, FileStatus, HashSetAnswer, HashSetRequest, Hello,
-    Message, MultiPacketAnswer, MultiPacketRequest, PartBitmap, PartOffsetWidth, PartRanges,
-    PeerPacket, PublicIpAnswer, PublicKeyPacket, QueueRanking, ReaskAck, ReaskCallbackTcp,
-    ReaskFilePing, ReqFileNameAnswer, RequestFileName, RequestItem, RequestParts, RequestSources2,
+    Message, MultiPacketAnswer, MultiPacketRequest, PartOffsetWidth, PartRanges, PeerPacket,
+    PublicIpAnswer, PublicKeyPacket, QueueRanking, ReaskAck, ReaskCallbackTcp, ReaskFilePing,
+    ReqFileNameAnswer, RequestFileName, RequestItem, RequestParts, RequestSources2,
     SecIdentStatePacket, SendingPart, SetReqFileId, SignaturePacket, SourceExchangeEntry,
-    SourceExchangeVersion,
+    SourceExchangeVersion, WireStatus,
 };
 use rmule_primitives::{
     AichRootHash, ClientId, Ed2kText, FileHash, Ipv4Endpoint, Ipv6Endpoint, Packet, PacketProtocol,
-    PartHash, PeerEndpoint, PeerSource, SourceSighting, UserHash,
+    PartHash, PartHashList, PeerEndpoint, PeerSource, SourceClaim, UserHash,
 };
 use rmule_testkit::wire::cut_payload;
 use std::net::{Ipv4Addr, Ipv6Addr};
@@ -26,14 +26,20 @@ fn hash() -> FileHash {
     FileHash::from_bytes([0x11; 16])
 }
 
-fn bitmap() -> PartBitmap {
-    PartBitmap::all_present(19)
+fn bitmap() -> WireStatus {
+    WireStatus::decode(19, &[0xFF, 0xFF, 0b111]).unwrap()
 }
 
 /// The packet decodes whole, and fails at every payload cut short of whole.
 fn assert_cuts_fail(name: &str, packet: &Packet) {
+    assert_cuts_fail_past(name, packet, None);
+}
+
+/// As [`assert_cuts_fail`], but for a packet with a shorter whole shape of
+/// its own at up to `whole_to` payload bytes.
+fn assert_cuts_fail_past(name: &str, packet: &Packet, whole_to: Option<usize>) {
     PeerPacket::decode(packet).unwrap_or_else(|e| panic!("{name}: the whole packet: {e}"));
-    for cut in 0..packet.payload().len() {
+    for cut in (0..packet.payload().len()).filter(|cut| whole_to.is_none_or(|to| *cut > to)) {
         let cut_packet = cut_payload(packet, cut);
         assert!(
             PeerPacket::decode(&cut_packet).is_err(),
@@ -46,7 +52,7 @@ fn assert_cuts_fail(name: &str, packet: &Packet) {
 #[test]
 fn a_tcp_packet_cut_anywhere_inside_its_shape_is_an_error() {
     let root = AichRootHash::from_bytes([0x22; 20]);
-    let ranges = PartRanges::new([(0, 10), (20, 30), (0, 0)]).unwrap();
+    let ranges = PartRanges::new([(0, 10), (20, 30), (0, 0)]);
     let sending = SendingPart {
         file_hash: hash(),
         start: 100,
@@ -74,7 +80,7 @@ fn a_tcp_packet_cut_anywhere_inside_its_shape_is_an_error() {
             "hash-set answer",
             HashSetAnswer {
                 file_hash: hash(),
-                part_hashes: vec![PartHash::from_bytes([3; 16]); 2],
+                part_hashes: PartHashList::new(vec![PartHash::from_bytes([3; 16]); 2]).unwrap(),
             }
             .encode_packet(),
         ),
@@ -84,16 +90,6 @@ fn a_tcp_packet_cut_anywhere_inside_its_shape_is_an_error() {
                 file_hash: hash(),
                 part: 4,
                 root,
-            }
-            .encode_packet(),
-        ),
-        (
-            "aich answer header",
-            AichAnswer {
-                file_hash: hash(),
-                part: 4,
-                root,
-                recovery_data: Vec::new(),
             }
             .encode_packet(),
         ),
@@ -150,14 +146,6 @@ fn a_tcp_packet_cut_anywhere_inside_its_shape_is_an_error() {
             SetReqFileId { file_hash: hash() }.encode_packet(),
         ),
         (
-            "file status",
-            FileStatus {
-                file_hash: hash(),
-                bitmap: bitmap(),
-            }
-            .encode_packet(),
-        ),
-        (
             "file-name ask, bare hash",
             RequestFileName::new(hash(), None).encode_packet(),
         ),
@@ -165,6 +153,26 @@ fn a_tcp_packet_cut_anywhere_inside_its_shape_is_an_error() {
     for (name, packet) in &cases {
         assert_cuts_fail(name, packet);
     }
+
+    // A status's bitmap is sized by the file, which only the session knows.
+    let status = FileStatus {
+        file_hash: hash(),
+        bitmap: bitmap(),
+    }
+    .encode_packet();
+    for cut in 0..18 {
+        assert!(PeerPacket::decode(&cut_payload(&status, cut)).is_err());
+    }
+
+    // The answer cut to its file hash reads as aMule's 16-byte refusal.
+    let answer = AichAnswer {
+        file_hash: hash(),
+        part: 4,
+        root,
+        recovery_data: Vec::new(),
+    }
+    .encode_packet();
+    assert_cuts_fail_past("aich answer header", &answer, Some(16));
 }
 
 #[test]
@@ -217,7 +225,7 @@ fn a_bundle_cut_anywhere_never_panics() {
         file_size: Some(9_728_000),
         items: vec![
             RequestItem::Name {
-                part_status: Some(PartBitmap::all_present(2)),
+                part_status: Some(WireStatus::decode(2, &[0xFF; 1]).unwrap()),
             },
             RequestItem::SetReqId,
             RequestItem::Sources2 {
@@ -368,7 +376,7 @@ fn buddy_relay_secure_ident_and_human_layer_packets_cut_anywhere_are_errors() {
 #[test]
 fn source_exchange_hello_and_emule_info_packets_cut_anywhere_are_errors() {
     let entry = SourceExchangeEntry::new(
-        SourceSighting::new(
+        SourceClaim::new(
             PeerSource::new(ClientId::from_u32(0x0A0B_0C0D), 4662),
             None,
             None,

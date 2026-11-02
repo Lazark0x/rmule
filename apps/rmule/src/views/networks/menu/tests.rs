@@ -60,30 +60,16 @@ fn connect_emits_the_real_command_for_the_selected_row() {
     assert!(view.menu.is_none(), "menu closes after activating");
 }
 
-/// The degrade pattern: no core ⇒ the item is greyed with the
-/// reason. The connected row offers Disconnect in Connect's place,
-/// which ends the session and the intent to stay connected.
+/// The connected row offers Disconnect in Connect's place, which ends the
+/// session and the intent to stay connected.
 #[test]
-fn connect_is_greyed_without_a_session_and_the_connected_row_offers_disconnect() {
-    let mut state = listed_servers();
-    state.session = None;
-    let mut view = NetworksView::new();
-    // Row 2: not the connected one.
-    view.handle_key(press(KeyCode::Char('j')), &state);
-    view.handle_key(press(KeyCode::Char('j')), &state);
-    view.handle_key(press(KeyCode::Char('m')), &state);
-    let menu = view.menu.as_ref().unwrap();
-    assert_eq!(menu.items[0].label, "Connect (c)");
-    assert_eq!(menu.items[0].disabled.as_deref(), Some(NOT_ATTACHED));
-    view.menu = None;
-
-    // Row 0 *is* the connected server: Disconnect, where Connect was.
+fn the_connected_row_offers_disconnect() {
     let state = listed_servers();
     let mut view = NetworksView::new();
     view.handle_key(press(KeyCode::Char('m')), &state);
     let menu = view.menu.as_ref().unwrap();
-    assert_eq!(menu.items[0].label, "Disconnect (c)");
-    assert_eq!(menu.items[0].disabled, None);
+    assert_eq!(menu.items[0].label, "Disconnect");
+    assert_eq!(menu.items[0].reason, None);
     assert!(
         !menu_labels(&view)
             .iter()
@@ -209,13 +195,15 @@ fn removing_a_server_confirms_then_emits_remove_and_leaves_the_row_to_the_level(
         ViewOutcome::Redraw
     ));
     let confirm = view.confirm.as_ref().expect("confirm modal up");
-    assert_eq!(confirm.name, "eDonkey Prime");
+    assert_eq!(confirm.name.as_deref(), Some("eDonkey Prime"));
     assert!(view.menu.is_none(), "menu closes when confirm opens");
 
     match view.handle_key(press(KeyCode::Char('y')), &state) {
-        ViewOutcome::Emit(Action::Command(CoreCommand::ServerList(
-            ServerListCommand::RemoveServer { server },
-        ))) => assert_eq!(server, endpoint("10.0.0.1", 4661)),
+        ViewOutcome::Emit(Action::Commands(commands)) => assert!(matches!(
+            commands.as_slice(),
+            [CoreCommand::ServerList(ServerListCommand::RemoveServer { server })]
+                if *server == endpoint("10.0.0.1", 4661)
+        )),
         other => panic!("expected RemoveServer, got {other:?}"),
     }
     assert_eq!(
@@ -266,4 +254,25 @@ fn golden_networks_remove_confirm() {
         let area = frame.area();
         view.draw(frame, area, &state, &Theme::default_dark(), now);
     });
+}
+
+#[test]
+fn golden_networks_remove_confirm_scrolls_in_a_short_frame() {
+    let state = listed_servers();
+    let mut view = NetworksView::new();
+    menu_to(&mut view, &state, "Remove");
+    view.handle_key(press(KeyCode::Enter), &state);
+    let now = Instant::now();
+    let shown = |view: &mut NetworksView| {
+        crate::golden::render_to_lines(60, 5, |frame| {
+            let area = frame.area();
+            view.draw(frame, area, &state, &Theme::default_dark(), now);
+        })
+    };
+    assert_golden("networks_remove_confirm_short", 60, 5, |frame| {
+        let area = frame.area();
+        view.draw(frame, area, &state, &Theme::default_dark(), now);
+    });
+    view.handle_key(press(KeyCode::Char('G')), &state);
+    assert!(shown(&mut view).contains("n no"));
 }

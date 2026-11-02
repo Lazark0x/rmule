@@ -53,10 +53,7 @@ async fn a_restart_finds_a_crypt_ping_reply_by_the_saved_obfuscation_port() {
         )
         .await;
 
-    assert_eq!(
-        capabilities.lock().unwrap().get(&server).map(|c| c.users),
-        Some(900),
-    );
+    assert_eq!(capabilities.lock().get(&server).map(|c| c.users), Some(900),);
     assert!(!challenges.crypt_outstanding(server));
 }
 
@@ -81,7 +78,7 @@ async fn a_restart_keys_on_the_saved_key_only_under_the_address_it_was_learned_u
             )
             .await;
 
-        let users = capabilities.lock().unwrap().get(&server).map(|c| c.users);
+        let users = capabilities.lock().get(&server).map(|c| c.users);
         assert_eq!(users.is_some(), decrypts, "public IPv4 {own}");
     }
 }

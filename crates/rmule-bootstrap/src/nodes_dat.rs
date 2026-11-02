@@ -18,6 +18,10 @@
 //! v3 reader re-parses from the leading marker rather than resuming a shared
 //! position, so no offset bookkeeping crosses the two readers.
 //!
+//! A *fetched* file gives only addresses to dial, whichever reader took it
+//! ([`fetch_nodes_dat`], ADR-0120). The rest of this section is the persisted
+//! file's, which is rmule's own word.
+//!
 //! The outcome is a [`NodesDatInstall`] *plan*, mirroring the server.met
 //! pipeline's plan-not-effect posture: "v1/v2-merge" contacts
 //! ([`NodesDatInstall::Contacts`]) are the caller's cue to inject them into a
@@ -31,13 +35,21 @@
 //! seeds use — unifying both sources), which dials them one at a time on the
 //! 15 s / 2 s cadence (ADR-0067).
 
+use std::net::{IpAddr, SocketAddrV4};
+
 use rmule_kad::{
-    BootstrapDialList, BootstrapEditionError, KadBootstrapNode, KadContact, KadId, NodesDat,
-    NodesDatError,
+    BootstrapDialList, BootstrapEditionError, KadBootstrapNode, KadContact, KadId, KadNodeEndpoint,
+    NodesDat, NodesDatError,
 };
 use thiserror::Error;
 
 use crate::fetcher::{FetchError, Fetcher};
+use crate::list_host::ListHost;
+use crate::odd_list::{self, ListOddity};
+
+/// How many dial candidates a fetched nodes.dat gives at most: the same number
+/// the v3 bootstrap-edition reader keeps.
+const MAX_FETCHED_CANDIDATES: usize = 50;
 
 /// Why a nodes.dat acquisition produced no install plan.
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
@@ -57,6 +69,11 @@ pub enum NodesDatPipelineError {
     /// [`BootstrapDialList`] already held candidates from an earlier load.
     #[error("v3 bootstrap-edition nodes.dat rejected: {0}")]
     BootstrapEdition(BootstrapEditionError),
+
+    /// The file decoded but has a shape no mirror serves (ADR-0120); it is
+    /// refused whole.
+    #[error("nodes.dat refused: {0}")]
+    Odd(#[from] ListOddity),
 }
 
 /// The reconciled outcome of one nodes.dat acquisition — a *plan* the caller
@@ -76,6 +93,18 @@ pub enum NodesDatInstall {
     /// semantics: dial candidates only, never merged into the routing table
     /// directly.
     BootstrapCandidates(Vec<KadBootstrapNode>),
+}
+
+impl NodesDatInstall {
+    /// Every row's Kad address, whichever reader gave it.
+    fn endpoints(&self) -> Vec<KadNodeEndpoint> {
+        match self {
+            Self::Contacts(contacts) => contacts.iter().map(KadContact::endpoint).collect(),
+            Self::BootstrapCandidates(candidates) => {
+                candidates.iter().map(|node| node.endpoint()).collect()
+            }
+        }
+    }
 }
 
 /// Run the try-normal-then-fallback dispatch against already-fetched bytes,
@@ -102,7 +131,13 @@ pub fn decode_nodes_dat(
 }
 
 /// Run the nodes.dat pipeline: bounded GET → [`decode_nodes_dat`]'s
-/// try-normal-then-fallback dispatch.
+/// try-normal-then-fallback dispatch → the rows the file's host can vouch for,
+/// as dial candidates at most `MAX_FETCHED_CANDIDATES` long.
+///
+/// **A fetched file is the mirror's word** (ADR-0120): its Kad IDs and verified
+/// flags prove nothing, so whichever reader decoded it, the result is
+/// addresses to dial, and each must answer before it enters a routing table. A
+/// file that leaves an odd shape behind is refused whole.
 ///
 /// **One-shot**: this makes exactly one [`Fetcher::get`] call, and only when
 /// *called*. Its one automatic call site — the Join Sequence's Kad-seed leg
@@ -110,18 +145,27 @@ pub fn decode_nodes_dat(
 /// [`should_auto_fetch_nodes_dat`](crate::should_auto_fetch_nodes_dat), whose
 /// switch is OFF by default (aMule's own asymmetry: `UpdateNotesDat` is
 /// user-/EC-triggered only).
-pub async fn fetch_nodes_dat<F>(
-    fetcher: &F,
+pub async fn fetch_nodes_dat(
+    fetcher: &dyn Fetcher,
     url: &str,
     max_bytes: usize,
     own_id: KadId,
-    dial_list: &mut BootstrapDialList,
-) -> Result<NodesDatInstall, NodesDatPipelineError>
-where
-    F: Fetcher + Sync,
-{
+) -> Result<Vec<SocketAddrV4>, NodesDatPipelineError> {
     let bytes = fetcher.get(url, max_bytes).await?;
-    decode_nodes_dat(&bytes, own_id, dial_list)
+    let rows = decode_nodes_dat(&bytes, own_id, &mut BootstrapDialList::new())?.endpoints();
+    let host = ListHost::of(url);
+    let usable: Vec<KadNodeEndpoint> = rows
+        .iter()
+        .copied()
+        .filter(|row| host.admits(IpAddr::V4(row.ip())))
+        .collect();
+    let addresses: Vec<IpAddr> = usable.iter().map(|row| IpAddr::V4(row.ip())).collect();
+    odd_list::judge(rows.len(), &addresses)?;
+    Ok(usable
+        .into_iter()
+        .take(MAX_FETCHED_CANDIDATES)
+        .map(|row| SocketAddrV4::new(row.ip(), row.udp_port()))
+        .collect())
 }
 
 #[cfg(test)]
@@ -215,8 +259,7 @@ mod tests {
             "constructing the fetcher/fixture must not itself trigger a fetch"
         );
 
-        let mut dial_list = BootstrapDialList::new();
-        let install = fetch_nodes_dat(&fetcher, URL, CAP, OWN_ID(), &mut dial_list)
+        let candidates = fetch_nodes_dat(&fetcher, URL, CAP, OWN_ID())
             .await
             .expect("explicit command succeeds");
 
@@ -225,7 +268,82 @@ mod tests {
             1,
             "exactly one fetch, and only in response to the explicit call"
         );
-        assert!(matches!(install, NodesDatInstall::Contacts(_)));
+        assert_eq!(candidates, [SocketAddrV4::new(ip(1), 4672)]);
+    }
+
+    // --- a fetched file is the mirror's word ---------------------------------
+
+    /// A forged normal file sets every contact verified, and no contact comes
+    /// out of the pipeline as anything but an address that must answer.
+    #[tokio::test]
+    async fn a_fetched_file_gives_addresses_to_dial_never_contacts() {
+        let bytes = normal_file(
+            2,
+            &[
+                row_v2(id(1), ip(1), 4672, 4662, 8, true),
+                row_v2(id(2), Ipv4Addr::new(198, 51, 100, 1), 4673, 4662, 8, true),
+            ],
+        );
+        let fetcher = FakeFetcher::serving(bytes);
+
+        let candidates = fetch_nodes_dat(&fetcher, URL, CAP, OWN_ID())
+            .await
+            .expect("a good file");
+
+        assert_eq!(
+            candidates,
+            [
+                SocketAddrV4::new(ip(1), 4672),
+                SocketAddrV4::new(Ipv4Addr::new(198, 51, 100, 1), 4673)
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_fetched_file_gives_at_most_as_many_candidates_as_a_bootstrap_edition() {
+        let rows: Vec<_> = (0..120u8)
+            .map(|row| row_v1(id(row), Ipv4Addr::new(198, 18, row, 1), 4672, 4662, 8))
+            .collect();
+        let fetcher = FakeFetcher::serving(normal_file(1, &rows));
+
+        let candidates = fetch_nodes_dat(&fetcher, URL, CAP, OWN_ID())
+            .await
+            .expect("a good file");
+
+        assert_eq!(candidates.len(), MAX_FETCHED_CANDIDATES);
+    }
+
+    #[tokio::test]
+    async fn a_fetched_file_of_one_network_is_refused_whole() {
+        let rows: Vec<_> = (1..=9)
+            .map(|host| row_v1(id(host), ip(host), 4672, 4662, 8))
+            .collect();
+        let fetcher = FakeFetcher::serving(normal_file(1, &rows));
+
+        let outcome = fetch_nodes_dat(&fetcher, URL, CAP, OWN_ID()).await;
+
+        assert_eq!(
+            outcome,
+            Err(NodesDatPipelineError::Odd(ListOddity::OneNetwork {
+                in_network: 9,
+                usable: 9
+            }))
+        );
+    }
+
+    #[tokio::test]
+    async fn a_fetched_file_drops_a_reserved_row_a_remote_host_cannot_vouch_for() {
+        let bytes = bootstrap_file(&[
+            row_v1(id(1), Ipv4Addr::LOCALHOST, 4672, 4662, 8),
+            row_v1(id(2), ip(2), 4672, 4662, 8),
+        ]);
+        let fetcher = FakeFetcher::serving(bytes);
+
+        let candidates = fetch_nodes_dat(&fetcher, URL, CAP, OWN_ID())
+            .await
+            .expect("half is not most");
+
+        assert_eq!(candidates, [SocketAddrV4::new(ip(2), 4672)]);
     }
 
     // --- try-normal-then-fallback dispatch ------------------------------------
@@ -373,9 +491,8 @@ mod tests {
             url: URL.to_owned(),
             detail: "connection refused".to_owned(),
         });
-        let mut dial_list = BootstrapDialList::new();
 
-        let outcome = fetch_nodes_dat(&fetcher, URL, CAP, OWN_ID(), &mut dial_list).await;
+        let outcome = fetch_nodes_dat(&fetcher, URL, CAP, OWN_ID()).await;
 
         assert!(matches!(
             outcome,
@@ -389,9 +506,8 @@ mod tests {
         let big = normal_file(1, &[row_v1(id(1), ip(1), 4672, 4662, 8)]);
         let cap = big.len() - 1;
         let fetcher = FakeFetcher::serving(big);
-        let mut dial_list = BootstrapDialList::new();
 
-        let outcome = fetch_nodes_dat(&fetcher, URL, cap, OWN_ID(), &mut dial_list).await;
+        let outcome = fetch_nodes_dat(&fetcher, URL, cap, OWN_ID()).await;
 
         assert_eq!(
             outcome,

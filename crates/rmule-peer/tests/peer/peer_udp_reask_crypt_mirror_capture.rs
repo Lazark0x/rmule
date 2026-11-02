@@ -90,7 +90,7 @@ fn rmules_ack_went_out_obfuscated_keyed_on_our_high_id_address() {
         .part_status
         .as_ref()
         .expect("the v4 ack carries our availability");
-    assert_eq!(part_status.part_count(), 5);
+    assert_eq!(part_status.count(), 5);
     assert_eq!(ack.rank, 1);
     assert_eq!(ack.encode_udp(), decrypted.payload);
 }
@@ -155,7 +155,7 @@ fn the_inbound_reask_this_run_answered_is_the_same_v4_shape_with_a_new_marker() 
         ping.part_status
             .as_ref()
             .expect("a v4 reask ping carries the part status")
-            .part_count(),
+            .count(),
         5,
     );
     assert_eq!(ping.complete_sources, Some(1));

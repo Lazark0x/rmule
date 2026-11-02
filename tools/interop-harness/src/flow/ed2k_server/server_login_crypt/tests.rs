@@ -99,7 +99,7 @@ fn rescore_a_retained_run() {
         .and_then(|ip| ip.parse().ok())
         .expect("the server address in rmule.log, or RMULE_BENCH_SERVER_IP");
     let initiates = matches!(policy.as_str(), "requested" | "required");
-    let line = verdict(
+    let (word, line) = verdict(
         &policy,
         initiates,
         by_name.is_some(),
@@ -108,5 +108,5 @@ fn rescore_a_retained_run() {
         server,
     )
     .expect("scored");
-    println!("{line}");
+    println!("verdict={word} {line}");
 }

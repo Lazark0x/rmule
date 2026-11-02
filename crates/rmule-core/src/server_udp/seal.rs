@@ -112,6 +112,16 @@ impl<T: ServerUdpTransport> ServerUdpSeal<T> {
         (crypt.obfuscation_udp_port != 0).then_some((key, crypt.obfuscation_udp_port))
     }
 
+    /// Whether `server`'s UDP key was learned under a public address we no
+    /// longer hold, so only a fresh status answer can key it again.
+    pub(crate) fn key_expired(&self, server: Ipv4Endpoint) -> bool {
+        let Some(own) = self.own.public_ip().filter(|_| self.policy.armed()) else {
+            return false;
+        };
+        self.crypt_facts(server)
+            .is_some_and(|(crypt, udp_flags)| crypt.expired_under(udp_flags, own))
+    }
+
     /// `server`'s crypt facts and UDP flags: this run's record first, else
     /// the ones its row saved — the order the receive side finds a server by
     /// its obfuscation port in ([`obfuscation_source`](Self::obfuscation_source)).
@@ -122,7 +132,6 @@ impl<T: ServerUdpTransport> ServerUdpSeal<T> {
         let heard = self
             .capabilities
             .lock()
-            .expect("server capabilities store")
             .get(&server)
             .and_then(|caps| Some((caps.udp_crypt?, caps.udp_flags)));
         heard.or_else(|| self.facts.saved_udp_crypt_of(server))
@@ -170,7 +179,7 @@ impl<T: ServerUdpTransport> ServerUdpSeal<T> {
     ) -> Option<(Ipv4Endpoint, Option<u32>)> {
         let own = self.own.public_ip();
         let heard = {
-            let store = self.capabilities.lock().expect("server capabilities store");
+            let store = self.capabilities.lock();
             store.iter().find_map(|(server, caps)| {
                 let crypt = caps.udp_crypt?;
                 (server.ip == udp_src.ip && crypt.obfuscation_udp_port == udp_src.port)

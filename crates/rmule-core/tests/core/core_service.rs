@@ -5,6 +5,7 @@
 use crate::fixture::host_binds_ipv6;
 use crate::fixture::next_matching;
 use crate::fixture::stub_link;
+use parking_lot::Mutex as BlockingMutex;
 use rmule_core::DownloadRepository;
 use rmule_core::{
     Core, CoreCommand, CoreCommandRejectReason, CoreConfig, CoreEvent, DownloadCommand,
@@ -14,11 +15,11 @@ use rmule_core::{
 };
 use rmule_peer::PeerHandshakeContext;
 use rmule_primitives::{
-    ClientId, Ed2kFileLink, PeerEndpoint, PeerSource, ServerEndpoint, SourceLookupTarget,
-    SourceSighting,
+    ClientId, Ed2kFileLink, Informant, PeerEndpoint, PeerSource, ServerEndpoint,
+    SourceLookupTarget, SourceSighting,
 };
 use rmule_testkit::HANG_GUARD;
-use std::sync::{Arc, Mutex as StdMutex};
+use std::sync::Arc;
 use tokio::time::{Duration, timeout};
 
 fn file_link() -> Ed2kFileLink {
@@ -119,6 +120,7 @@ fn start_command(file: Ed2kFileLink, name: &str) -> CoreCommand {
         source_hint: Some(ServerEndpoint::new("127.0.0.1", 4661).unwrap()),
         name: rmule_testkit::file_name(name),
         if_taken: rmule_core::NameTaken::Refuse,
+        kad_aich_root: None,
     })
 }
 
@@ -148,6 +150,7 @@ fn seeded_row(
             file,
             Some(&ServerEndpoint::new("127.0.0.1", 4661).unwrap()),
             &rmule_core::DownloadPaths::from_final_path(path),
+            None,
         )
         .unwrap();
     for state in lifecycle {
@@ -214,7 +217,7 @@ async fn the_file_history_names_the_shared_files_and_the_cancelled_downloads() {
         registry
             .share(rmule_core::SharedFileEntry {
                 file_hash: file.file_hash,
-                file_size: file.size,
+                file_size: file.size(),
                 path: dir.path().join(name),
                 name: name.to_string(),
                 source: rmule_core::ShareSource::Explicit,
@@ -337,6 +340,7 @@ async fn durable_start_creates_record_before_fake_protocol_adapter_completes() {
         source_hint: Some(ServerEndpoint::new("127.0.0.1", 4661).unwrap()),
         name: rmule_testkit::file_name("download.bin"),
         if_taken: rmule_core::NameTaken::Refuse,
+        kad_aich_root: None,
     }))
     .await
     .unwrap();
@@ -375,6 +379,7 @@ async fn pause_download_persists_paused_and_emits_event() {
         source_hint: Some(ServerEndpoint::new("127.0.0.1", 4661).unwrap()),
         name: rmule_testkit::file_name("download.bin"),
         if_taken: rmule_core::NameTaken::Refuse,
+        kad_aich_root: None,
     }))
     .await
     .unwrap();
@@ -414,11 +419,12 @@ async fn startup_recovery_emits_recovered_without_source_lookup() {
             &file_link(),
             Some(&ServerEndpoint::new("persisted.example", 4661).unwrap()),
             &rmule_core::DownloadPaths::from_final_path(dir.path().join("download.bin")),
+            None,
         )
         .unwrap();
     repo.set_lifecycle(created.id(), DownloadLifecycle::Active)
         .unwrap();
-    let lookups = Arc::new(StdMutex::new(Vec::new()));
+    let lookups = Arc::new(BlockingMutex::new(Vec::new()));
     let mut core = Core::builder(CoreConfig::default(), Arc::clone(&store))
         .settings(rmule_core::CoreSettings::default())
         .source_lookup(RecordingSourceLookup::new(Arc::clone(&lookups)))
@@ -442,17 +448,18 @@ async fn startup_recovery_emits_recovered_without_source_lookup() {
                 failure: None,
                 file_hash,
                 metadata,
+                ..
             }) if *download_id == expected_id
                 && *file_hash == file_link().file_hash
                 && metadata.name == file_link().name
-                && metadata.size == file_link().size
+                && metadata.size == file_link().size()
                 && metadata.origin == DownloadMetadataOrigin::Link,
         ),
         "expected DownloadRecovered(Active) with the persisted name/size for {expected_id:?} but saw {recovered:?}",
     );
     tokio::time::sleep(Duration::from_millis(20)).await;
 
-    assert!(lookups.lock().unwrap().is_empty());
+    assert!(lookups.lock().is_empty());
 }
 
 #[tokio::test]
@@ -473,6 +480,7 @@ async fn start_surfaces_the_stored_name_and_exact_size_on_both_paths() {
         source_hint: Some(ServerEndpoint::new("127.0.0.1", 4661).unwrap()),
         name: rmule_testkit::file_name("download.bin"),
         if_taken: rmule_core::NameTaken::Refuse,
+        kad_aich_root: None,
     }))
     .await
     .unwrap();
@@ -493,7 +501,7 @@ async fn start_surfaces_the_stored_name_and_exact_size_on_both_paths() {
         unreachable!("matched above")
     };
     assert_eq!(metadata.name, file_link().name);
-    assert_eq!(metadata.size, file_link().size);
+    assert_eq!(metadata.size, file_link().size());
     assert_eq!(metadata.origin, DownloadMetadataOrigin::Link);
 
     // The level path reports the same facts, so a snapshot-only consumer and
@@ -517,11 +525,12 @@ async fn resume_performs_a_fresh_source_lookup() {
             &file_link(),
             Some(&persisted_server),
             &rmule_core::DownloadPaths::from_final_path(dir.path().join("download.bin")),
+            None,
         )
         .unwrap();
     repo.set_lifecycle(created.id(), DownloadLifecycle::Paused)
         .unwrap();
-    let lookups = Arc::new(StdMutex::new(Vec::new()));
+    let lookups = Arc::new(BlockingMutex::new(Vec::new()));
     let mut core = Core::builder(CoreConfig::default(), Arc::clone(&store))
         .settings(rmule_core::CoreSettings::default())
         .source_lookup(RecordingSourceLookup::new(Arc::clone(&lookups)))
@@ -570,10 +579,10 @@ async fn resume_performs_a_fresh_source_lookup() {
     .await;
 
     assert_eq!(
-        lookups.lock().unwrap().as_slice(),
+        lookups.lock().as_slice(),
         &[SourceLookupTarget::new(
             file_link().file_hash,
-            file_link().size
+            file_link().size()
         )]
     );
     let snapshot = core.diagnostics_snapshot();
@@ -602,6 +611,7 @@ async fn a_server_failure_persists_failed_not_paused() {
         source_hint: Some(ServerEndpoint::new("127.0.0.1", 4661).unwrap()),
         name: rmule_testkit::file_name("download.bin"),
         if_taken: rmule_core::NameTaken::Refuse,
+        kad_aich_root: None,
     }))
     .await
     .unwrap();
@@ -659,6 +669,7 @@ async fn sourceless_lookup_terminates_by_default_instead_of_hanging_forever() {
         source_hint: Some(ServerEndpoint::new("127.0.0.1", 4661).unwrap()),
         name: rmule_testkit::file_name("download.bin"),
         if_taken: rmule_core::NameTaken::Refuse,
+        kad_aich_root: None,
     }))
     .await
     .unwrap();
@@ -716,11 +727,11 @@ impl SourceLookupService for FailingSourceLookup {
 
 #[derive(Clone)]
 struct RecordingSourceLookup {
-    calls: Arc<StdMutex<Vec<SourceLookupTarget>>>,
+    calls: Arc<BlockingMutex<Vec<SourceLookupTarget>>>,
 }
 
 impl RecordingSourceLookup {
-    fn new(calls: Arc<StdMutex<Vec<SourceLookupTarget>>>) -> Self {
+    fn new(calls: Arc<BlockingMutex<Vec<SourceLookupTarget>>>) -> Self {
         Self { calls }
     }
 }
@@ -730,13 +741,13 @@ impl SourceLookupService for RecordingSourceLookup {
         &mut self,
         target: SourceLookupTarget,
     ) -> Result<SourceLookupOutcome, DownloadFailure> {
-        self.calls.lock().unwrap().push(target);
+        self.calls.lock().push(target);
         Ok(SourceLookupOutcome {
             client_id: ClientId::from_u32(0x0100_007F),
-            sources: vec![SourceSighting::plain(PeerSource::new(
-                ClientId::from_u32(0x0100_007F),
-                4663,
-            ))],
+            sources: vec![SourceSighting::plain(
+                PeerSource::new(ClientId::from_u32(0x0100_007F), 4663),
+                Informant::Own,
+            )],
         })
     }
 }
@@ -748,13 +759,18 @@ impl PeerTransferService for PendingPeerTransfer {
         &mut self,
         peer: PeerEndpoint,
         _ctx: PeerHandshakeContext,
-        _file: Ed2kFileLink,
+        file: Ed2kFileLink,
     ) -> Result<PeerWorker, DownloadFailure> {
+        let advertised = rmule_testkit::every_part(file.size());
         let (command_tx, mut command_rx) = tokio::sync::mpsc::channel(8);
         let (event_tx, event_rx) = tokio::sync::mpsc::channel(8);
         tokio::spawn(async move {
             let _ = event_tx.send(PeerWorkerEvent::Connected).await;
+            let _ = event_tx.send(advertised).await;
             while let Some(command) = command_rx.recv().await {
+                if matches!(command, PeerWorkerCommand::AskSlot) {
+                    let _ = event_tx.send(PeerWorkerEvent::SlotGranted).await;
+                }
                 if matches!(command, PeerWorkerCommand::Shutdown { .. }) {
                     break;
                 }

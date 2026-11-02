@@ -14,7 +14,7 @@ use std::time::SystemTime;
 use rmule_primitives::FileHash;
 
 use crate::CoreError;
-use crate::registry::{SharedFileEntry, SharedFileRegistry};
+use crate::registry::{SharedFileRegistry, SharedRow};
 use crate::registry_check::{Withheld, WithheldRows};
 use crate::storage::DownloadRepository;
 use crate::store::had_set::DurableHadSet;
@@ -77,8 +77,7 @@ pub struct SharedFileFact {
     /// Where the shared bytes lie.
     pub path: PathBuf,
     /// Why nothing is offered for it now, and since when rmule noticed;
-    /// `None` while it is offered (ADR-0100, "The registry against the
-    /// disk").
+    /// `None` while it is offered (ADR-0106, "The registry against the disk").
     pub withheld: Option<Withheld>,
 }
 
@@ -105,7 +104,7 @@ pub(crate) fn read(
     downloads: &impl DownloadRepository,
 ) -> FileHistory {
     assemble(
-        registry.list(),
+        registry.rows(),
         withheld,
         had.list(),
         downloads.list_cancelled(),
@@ -114,7 +113,7 @@ pub(crate) fn read(
 
 /// The history from its three reads, each failed one named in `unread`.
 fn assemble(
-    shared: Result<Vec<SharedFileEntry>, CoreError>,
+    shared: Result<Vec<SharedRow>, CoreError>,
     withheld: &WithheldRows,
     had: Result<Vec<HadFile>, CoreError>,
     cancelled: Result<Vec<Ed2kIdentity>, CoreError>,

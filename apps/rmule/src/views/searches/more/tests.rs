@@ -19,7 +19,7 @@ fn completed_linux() -> (SearchesView, UiState) {
         vec![search_result("linux-1.iso", 40)],
         SearchStatus::Completed { total: 1 },
     );
-    (SearchesView::new().having_sent("linux"), state)
+    (SearchesView::by_name().having_sent("linux"), state)
 }
 
 fn offer(state: &mut UiState, asks_left: u8) {
@@ -84,7 +84,9 @@ fn status_of(view: &mut SearchesView, state: &UiState) -> String {
     let mut terminal =
         ratatui::Terminal::new(ratatui::backend::TestBackend::new(160, 12)).expect("terminal");
     terminal
-        .draw(|frame| view.draw(frame, frame.area(), state, &theme, Instant::now()))
+        .draw(|frame| {
+            view.draw(frame, frame.area(), state, &theme, Instant::now());
+        })
         .expect("draw");
     let buffer = terminal.backend().buffer();
     (0..buffer.area.height)

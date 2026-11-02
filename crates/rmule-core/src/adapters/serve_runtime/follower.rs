@@ -5,8 +5,7 @@
 //! the current share set announced (`OP_OFFERFILES`), as aMule re-sends its
 //! list to every server it connects to (`ServerConnect.cpp:325`,
 //! `SharedFileList.cpp:1588`) — unless the **Announce Policy** withholds it
-//! from a server that grants related search (ADR-0093, "What is announced to
-//! a server that answers related searches"). The follower sends no hellos:
+//! from a server that grants related search (ADR-0099). The follower sends no hellos:
 //! the listener's read the live session at each connection
 //! ([`HelloSource`](crate::server_session::HelloSource)), so a mid-session id
 //! change is named at once.
@@ -14,7 +13,7 @@
 use std::sync::Arc;
 
 use rmule_ed2k::OfferedFile;
-use tokio::sync::{Mutex, mpsc};
+use tokio::sync::{Mutex, mpsc, watch};
 use tokio::task::JoinHandle;
 
 use super::AnnounceOutcome;
@@ -60,9 +59,9 @@ fn decide(withhold: bool, related_search: bool, told: Option<Told>, fresh_set: b
 /// The share set and what the live session was told of it, under one lock.
 #[derive(Default)]
 struct Announcing {
-    /// The latest share set handed to [`announce`](SessionFollower::announce).
-    /// The latest wins: `OP_OFFERFILES` is a whole-set statement, so an older
-    /// set would be a lie the moment a newer one exists.
+    /// The latest share set handed to [`hand`](SessionFollower::hand).
+    /// The latest wins: the session's Offer Queue is owed the newest set, and
+    /// an older one would be a lie the moment a newer one exists.
     share: Option<Vec<OfferedFile>>,
     /// What the follower told a session, with the session it was.
     told: Option<(ServerSessionHandle, Told)>,
@@ -75,14 +74,20 @@ struct Announcing {
 /// each session. Dropping it stops following.
 pub(super) struct SessionFollower {
     /// The lock is held from reading or writing the set until its send is
-    /// answered, by the follower and by `announce` alike, so the sets reach a
-    /// session in the order they were set and the last one sent is the newest.
+    /// answered, by the follower and by the announcer alike, so the sets reach
+    /// a session in the order they were set and the last one sent is the
+    /// newest.
+    #[cfg(test)]
     state: Arc<Mutex<Announcing>>,
+    #[cfg(test)]
     session: SharedServerSession,
     /// What the follower's own tells — to sessions made after an announce —
     /// said, in order, until the serve takes it.
     session_told: Option<mpsc::UnboundedReceiver<AnnounceOutcome>>,
     task: JoinHandle<()>,
+    /// The latest set handed over, for [`Self::hand`]'s task to tell.
+    handed: watch::Sender<Option<Vec<OfferedFile>>>,
+    announcer: JoinHandle<()>,
 }
 
 impl SessionFollower {
@@ -98,6 +103,28 @@ impl SessionFollower {
         let mut changes = session.session_changes();
         let mut withhold = session.withhold_shares();
         let (said_tx, session_told) = mpsc::unbounded_channel();
+        let (handed, mut handed_rx) = watch::channel(None);
+        let announcer = tokio::spawn({
+            let state = Arc::clone(&state);
+            let session = session.clone();
+            let said_tx = said_tx.clone();
+            async move {
+                while handed_rx.changed().await.is_ok() {
+                    let Some(files) = handed_rx.borrow_and_update().clone() else {
+                        continue;
+                    };
+                    match announce_to(&state, &session, files).await {
+                        Ok(AnnounceOutcome::Unsaid) => {}
+                        Ok(outcome) => {
+                            let _ = said_tx.send(outcome);
+                        }
+                        Err(error) => {
+                            tracing::warn!(%error, "serve: announce failed; peers will not discover shared files");
+                        }
+                    }
+                }
+            }
+        });
         let task = tokio::spawn(async move {
             let mut live = follow_session.session_in_slot().await;
             loop {
@@ -131,30 +158,31 @@ impl SessionFollower {
             }
         });
         Self {
+            #[cfg(test)]
             state,
+            #[cfg(test)]
             session: session.clone(),
             session_told: Some(session_told),
             task,
+            handed,
+            announcer,
         }
     }
 
-    /// Announce `files` to the live session as the Announce Policy allows,
-    /// and keep them as the set every later session is told. With no session
-    /// the set waits for the next one; that is not an error, since the
-    /// announce has nowhere yet to go.
+    /// Have `files` announced without waiting on the server: what it does
+    /// comes back on the told channel, and a set handed before the last went
+    /// out is replaced by the newest.
+    pub(super) fn hand(&self, files: Vec<OfferedFile>) {
+        self.handed.send_replace(Some(files));
+    }
+
+    /// [`announce_to`], awaited.
+    #[cfg(test)]
     pub(super) async fn announce(
         &self,
         files: Vec<OfferedFile>,
     ) -> Result<AnnounceOutcome, CoreError> {
-        let mut state = self.state.lock().await;
-        state.share = Some(files);
-        match self.session.session_in_slot().await {
-            Some(handle) => {
-                let held = *self.session.withhold_shares().borrow();
-                tell(&self.session, &handle, &mut state, held, true).await
-            }
-            None => Ok(AnnounceOutcome::Unsaid),
-        }
+        announce_to(&self.state, &self.session, files).await
     }
 
     /// Take the outcomes of the tells the follower makes on its own, to each
@@ -167,6 +195,27 @@ impl SessionFollower {
 impl Drop for SessionFollower {
     fn drop(&mut self) {
         self.task.abort();
+        self.announcer.abort();
+    }
+}
+
+/// Announce `files` to the live session as the Announce Policy allows, and
+/// keep them as the set every later session is told. With no session the set
+/// waits for the next one; that is not an error, since the announce has
+/// nowhere yet to go.
+async fn announce_to(
+    state: &Mutex<Announcing>,
+    session: &SharedServerSession,
+    files: Vec<OfferedFile>,
+) -> Result<AnnounceOutcome, CoreError> {
+    let mut state = state.lock().await;
+    state.share = Some(files);
+    match session.session_in_slot().await {
+        Some(handle) => {
+            let held = *session.withhold_shares().borrow();
+            tell(session, &handle, &mut state, held, true).await
+        }
+        None => Ok(AnnounceOutcome::Unsaid),
     }
 }
 
@@ -195,6 +244,7 @@ async fn tell(
                     SharesToServer::Withheld
                 }
                 SharesWithheld::RelatedSearchGrantedAfterAnnounce => {
+                    handle.halt_offers().await;
                     SharesToServer::AnnouncedBeforeWithholding
                 }
             };
@@ -214,7 +264,6 @@ async fn tell(
             let file_count = files.len();
             handle.announce(files).await?;
             state.told = Some((handle.clone(), Told::Announced));
-            facts.shares_told(handle.server(), SharesToServer::Announced);
             AnnounceOutcome::Announced { file_count }
         }
     };
@@ -248,7 +297,7 @@ mod tests {
     use tokio::sync::mpsc;
 
     use super::*;
-    use crate::server_session::tests::fake_session;
+    use crate::server_session::tests::{fake_session, fake_session_reporting};
 
     /// A file whose hash no other test file shares, nor any other byte of it.
     fn file(seed: u8, name: &str) -> OfferedFile {
@@ -428,7 +477,14 @@ mod tests {
         follower.announce(shared.clone()).await.unwrap();
 
         let server = ServerEndpoint::new("192.0.2.140", 4661).unwrap();
-        let (live, _link, mut sent) = fake_session(server.clone(), related_search());
+        let (live, _link, mut sent) = fake_session_reporting(
+            server.clone(),
+            related_search(),
+            session.server_facts().clone(),
+        );
+        // Kept up past the swap below: an establishment ends the old session
+        // first, and this one's end would clear the level the next one set.
+        let _first = live.clone();
         install(&session, live).await;
         assert_eq!(offered(&mut sent).await, shared);
 
@@ -453,7 +509,11 @@ mod tests {
         );
 
         let other = ServerEndpoint::new("198.51.100.77", 5000).unwrap();
-        let (second, _second_link, mut second_sent) = fake_session(other.clone(), related_search());
+        let (second, _second_link, mut second_sent) = fake_session_reporting(
+            other.clone(),
+            related_search(),
+            session.server_facts().clone(),
+        );
         install(&session, second).await;
         told(&diagnostics, &other, SharesToServer::Withheld).await;
         session.set_withhold_shares(false);

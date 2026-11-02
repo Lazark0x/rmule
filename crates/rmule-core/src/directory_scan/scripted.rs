@@ -3,19 +3,20 @@
 //! and so is every look at a single path, so a test can bound the work a
 //! burst of events costs.
 
+use parking_lot::Mutex;
 use std::collections::VecDeque;
 use std::collections::{HashMap, HashSet};
 use std::ffi::OsString;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime};
 
 use rmule_primitives::FileHash;
 
 use super::{DirEntry, DirectorySource, EntryKind, FileIdentity, FileStamp, Known, WatchSignal};
-use crate::registry::{ShareSource, SharedFileEntry};
+use crate::registry::{ShareSource, SharedRow};
 
 pub(crate) const ROOT: &str = "/dl";
 
@@ -87,6 +88,18 @@ impl Scripted {
         self.entry(path, EntryKind::File(stamp));
         self.files
             .insert(PathBuf::from(path), (stamp, bytes.to_vec()));
+        stamp
+    }
+
+    /// A file of `size` bytes no read may reach: its stamp alone exists, as
+    /// a file too large to script.
+    pub(crate) fn sized(&mut self, path: &str, size: u64, modified: u64) -> FileStamp {
+        let stamp = FileStamp {
+            size,
+            modified: at(modified),
+        };
+        self.entry(path, EntryKind::File(stamp));
+        self.files.insert(PathBuf::from(path), (stamp, Vec::new()));
         stamp
     }
 
@@ -215,20 +228,19 @@ impl DirectorySource for Scripted {
 }
 
 /// The registry row a past pass left for `path`, its hash made up.
-pub(crate) fn row(path: &str, stamp: FileStamp, tag: u8) -> SharedFileEntry {
-    SharedFileEntry {
+pub(crate) fn row(path: &str, stamp: FileStamp, tag: u8) -> SharedRow {
+    SharedRow {
         file_hash: FileHash::from_bytes([tag; FileHash::BYTE_LEN]),
         file_size: stamp.size,
         path: PathBuf::from(path),
         name: String::new(),
         source: ShareSource::DownloadDirectory,
-        part_hashes: Vec::new(),
         modified: Some(stamp.modified),
     }
 }
 
 /// What the scan would know with `rows` shared and no download.
-pub(crate) fn known(rows: &[SharedFileEntry]) -> Known {
+pub(crate) fn known(rows: &[SharedRow]) -> Known {
     Known {
         rows: rows.to_vec(),
         ..Known::default()
@@ -246,7 +258,7 @@ impl World {
     }
 
     pub(crate) fn with<T>(&self, change: impl FnOnce(&mut Scripted) -> T) -> T {
-        change(&mut self.0.lock().unwrap())
+        change(&mut self.0.lock())
     }
 
     pub(crate) fn opens(&self) -> usize {
@@ -260,27 +272,27 @@ impl World {
 
 impl DirectorySource for World {
     fn list(&self, dir: &Path) -> io::Result<Vec<DirEntry>> {
-        self.0.lock().unwrap().list(dir)
+        self.0.lock().list(dir)
     }
 
     fn kind(&self, path: &Path) -> io::Result<EntryKind> {
-        self.0.lock().unwrap().kind(path)
+        self.0.lock().kind(path)
     }
 
     fn is_folder(&self, path: &Path) -> io::Result<bool> {
-        self.0.lock().unwrap().is_folder(path)
+        self.0.lock().is_folder(path)
     }
 
     fn stamp(&self, path: &Path) -> io::Result<FileStamp> {
-        self.0.lock().unwrap().stamp(path)
+        self.0.lock().stamp(path)
     }
 
     fn open(&self, path: &Path) -> io::Result<Box<dyn io::Read + Send>> {
-        self.0.lock().unwrap().open(path)
+        self.0.lock().open(path)
     }
 
     fn identity(&self, path: &Path) -> Option<FileIdentity> {
-        self.0.lock().unwrap().identity(path)
+        self.0.lock().identity(path)
     }
 }
 

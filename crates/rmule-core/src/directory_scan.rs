@@ -21,20 +21,23 @@ mod source;
 mod watch;
 mod whereabouts;
 
+use parking_lot::Mutex;
 use std::collections::{HashMap, HashSet};
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
 
 use rmule_primitives::FileHash;
 
-use crate::registry::SharedFileEntry;
+use crate::registry::{ShareRefusal, SharedFileEntry, SharedRow};
 
 pub use fs::FsDirectorySource;
 pub(crate) use hash::HashTurn;
-use plan::{FoundFile, plan, walk};
+#[cfg(test)]
+pub(crate) use plan::skipped_name;
+use plan::{FoundFile, list, plan};
 pub use progress::{
     DirectoryOffer, DirectoryRole, DirectoryScanDiagnostics, DirectoryState, ScanPhase,
     ScanSummary, SharedDirectoryDiagnostics,
@@ -42,7 +45,9 @@ pub use progress::{
 pub(crate) use progress::{InstalledDirectory, InstalledState};
 pub(crate) use report::{PassEnd, ScanReport};
 pub use shared_directories::{DirectoryRefusal, ShareGuards};
-pub(crate) use shared_directories::{RefusedFolders, admit, canonical, covering, guard_in_place};
+pub(crate) use shared_directories::{
+    RefusedFolders, admit, canonical, covering, guard_in_place, guard_temp_dir,
+};
 pub use source::{DirEntry, DirectorySource, EntryKind, FileIdentity, FileStamp};
 pub use watch::WatchFault;
 pub(crate) use watch::{
@@ -51,7 +56,7 @@ pub(crate) use watch::{
 pub(crate) use whereabouts::Whereabouts;
 
 /// A file under the directory whose content is already shared from another
-/// path: the **Spare Copy** (ADR-0104, "Spare copies are recorded"). Trusted
+/// path: the **Spare Copy** (ADR-0104). Trusted
 /// unread while its stamp holds, it shares nothing and answers nothing on
 /// the wire; a row whose file goes moves to it.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -78,13 +83,15 @@ pub(crate) struct SetAside {
     pub(crate) identity: Option<FileIdentity>,
 }
 
-/// The part files rmule's own downloads name (ADR-0100, "Part files are known
-/// by their download rows"): the scan skips these paths, and no others, as
+/// The part files rmule's own downloads name (ADR-0102, "Part files are known by their download
+/// rows"): the scan skips these paths, and no others, as
 /// rmule's own work. A file that merely ends `.part` is not among them.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct PartFiles {
-    /// The part paths of queued, active, paused and failed downloads: work in
-    /// progress, skipped silently.
+    /// The part paths of queued, active, completing, paused and failed
+    /// downloads, and a completing one's destination (ADR-0115): work in
+    /// progress, skipped silently, and a registry row standing on one is left
+    /// as it is.
     pub(crate) live: HashSet<PathBuf>,
     /// The part paths of cancelled and completed downloads: a file still
     /// there is a leftover, skipped, and the operator is told.
@@ -110,12 +117,13 @@ impl PartFiles {
 }
 
 /// What the scan may know about the files under the directory without
-/// reading them, as the actor last wrote it: read once for the pass and
-/// again for every round of the watch (ADR-0102, "What the scan knows").
+/// reading them, as the actor last wrote it: read once the pass has listed
+/// the directory and again for every round of the watch (ADR-0102, "What
+/// the scan knows").
 #[derive(Clone, Debug, Default)]
 pub(crate) struct Known {
     /// The **Shared File Registry**.
-    pub(crate) rows: Vec<SharedFileEntry>,
+    pub(crate) rows: Vec<SharedRow>,
     /// rmule's own part files.
     pub(crate) parts: PartFiles,
     /// The recorded spare copies.
@@ -148,8 +156,8 @@ pub(crate) struct Told {
     /// Paths the running watch does not cover; forgotten when a new watch
     /// starts, which covers them again.
     unwatched: HashSet<PathBuf>,
-    /// Files the watch could not read; each forgotten once it is hashed or
-    /// found gone.
+    /// Files the operator was told are not shared, unreadable or refused;
+    /// each forgotten once it is hashed or found gone.
     not_hashed: HashSet<PathBuf>,
 }
 
@@ -177,6 +185,21 @@ impl Told {
                 kind: error.kind(),
                 os_code: error.raw_os_error(),
             });
+        }
+    }
+
+    /// The files of `refused` are not shared: each said once until it is
+    /// hashed or gone.
+    fn refused(
+        &mut self,
+        refused: Vec<(PathBuf, ShareRefusal)>,
+        report: &mut dyn FnMut(ScanReport),
+    ) {
+        for (path, refusal) in refused {
+            if self.not_hashed.insert(path.clone()) {
+                tracing::warn!(path = %path.display(), ?refusal, "refused; not shared");
+                report(ScanReport::Refused { path, refusal });
+            }
         }
     }
 
@@ -229,7 +252,7 @@ pub(crate) enum Consent {
 pub(crate) type ProgressCell = Arc<Mutex<Option<DirectoryScanDiagnostics>>>;
 
 fn set_phase(progress: &ProgressCell, root: &Path, phase: ScanPhase) {
-    *progress.lock().expect("scan progress") = Some(DirectoryScanDiagnostics {
+    *progress.lock() = Some(DirectoryScanDiagnostics {
         dir: root.to_path_buf(),
         phase,
     });
@@ -267,14 +290,14 @@ pub(crate) struct ScanSeams<'a> {
     pub(crate) missing_look: Duration,
 }
 
-/// The scan's worker: one pass over `root` against `known`, then, if it
-/// finished, the watch until `stop` is raised. A directory that is not there
-/// is waited for, at start or when it goes while watched, and passed over
-/// afresh when it is back (ADR-0101, "Shared Directories"). Blocking.
+/// The scan's worker: one pass over `root` against what is known once it
+/// has listed, then, if it finished, the watch until `stop` is raised. A
+/// directory that is not there is waited for, at start or when it goes
+/// while watched, and passed over afresh when it is back (ADR-0101, "Shared
+/// Directories"). Blocking.
 pub(crate) fn run_scan(
     seams: ScanSeams<'_>,
     root: &Path,
-    known: &Known,
     consent: Consent,
     stop: &AtomicBool,
     progress: &ProgressCell,
@@ -287,17 +310,13 @@ pub(crate) fn run_scan(
         turn,
         missing_look,
     } = seams;
-    let mut known = known.clone();
+    let mut known = Known::default();
     let mut consent = Some(consent);
     loop {
-        if missing(source, root) {
-            if !await_return(source, watcher, root, missing_look, stop, progress, report) {
-                return ScanEnd::Stopped;
-            }
-            match rows_now() {
-                Some(now) => known = now,
-                None => return ScanEnd::Stopped,
-            }
+        if missing(source, root)
+            && !await_return(source, watcher, root, missing_look, stop, progress, report)
+        {
+            return ScanEnd::Stopped;
         }
         let mut memory = Memory {
             turn: turn.clone(),
@@ -306,7 +325,11 @@ pub(crate) fn run_scan(
         let summary = match run_pass(
             source,
             root,
-            &known,
+            // The watch starts from what the pass judged by.
+            &mut || {
+                known = rows_now()?;
+                Some(known.clone())
+            },
             consent.take().unwrap_or(Consent::Given),
             stop,
             progress,
@@ -399,16 +422,17 @@ fn unwatched(root: &Path, reason: WatchFault, progress: &ProgressCell) -> ScanEn
     ScanEnd::Unwatched(reason)
 }
 
-/// Run one pass over `root` against the registry rows `rows`. Blocking: it
-/// runs on a blocking-pool thread, reads one file at a time, and returns
-/// within one read of `stop` being raised. A row found gone is held while a
-/// file of its size waits to be hashed, and leaves once the pass has hashed
-/// its files unless one of them was its content (`whereabouts`).
+/// Run one pass over `root` against what `known` answers once the pass has
+/// listed the directory. Blocking: it runs on a blocking-pool thread, reads
+/// one file at a time, and returns within one read of `stop` being raised.
+/// A row found gone is held while a file of its size waits to be hashed, and
+/// leaves once the pass has hashed its files unless one of them was its
+/// content (`whereabouts`).
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn run_pass(
     source: &dyn DirectorySource,
     root: &Path,
-    known: &Known,
+    known: KnownNow<'_>,
     consent: Consent,
     stop: &AtomicBool,
     progress: &ProgressCell,
@@ -422,9 +446,18 @@ pub(crate) fn run_pass(
     } = memory;
     let set_phase = |phase: ScanPhase| set_phase(progress, root, phase);
     set_phase(ScanPhase::Walking);
-    let Ok(walked) = walk(source, root, known) else {
+    let Ok(listed) = list(source, root) else {
         return PassEnd::Unlistable;
     };
+    // What is known is read once the listing is done: a completion move
+    // stores its destination before its file lands there (ADR-0115), so a
+    // file the listing found at one is that download's own in what is read
+    // now. An actor that cannot answer ends the pass.
+    let Some(known) = known() else {
+        return PassEnd::Stopped;
+    };
+    let known = &known;
+    let walked = listed.walked(source, known);
     let rows = known.rows.as_slice();
     let plan = plan(root, walked, known);
     let lost: HashSet<FileHash> = plan
@@ -433,7 +466,8 @@ pub(crate) fn run_pass(
         .chain(&plan.gone)
         .map(|row| row.file_hash)
         .collect();
-    let (carried, to_hash) = carry::carry(source, root, plan.hash, known, &lost);
+    let (to_read, refused) = hash::admit(plan.hash);
+    let (carried, to_hash) = carry::carry(source, root, to_read, known, &lost);
     let ask = match consent {
         Consent::Ask(ask) if !to_hash.is_empty() => Some(ask),
         Consent::Confirm(ask) => Some(ask),
@@ -450,6 +484,8 @@ pub(crate) fn run_pass(
         return PassEnd::Stopped;
     }
     told.leftovers(plan.leftovers, report);
+    let refused_count = refused.len();
+    told.refused(refused, report);
     unreadable(plan.unreadable, report);
     whereabouts.seed(&known.spares, root, &plan.spares_left);
     for path in plan.spares_left {
@@ -470,6 +506,7 @@ pub(crate) fn run_pass(
         trusted: plan.trusted,
         carried: carried_count,
         dropped: plan.changed.len() + gone.len() - moved.len(),
+        skipped: refused_count,
         ..ScanSummary::default()
     };
     // Where each shared content lives now, so a second copy of it never
@@ -567,7 +604,7 @@ fn offer(
     carried: usize,
     to_hash: &[FoundFile],
 ) -> DirectoryOffer {
-    let kept: Vec<&SharedFileEntry> = known
+    let kept: Vec<&SharedRow> = known
         .rows
         .iter()
         .filter(|row| row.path.starts_with(root) && !lost.contains(&row.file_hash))

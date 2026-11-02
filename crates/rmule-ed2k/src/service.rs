@@ -5,13 +5,12 @@
 //! construction-time inputs the driver owns, and a `Connect` command here
 //! would fork the connect path in two.
 
-use std::fmt;
 use std::net::Ipv4Addr;
 
 use rmule_primitives::{
-    ClientId, Ed2kText, FileHash, Ipv4Endpoint, Ipv6Endpoint, PeerEndpoint, SearchQuery,
-    SearchResult, ServerEndpoint, ServerIdentity, ServerStatusReport, SourceListTail,
-    SourceLookupTarget, SourceSighting,
+    ClientId, Ed2kIp, Ed2kText, FileHash, Ipv4Endpoint, Ipv6Endpoint, PeerEndpoint, SearchQuery,
+    SearchResult, ServerEndpoint, ServerIdentity, ServerStatusReport, SourceClaim, SourceListTail,
+    SourceLookupTarget,
 };
 
 use crate::{
@@ -58,14 +57,20 @@ pub enum Ed2kCommand {
     /// (`OP_LOWID_HOLEPUNCH_REQUEST`, ADR-0091). The answer is a
     /// [`HolepunchIntroduced`](Ed2kEvent::HolepunchIntroduced) — sent to the
     /// target too — or a [`HolepunchRefused`](Ed2kEvent::HolepunchRefused).
-    /// A server that does not speak this ignores the opcode and answers
-    /// nothing, so the caller's own timeout is the only failure signal there.
+    /// Refused locally unless the server set `LOWID_HOLEPUNCH`: another server
+    /// may close the link on the opcode.
     RequestHolepunch {
         /// The target's server-assigned Low-ID.
         target: ClientId,
         /// Our bound client-UDP port — the server's fallback when it has
         /// observed no keepalive from us.
         our_udp_port: u16,
+    },
+    /// Tell the server our Known IPv6 moved or went (`OP_IPV6_UPDATE`,
+    /// ADR-0087). Refused locally unless the server set `IPV6_UPDATE`.
+    UpdateIpv6 {
+        /// The address to publish from now on, `None` to withdraw it.
+        address: Option<std::net::Ipv6Addr>,
     },
     /// Publish our shared files to the server, so its searches can return them
     /// and its source lookups can name us.
@@ -92,12 +97,18 @@ pub enum Ed2kCommandKind {
     Search,
     /// [`Ed2kCommand::QueryMoreResults`].
     QueryMoreResults,
-    /// [`Ed2kCommand::RequestSources`].
-    RequestSources,
+    /// [`Ed2kCommand::RequestSources`], naming the file: a refused lookup ends
+    /// that file's ask, and only that file's.
+    RequestSources {
+        /// The file the refused lookup asked about.
+        file_hash: FileHash,
+    },
     /// [`Ed2kCommand::RequestCallback`].
     RequestCallback,
     /// [`Ed2kCommand::RequestHolepunch`].
     RequestHolepunch,
+    /// [`Ed2kCommand::UpdateIpv6`].
+    UpdateIpv6,
     /// [`Ed2kCommand::OfferFiles`].
     OfferFiles,
 }
@@ -114,6 +125,11 @@ pub enum ServerCapability {
     /// (`SearchResultsWnd.cpp:1658-1663`) and aMule refuses
     /// (`SearchListCtrl.cpp:999-1016`).
     RelatedSearch,
+    /// `SRV_TCPFLG_LOWID_HOLEPUNCH`: without it a `0x60` may close the link
+    /// (ADR-0091).
+    LowIdHolepunch,
+    /// `SRV_TCPFLG_IPV6_UPDATE`: without it a `0x63` may close the link.
+    Ipv6Update,
 }
 
 /// Why the session refused a command instead of putting it on the wire.
@@ -164,11 +180,11 @@ impl ServerAssignedFacts {
         // all against any server that sends the short `OP_IDCHANGE`, which
         // silently disarms every UDP crypt send gate.
         let public_ip = if id.client_id.is_high_id() {
-            Some(Ipv4Addr::from(id.client_id.as_u32().to_le_bytes()))
+            Some(id.client_id.to_ipv4())
         } else {
             id.public_ip
-                .filter(|raw| *raw >= ClientId::LOW_ID_THRESHOLD)
-                .map(|raw| Ipv4Addr::from(raw.to_le_bytes()))
+                .filter(|word| *word >= ClientId::LOW_ID_THRESHOLD)
+                .map(|word| Ed2kIp::from_wire(word).ip())
         };
         Self {
             public_ip,
@@ -208,6 +224,9 @@ pub enum Ed2kEvent {
     },
     /// The server refused the login; the session is over.
     LoginRejected,
+    /// After the login, the server discarded our last command (`OP_REJECT`);
+    /// the session goes on.
+    ServerRejectedCommand,
     /// The server sent a free-text message — a banner, a rule, or a notice.
     ServerMessageReceived {
         /// The message, byte-faithful: server banners are routinely not UTF-8.
@@ -232,16 +251,18 @@ pub enum Ed2kEvent {
         /// §4.6). Empty for a legacy server, which sends no block at all.
         ipv6_servers: Vec<Ipv6Endpoint>,
     },
-    /// Sources for `file_hash`, as candidates carrying the optional
+    /// Sources for `file_hash`, as claims carrying the optional
     /// `(user_hash, crypt_options)` provenance the obfuscation-aware `0x44`
     /// reply delivers (ADR-0046). A plain `0x42` reply projects each source
-    /// as [`SourceSighting::plain`] — no crypt material, dialed plaintext.
+    /// as [`SourceClaim::plain`] — no crypt material, dialed plaintext. The
+    /// session does not know the server's address, so the claims name nobody:
+    /// its owner states them as the server's word (ADR-0085).
     SourcesFound {
         /// The file the sources are for.
         file_hash: FileHash,
         /// The sources, each carrying whatever crypt provenance the reply
         /// form delivered.
-        sources: Vec<SourceSighting>,
+        sources: Vec<SourceClaim>,
         /// How the list's records measured (ADR-0085). A
         /// [`SourceListTail::Malformed`] list cost the records from its first
         /// **Sentinel Source** on and nothing before it — a counted
@@ -264,6 +285,13 @@ pub enum Ed2kEvent {
     SearchResultSkipped {
         /// Why it was unusable.
         reason: SearchResultSkipReason,
+    },
+    /// A source answer did not decode and was dropped; the session goes on.
+    FoundSourcesSkipped {
+        /// The opcode it came under.
+        opcode: u8,
+        /// Why it was unusable.
+        reason: &'static str,
     },
     /// A firewalled peer asked us, through the server, to dial it back.
     PeerCallbackRequested {
@@ -359,7 +387,7 @@ impl Ed2kEvent {
                     .sources()
                     .iter()
                     .copied()
-                    .map(SourceSighting::plain)
+                    .map(SourceClaim::plain)
                     .collect(),
                 tail: found.tail(),
             },
@@ -393,113 +421,6 @@ impl Ed2kEvent {
                 opcode: *opcode,
                 payload_len: payload.len(),
             },
-        }
-    }
-}
-
-/// Compact one-line diagnostic summary of a server-connection event — the
-/// co-located projection `rmule-tools` prints (the `s2c` prefix marks a
-/// server→client fact; `CommandRejected` and `Disconnected` are local/terminal,
-/// so they carry no direction). Exhaustive by design: a new [`Ed2kEvent`]
-/// variant fails to compile until its projection lands here, keeping the label
-/// in the enum's own crate rather than re-walked by every consumer.
-impl fmt::Display for Ed2kEvent {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Ed2kEvent::LoginRequested { endpoint } => write!(
-                f,
-                "s2c connection_started {}:{}",
-                endpoint.host(),
-                endpoint.port()
-            ),
-            Ed2kEvent::LoginAccepted { client_id, .. } => {
-                write!(f, "s2c login_accepted client_id={}", client_id.as_u32())
-            }
-            Ed2kEvent::LoginRejected => write!(f, "s2c login_rejected"),
-            Ed2kEvent::ServerMessageReceived { text } => {
-                write!(f, "s2c server_message text_len={}", text.as_bytes().len())
-            }
-            Ed2kEvent::ServerStatusReceived { status } => write!(
-                f,
-                "s2c server_status user={} file={}",
-                status.user_count, status.file_count
-            ),
-            Ed2kEvent::ServerIdentified { .. } => write!(f, "s2c server_ident"),
-            Ed2kEvent::ServerListReceived {
-                servers,
-                ipv6_servers,
-            } => {
-                write!(
-                    f,
-                    "s2c server_list count={} ipv6_count={}",
-                    servers.len(),
-                    ipv6_servers.len()
-                )
-            }
-            Ed2kEvent::SourcesFound {
-                file_hash,
-                sources,
-                tail,
-            } => write!(
-                f,
-                "s2c sources_found file_hash={} count={} malformed_tail={}",
-                file_hash.to_hex_upper(),
-                sources.len(),
-                tail.is_malformed()
-            ),
-            Ed2kEvent::SearchResultsFound {
-                results,
-                skipped,
-                more_available,
-            } => write!(
-                f,
-                "s2c search_results count={} skipped={} more={more_available}",
-                results.len(),
-                skipped.len()
-            ),
-            Ed2kEvent::SearchResultSkipped { reason } => {
-                write!(f, "s2c search_result_skipped reason={reason:?}")
-            }
-            Ed2kEvent::PeerCallbackRequested { peer, crypt } => {
-                write!(
-                    f,
-                    "s2c peer_callback_requested peer={peer} crypt={}",
-                    crypt.is_some()
-                )
-            }
-            Ed2kEvent::CommandRejected { command, reason } => {
-                write!(f, "command_rejected command={command:?} reason={reason:?}")
-            }
-            Ed2kEvent::UnknownServerPacket {
-                opcode,
-                payload_len,
-            } => write!(
-                f,
-                "s2c unknown opcode=0x{opcode:02X} payload_len={payload_len}"
-            ),
-            Ed2kEvent::CompressedFrameSkipped {
-                opcode,
-                compressed_len,
-                reason,
-            } => write!(
-                f,
-                "s2c compressed_frame_skipped opcode=0x{opcode:02X} compressed_len={compressed_len} reason={reason:?}"
-            ),
-            Ed2kEvent::CallbackFailed => write!(f, "s2c callback_failed"),
-            Ed2kEvent::HolepunchIntroduced { info } => write!(
-                f,
-                "s2c holepunch_info peer_udp={} role={:?}",
-                info.peer_udp, info.role
-            ),
-            Ed2kEvent::HolepunchRefused { fail } => write!(
-                f,
-                "s2c holepunch_fail target={} reason={:?}",
-                fail.target.as_u32(),
-                fail.reason
-            ),
-            Ed2kEvent::Disconnected { reason } => {
-                write!(f, "disconnected reason={}", reason.label())
-            }
         }
     }
 }

@@ -43,10 +43,12 @@
 //! dropping a handle releases both of its keys synchronously, on every road a
 //! callback or its run can end, an aborted task included.
 
-use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
+use parking_lot::{Mutex, MutexGuard};
+use std::sync::{Arc, OnceLock};
 
-use rmule_peer::PartBitmap;
-use rmule_primitives::{ClientId, Ed2kFileLink, Ipv4Endpoint, UserHash};
+use rmule_peer::WireStatus;
+use rmule_peer::peer_udp::crypt::PeerUdpCryptTarget;
+use rmule_primitives::{ClientId, Ed2kFileLink, Ipv4Endpoint, PeerEndpoint, UserHash};
 use tokio::sync::mpsc;
 
 use crate::diagnostics::DiagnosticsState;
@@ -65,23 +67,59 @@ use registrations::{CallbackRoad, ClaimRoad, Landing, LetGo, Registrations, Road
 ///   The sans-I/O brain does not hold that endpoint (a runtime fact, like the
 ///   clock), so it leaves `None`; the runner resolves it to the live connected
 ///   server when it files the callback here.
-/// - `Some(server)` — a *per-server global* callback (ADR-0051): the source-server that
-///   answered `OP_GLOBFOUNDSOURCES` and relays the callback.
+/// - `Some(server)` — the server that assigned the id and relays the callback.
 ///
 /// The key a callback is filed under here is always the concrete endpoint the
 /// inbound peer reports (the runner has resolved any `None`) — a `None` there
-/// could never match an inbound hello. It stays `Option` because a DNS-named
-/// server's hello encodes `0.0.0.0:0` → `None`; such a callback simply
-/// degrades to the timeout.
+/// could never match an inbound hello. It stays `Option` because a session reached
+/// over IPv6 has no 32-bit server to report: `0.0.0.0:0` → `None`; such a
+/// callback simply degrades to the timeout.
+///
+/// A **Kad source row** is in no server's namespace and has no id: it is keyed
+/// by the address its publisher was observed at and the Kad UDP port beside
+/// it, which tell two publishers behind one address apart, as aMule tells
+/// Low IDs apart by IP and Kad port (`CClientList::FindMatchingClient`, stock
+/// 2.3.3 `ClientList.cpp:264-280`; ADR-0090). An inbound hello reports a
+/// server's key, so a Kad row's never matches a reported one.
 ///
 /// It lives here, not in `download::state`, so that the vocabulary it shares
 /// with this registry and `PeerWorkerEvent`/`PeerWorkerCommand` has one home
 /// and the `download::state -> adapters` dependency direction holds; the
 /// lifecycle (the pending set and all callback policy) is still the brain's.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub(crate) struct CallbackKey {
-    pub(crate) server: Option<Ipv4Endpoint>,
-    pub(crate) low_id: ClientId,
+pub enum CallbackKey {
+    /// A Low ID in the namespace of the server that assigned it.
+    Server {
+        /// That server, per the rules above.
+        server: Option<Ipv4Endpoint>,
+        /// The id it assigned.
+        low_id: ClientId,
+    },
+    /// A firewalled Kad publisher.
+    KadRow {
+        /// Where it was observed, its Kad UDP port beside the address.
+        observed: Ipv4Endpoint,
+    },
+}
+
+impl CallbackKey {
+    /// The Low ID a server knows this source by; a Kad row has none.
+    #[must_use]
+    pub const fn low_id(self) -> Option<ClientId> {
+        match self {
+            Self::Server { low_id, .. } => Some(low_id),
+            Self::KadRow { .. } => None,
+        }
+    }
+
+    /// The server whose namespace the id is in, when one is named.
+    #[must_use]
+    pub const fn server(self) -> Option<Ipv4Endpoint> {
+        match self {
+            Self::Server { server, .. } => server,
+            Self::KadRow { .. } => None,
+        }
+    }
 }
 
 /// Where an adopted worker is handed back, tagged with the brain's key of the
@@ -98,7 +136,7 @@ pub(crate) struct AdoptionBrief {
     pub(crate) file: Ed2kFileLink,
     /// What the download held when it filed the road — the adopted worker's
     /// connect-time name ask carries it.
-    pub(crate) own_status: PartBitmap,
+    pub(crate) own_status: WireStatus,
     /// Whether the adopted worker's connect-time request asks for sources —
     /// the download's decision when it filed the road (ADR-0108).
     pub(crate) want_sources: bool,
@@ -181,6 +219,13 @@ impl AwaitedInbound {
         let _ = self.risen.set(risen);
     }
 
+    /// Whether a **Dial-Back Claim** stands anywhere: a source asked to dial
+    /// us back may open a Tunnel from an address nothing here knows, since a
+    /// Low-ID callback names no address for it (ADR-0091, security rule 10).
+    pub(crate) fn awaits_dial_back(&self) -> bool {
+        self.registrations.lock().awaits_dial_back()
+    }
+
     /// Open a download's registration for the pending callback `callback` (the
     /// brain's key). It is reachable by no key until a road is filed through
     /// the handle.
@@ -233,6 +278,15 @@ impl AwaitedInbound {
         verdict
     }
 
+    /// A Tunnel's hello named `hello` at `at`: the front's
+    /// `identified` report for a Tunnel no download may have claimed
+    /// (ADR-0091, security rule 12).
+    pub(crate) fn tunnel_identified(&self, at: PeerEndpoint, hello: PeerUdpCryptTarget) {
+        if let Some(risen) = self.risen.get() {
+            risen.tunnel_identified(at, hello);
+        }
+    }
+
     /// Tell every download that claimed `target` that the **Traversal
     /// Attempt** toward it retired, with the reason (ADR-0091; ADR-0107).
     /// Reports whether there was a claimant to tell.
@@ -265,9 +319,7 @@ impl AwaitedInbound {
     }
 
     fn lock(&self) -> MutexGuard<'_, Registrations> {
-        self.registrations
-            .lock()
-            .expect("the awaited-inbound registry is never poisoned")
+        self.registrations.lock()
     }
 
     /// A claim on `target` was dropped by its own download: count it, and

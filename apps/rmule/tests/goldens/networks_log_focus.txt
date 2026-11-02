@@ -1,6 +1,6 @@
-┌ Servers (0) · not connected ──────────────────── a add · U update · m menu ┐
-│   Name ▲   Address        Port Desc   Ping Users Files Age Prio Fail Static│
-│no servers — press a to add one, or U to update the list from a URL         │
+┌ Servers (0) · not connected ────────────────────── a add  U update  m menu ┐
+│   Name ▲                  Address          Port  Ping Users Files  Age Prio│
+│   no servers — press a to add one, or U to update the list from a URL      │
 │                                                                            │
 │                                                                            │
 │                                                                            │
@@ -8,14 +8,14 @@
 │                                                                            │
 │                                                                            │
 └────────────────────────────────────────────────────────────────────────────┘
-┌ Log (3) ───────────────────────────┐┌ Kad ─────────────────────────────────┐
-│11:59:20 part 5 verified            ││● Kad: off                            │
-│11:59:45 part 12 verified           ││Joined    — (node not started)        │
-│11:59:58 part 17 verified           ││Contacts  —                           │
-│                                    ││Firewall  — (never run)               │
-│                                    ││UDP       — (never run)               │
-│                                    ││Keywords  —                           │
-│                                    ││Node id   —                           │
-│                                    ││Received  —                           │
-│                                    ││Sent      —                           │
+┌ Log (3) ───────────────────────────┐┌ Kad ──────────────────────── K start ┐
+│2026-01-01                          ││● Kad: off                            │
+│12:00:00 · part 5 verified          ││Joined   not running                  │
+│12:00:25 · part 12 verified         ││Contacts not running                  │
+│12:00:38 · part 17 verified         ││Firewall not running                  │
+│                                    ││UDP      not running                  │
+│                                    ││Keywords not running                  │
+│                                    ││Node id  not running                  │
+│                                    ││Received not running                  │
+│                                    ││Sent     not running                  │
 └────────────────────────────────────┘└──────────────────────────────────────┘

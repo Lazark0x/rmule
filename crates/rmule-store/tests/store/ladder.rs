@@ -1,8 +1,8 @@
 //! The version ladder at open: a fresh store is stamped at the ladder's
 //! current version with no step run; an older store climbs every rung in
 //! order, each step's rewrite landing before the next starts, and the tables
-//! it rewrites open under the new record version afterwards; a newer store
-//! and a rung without a step are refused.
+//! it rewrites open under the new record version afterwards; a newer store,
+//! one under the floor and a rung without a step are refused.
 
 use rmule_store::{
     Ladder, Packed, Schema, StoreError, TableDefinition, UpgradeStep, WriteTransaction,
@@ -52,7 +52,7 @@ static V3_STEPS: [UpgradeStep; 2] = [
     },
 ];
 
-const V3: Ladder = Ladder::new(3, &V3_STEPS);
+const V3: Ladder = Ladder::new(3, 1, &V3_STEPS);
 
 fn schema_v3() -> Schema {
     Schema::new().indexed(&DOWNLOADS_V2)
@@ -108,10 +108,23 @@ fn a_store_newer_than_the_ladder_is_refused() {
 }
 
 #[test]
+fn a_store_under_the_floor_is_refused_on_each_backend() {
+    on_each_backend(|backend| {
+        drop(backend.open(&schema_v1(), &V1).unwrap());
+        let floored = Ladder::new(3, 2, &V3_STEPS);
+        let error = backend.open(&schema_v3(), &floored).unwrap_err();
+        assert!(
+            matches!(error, StoreError::TooOld { found: 1, floor: 2 }),
+            "{error:?}"
+        );
+    });
+}
+
+#[test]
 fn a_rung_without_a_step_is_refused_and_the_stamp_stays() {
     on_each_backend(|backend| {
         drop(backend.open(&schema_v1(), &V1).unwrap());
-        let gapped = Ladder::new(3, &V3_STEPS[..1]);
+        let gapped = Ladder::new(3, 1, &V3_STEPS[..1]);
         let error = backend.open(&schema_v3(), &gapped).unwrap_err();
         assert!(
             matches!(error, StoreError::MissingStep { from: 1 }),

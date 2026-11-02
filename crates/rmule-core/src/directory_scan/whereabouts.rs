@@ -7,7 +7,7 @@
 //! Two kinds of evidence. A *spare copy* is a file the scan hashed but did not
 //! share, because the same content was shared from another path; it is
 //! recorded durably and seeded here from what the actor knows, so a row moves
-//! to it without a read (ADR-0104, "Spare copies are recorded"). A
+//! to it without a read (ADR-0104). A
 //! *candidate* is a file of the gone row's size that is settling or waiting to
 //! be hashed; a rename keeps the size, so the row is *held* until no
 //! candidate of that size remains, or for [`MOVE_HOLD`] at most in the watch

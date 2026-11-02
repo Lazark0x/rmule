@@ -1,21 +1,21 @@
-┌ Downloads (4) ─────────── s sort  S reverse  C clear completed  L add link ┐
-│  File ▲      Size       Done Progress   Speed      ETA    Src   Status     │
-│  bunny.mp4   87.7 MB    42%  ██░█▓░█▓░░ 123.4 KB/s 7m00s  8 (1) Downloading│
-│  ABABABABAB… ≈ 27.8 MB  —    ░░░░░░░░░░ —          —      0     Paused     │
-│  5C5C5C5C5C… 42.9 MB    100% ██████████ —          —      1     Completed  │
-│▸ 3C3C3C3C3C… ≈ 37.1 MB  —    ░░░░░░░░░░ —          —      —     Failed     │
-│            ┌ Actions — 3C3C3C3C3C… ───────────────────────────┐            │
-│            │▸ Restart                                         │            │
-│            │  Cancel…                                         │            │
-│            │  Show file details                               │            │
-│            │  Copy eD2k link  no metadata yet                 │            │
-│            │  Search related  not connected                   │            │
-└────────────│  Priority ▸  needs core priority model           │────────────┘
-┌ Sources · 3│  Category ▸  needs core categories               │────────────┐
-│            └──────────────────────────────────────────────────┘            │
+┌ Downloads (4) ─── p pause  m menu  / filter  L add  Tab sources  Space tag ┐
+│  File ▲                              Size Progress        Speed Status     │
+│  bunny.mp4                        87.7 MB ██░█▓░█▓░░ 123.4 KB/s Downloading│
+│  ABABABABAB…                    ≈ 27.8 MB ░░░░░░░░░░   0.0 KB/s Paused     │
+│  5C5C5C5C5C…                      42.9 MB ██████████   0.0 KB/s Completed  │
+│▸ 3C3C3C3C3C…                    ≈ 37.1 MB ░░░░░░░░░░   0.0 KB/s Failed     │
+│              ┌ a file whose name is not known yet ──────────┐              │
+│              │▸ Restart (p)                                 │              │
+│              │  Cancel… (x)                                 │              │
+│              │  Show file details (d)                       │              │
+│              │  Preview (v)  details not known yet          │              │
+│              │  Copy eD2k link  no metadata yet             │              │
+│              │  Search related  not connected               │              │
+│              │  Pause or resume all (P)                     │              │
+│              └─────────────────────────────────────── 1 / 7 ┘              │
 │                                                                            │
+│Off-screen: Done unknown · ETA unknown · Src not running                    │
+└ too narrow to show: Done, ETA, Src ───────────────────────────────── 4 / 4 ┘
+┌ Sources · 3C3C3C3C3C… ─────────────────────────────────────────────────────┐
 │                              no active sources                             │
-│                                                                            │
-│                                                                            │
-│                                                                            │
 └────────────────────────────────────────────────────────────────────────────┘

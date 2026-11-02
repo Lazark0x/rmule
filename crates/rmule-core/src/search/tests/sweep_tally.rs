@@ -17,7 +17,7 @@ fn query() -> KeywordQuery {
 }
 
 /// The next leg picture, skipping every other event.
-async fn next_legs(evt_rx: &mut mpsc::Receiver<CoreEvent>) -> SearchLegs {
+async fn next_legs(evt_rx: &mut crate::service::EventStream) -> SearchLegs {
     loop {
         match evt_rx.recv().await.expect("events open") {
             CoreEvent::Search(SearchEvent::SearchLegsChanged { legs, .. }) => return legs,
@@ -31,7 +31,7 @@ async fn the_sweep_leg_counts_the_servers_asked_and_each_server_that_answered_on
     let (tcp_tx, tcp_rx) = mpsc::channel::<ServerSearchEvent>(8);
     let live = LiveSearches::default();
     let (sweep_tx, sweep_rx) = oneshot::channel::<u32>();
-    let (evt_tx, mut evt_rx) = mpsc::channel(32);
+    let (evt_tx, mut evt_rx) = crate::service::outbox(Default::default());
     let (_cancel_tx, cancel_rx) = watch::channel(false);
     let search_id = SearchId::from_u64(730);
     let task = tokio::spawn(

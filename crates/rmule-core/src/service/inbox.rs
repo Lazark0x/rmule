@@ -81,6 +81,41 @@ impl CommandDoor {
     pub(super) fn settings_door(&self) -> SettingsDoor {
         SettingsDoor(self.tx.downgrade())
     }
+
+    /// A door for a task of the front end's own that waits for room.
+    pub(super) fn sender(&self) -> CommandSender {
+        CommandSender {
+            tx: self.tx.downgrade(),
+            room: Arc::clone(&self.room),
+        }
+    }
+}
+
+/// Sends commands from a task apart from the `Core`'s owner (ADR-0069, "The
+/// bridge is two tasks"). Like a settings handle it does not keep the inbox
+/// open, so dropping the `Core` is still the actor's shutdown signal.
+#[derive(Clone, Debug)]
+pub struct CommandSender {
+    tx: mpsc::WeakUnboundedSender<Queued>,
+    room: Arc<Semaphore>,
+}
+
+impl CommandSender {
+    /// As [`Core::send`](crate::Core::send).
+    ///
+    /// # Errors
+    ///
+    /// [`CoreError::ServiceStopped`] when the `Core` is gone.
+    pub async fn send(&self, command: CoreCommand) -> Result<(), CoreError> {
+        // The wait ends for the reason `CommandDoor::send`'s does.
+        let room = Arc::clone(&self.room)
+            .acquire_owned()
+            .await
+            .map_err(|_| CoreError::ServiceStopped)?;
+        let tx = self.tx.upgrade().ok_or(CoreError::ServiceStopped)?;
+        tx.send(Queued::Command(Box::new(command), room))
+            .map_err(|_| CoreError::ServiceStopped)
+    }
 }
 
 /// A settings handle's side of the inbox. It does not keep the inbox open:

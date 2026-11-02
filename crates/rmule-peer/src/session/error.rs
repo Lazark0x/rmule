@@ -18,8 +18,7 @@ pub enum SecureIdentFailure {
 }
 
 /// Typed peer-protocol errors surfaced through `NoticeEvent::CommandRejected`
-/// or out-of-band reporting. Decode errors live in the per-packet
-/// error enums (`PeerHelloDecodeError`, `FileRequestDecodeError`, ...).
+/// or out-of-band reporting. Decode errors are a [`crate::PeerPacketDecodeError`].
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
 pub enum PeerError {
     /// Second `RequestParts` issued while a slot context is already
@@ -57,22 +56,64 @@ pub enum PeerError {
     /// `OP_SENDINGPART` on an ungranted slot.
     #[error("no serve slot granted for the requested file")]
     ServeSlotNotGranted,
-    /// Core answered a source ask for a file the peer never asked sources
-    /// about on this connection, so no wire form was negotiated for it. The
-    /// answer is dropped; nothing rides the wire.
-    #[error("sources answered for a file the peer never asked about")]
-    SourcesNotAsked,
 }
 
 impl PeerError {
-    /// Whether the refused command was a serving one: a block or a source
-    /// answer the serve half issued. The link outlives such a refusal, so a
+    /// Whether the refused command was a serving one: a block the serve half
+    /// issued. The link outlives such a refusal, so a
     /// download sharing it has nothing to react to; a refused download
     /// command ([`Self::SlotBusy`], [`Self::FileSizeMismatch`]) is the
     /// downloader's own.
     #[must_use]
     pub const fn is_serving_refusal(&self) -> bool {
-        matches!(self, Self::ServeSlotNotGranted | Self::SourcesNotAsked)
+        matches!(self, Self::ServeSlotNotGranted)
+    }
+}
+
+/// What a peer did that cost it the link: one stable code for each way stock's
+/// handler disconnects. A code, not a sentence: the words module writes what
+/// the operator reads, and a log keeps [`Self::code`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum PeerViolation {
+    /// A frame header no peer link carries: an unknown protocol byte, or a
+    /// length past the Frame Ceiling.
+    BadFrame,
+    /// It sent something else first on a link waiting for its `OP_HELLO`.
+    BeforeHello,
+    /// It sent a frame stock gates on `CheckHandshakeFinished` while our hello
+    /// was still unanswered.
+    HandshakeUnfinished,
+    /// Its hello did not read.
+    BadHello,
+    /// A frame's body ended before what stock reads of it, or denied its own
+    /// declared range.
+    MalformedFrame,
+    /// It answered about a file this link never asked it about.
+    WrongFile,
+    /// It answered an ask nobody made: a hash set or an AICH answer.
+    Unsolicited,
+    /// Its file status counted other parts than the file has.
+    PartCountMismatch,
+    /// Its hash set was not the file's: the wrong count, or hashes whose MD4
+    /// is not the file hash.
+    BadHashSet,
+}
+
+impl PeerViolation {
+    /// The stable code a log or a capture keeps.
+    #[must_use]
+    pub const fn code(self) -> &'static str {
+        match self {
+            Self::BadFrame => "bad_frame",
+            Self::BeforeHello => "before_hello",
+            Self::HandshakeUnfinished => "handshake_unfinished",
+            Self::BadHello => "bad_hello",
+            Self::MalformedFrame => "malformed_frame",
+            Self::WrongFile => "wrong_file",
+            Self::Unsolicited => "unsolicited",
+            Self::PartCountMismatch => "part_count_mismatch",
+            Self::BadHashSet => "bad_hash_set",
+        }
     }
 }
 
@@ -95,8 +136,8 @@ pub enum PeerCloseReason {
     Local,
     /// The peer closed it, cleanly or by vanishing.
     PeerClosed,
-    /// The peer did something the session cannot continue past.
-    ProtocolViolation,
+    /// The peer did something stock's handler disconnects on.
+    ProtocolViolation(PeerViolation),
     /// Driver-side I/O failure. `ErrorKind` is the smallest portable
     /// summary; the full `io::Error` is logged by the driver. Mirrors
     /// `rmule_ed2k::CloseReason::Io`.
@@ -113,7 +154,9 @@ impl fmt::Display for PeerCloseReason {
         match self {
             Self::Local => f.write_str("closed locally"),
             Self::PeerClosed => f.write_str("closed by the peer"),
-            Self::ProtocolViolation => f.write_str("the peer broke the protocol"),
+            Self::ProtocolViolation(violation) => {
+                write!(f, "the peer broke the protocol: {}", violation.code())
+            }
             Self::Io(kind) => write!(f, "I/O error: {kind}"),
             Self::ConnectTimeout => f.write_str("the connection timed out"),
             Self::HelloTimeout => f.write_str("no hello arrived in time"),
@@ -130,7 +173,7 @@ impl PeerCloseReason {
         match self {
             PeerCloseReason::Local => "Local",
             PeerCloseReason::PeerClosed => "PeerClosed",
-            PeerCloseReason::ProtocolViolation => "ProtocolViolation",
+            PeerCloseReason::ProtocolViolation(_) => "ProtocolViolation",
             PeerCloseReason::Io(_) => "Io",
             PeerCloseReason::ConnectTimeout => "ConnectTimeout",
             PeerCloseReason::HelloTimeout => "HelloTimeout",

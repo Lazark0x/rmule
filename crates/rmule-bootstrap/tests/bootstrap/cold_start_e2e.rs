@@ -19,7 +19,9 @@
 use rmule_testkit::HANG_GUARD;
 use std::net::{Ipv4Addr, SocketAddrV4};
 
-use rmule_bootstrap::{BootstrapConfig, FetchError, Fetcher, ReqwestFetcher, fetch_server_met};
+use rmule_bootstrap::{
+    BootstrapConfig, FetchError, Fetcher, ReqwestFetcher, Seeds, fetch_server_met,
+};
 use rmule_ed2k::{IdChange, LoginRequest};
 use rmule_primitives::{
     Capabilities, ClientId, ClientIdentity, CryptStance, Ed2kText, Ipv4Endpoint, Packet, Tag,
@@ -55,6 +57,10 @@ fn http_ok(body: &[u8]) -> Vec<u8> {
         format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n", body.len()).into_bytes();
     response.extend_from_slice(body);
     response
+}
+
+fn http_redirect(to: &str) -> Vec<u8> {
+    format!("HTTP/1.1 302 Found\r\nLocation: {to}\r\nContent-Length: 0\r\n\r\n").into_bytes()
 }
 
 fn http_status(code: u16, reason: &str) -> Vec<u8> {
@@ -164,6 +170,46 @@ async fn cold_start_fetches_parses_and_logs_into_the_acquired_server() {
         "the freshly acquired server accepted our login, got {id:?}"
     );
     check_listener.abort();
+}
+
+/// ADR-0120's cold start, over a real socket: the fetch refused, and the
+/// seed is enough to log in.
+#[tokio::test]
+async fn cold_start_with_the_mirror_gone_logs_into_a_seed() {
+    let server = FakeEd2kServer::start().await;
+    let seeds = Seeds::parse(&format!("server {}\n", server.local_addr())).expect("a seed file");
+    let closed = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+    let mirror = format!("http://{}/server.met", closed.local_addr().unwrap());
+    drop(closed);
+
+    let fetcher = ReqwestFetcher::from_config(&BootstrapConfig::default()).unwrap();
+    let failed = fetch_server_met(&fetcher, &mirror, 4096, Vec::new()).await;
+    assert!(failed.is_err(), "the mirror is gone: {failed:?}");
+
+    let seed = &seeds.servers()[0];
+    let address = format!("{}:{}", seed.host(), seed.port());
+    // The IdChange this waits for is the server's answer to the login.
+    login_and_read_id(address.parse().unwrap(), 4662).await;
+}
+
+/// A redirect chain stops at its cap, whichever mirror it goes through.
+#[tokio::test]
+async fn reqwest_fetcher_stops_a_redirect_chain_at_its_cap() {
+    let target = spawn_http_fixture(http_ok(b"the list")).await;
+    let hop = spawn_http_fixture(http_redirect(&target)).await;
+    let longer = spawn_http_fixture(http_redirect(&hop)).await;
+
+    let one_hop_short = ReqwestFetcher::new(1, std::time::Duration::from_secs(5)).unwrap();
+    let outcome = one_hop_short.get(&longer, 4096).await;
+    assert!(
+        matches!(outcome, Err(FetchError::Transport { .. })),
+        "two hops past a cap of one: {outcome:?}"
+    );
+
+    let target = spawn_http_fixture(http_ok(b"the list")).await;
+    let hop = spawn_http_fixture(http_redirect(&target)).await;
+    let enough = ReqwestFetcher::new(1, std::time::Duration::from_secs(5)).unwrap();
+    assert_eq!(enough.get(&hop, 4096).await, Ok(b"the list".to_vec()));
 }
 
 // --- the I/O corner's failure mapping (real reqwest, local fixture) --------

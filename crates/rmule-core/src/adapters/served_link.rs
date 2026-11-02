@@ -1,0 +1,408 @@
+//! An accepted link that took the serve road, or one the serve side dialed
+//! back to a waiter it promoted (ADR-0057), driven as a **Peer Link**
+//! (ADR-0107, "One peer, one link"): filed under every name its hello proves,
+//! so a download of its peer rides it rather than dial a second link aMule
+//! would answer by dropping this one (`ClientList.cpp:400-403`), ending our
+//! upload to it. The link stays up while a download holds it, or its serve
+//! side once the peer asked it anything, or the buddy slot, as a dialed link
+//! does (ADR-0031, ADR-0107 invariant 9).
+
+use rmule_net::peer::{Connection as PeerConnection, PEER_SOCKET_TIMEOUT};
+use rmule_peer::{
+    ConnectionCommand, ConnectionEvent, PeerCommand, PeerEvent, PeerIdentity, RequesterCommand,
+    RequesterEvent,
+};
+use rmule_primitives::PeerEndpoint;
+use tokio::sync::mpsc;
+use tokio::time::{Instant, sleep_until};
+
+use super::InboundPeerDeps;
+use super::inbound_triage::serve_side;
+use super::peer_link::{
+    AcceptedLink, DialInFlight, FarEnd, LinkConnection, LinkName, Moving, Riders, ServeHold,
+    let_go_of, recv_join,
+};
+use super::peer_transfer::PeerWorkerEvent;
+use super::serve_runtime::{ServeInput, ServeOutput};
+use crate::secured_identity::KeyProof;
+use crate::service::PortTestClosedBy;
+
+/// Drive one accepted, identified link that took the serve road, filed as a
+/// **Peer Link** so a download of its peer can ride it. Its `Server` requests
+/// and `Connection` facts go up to the serve task, its side-channel frames to
+/// the node-wide services, and the serve task's commands down to the session
+/// — and the riding download's commands down and its requester events back.
+/// Runs until the peer closes, or until neither the serve side nor a download
+/// holds the link any more: a download's leaving closes a link the peer never
+/// asked anything over and the buddy slot does not hold (ADR-0107 invariant 9).
+///
+/// Three buddy legs live here (socket unification, ADR-0061): an inbound
+/// `OP_BUDDYPING` routes to the buddy slot — which pongs back **on this same
+/// held link** iff this connection is the attached buddy link — an inbound
+/// `OP_CALLBACK` is consumed on *any* served link, and the connection's close
+/// detaches the held link, freeing the buddy slot at once (aMule frees
+/// `m_pBuddy` when the buddy's socket dies).
+///
+/// A link the serve side dialed back keeps its Dial in Flight's filing, moved
+/// to its hello's names and where it was dialed, the serve side holds it from
+/// the dial, and what crosses it is noted on its far end, which is read when
+/// the client's own link comes (ADR-0107 invariant 7).
+///
+/// Returns who closed the connection: the peer session's own close reason
+/// when it ended there, rmule when every half let it go.
+pub(super) async fn drive_served_link(
+    conn: PeerConnection,
+    mut identity: PeerIdentity,
+    mut command_rx: mpsc::Receiver<ServeOutput>,
+    event_tx: mpsc::Sender<ServeInput>,
+    deps: InboundPeerDeps,
+    origin: ServedOrigin,
+) -> PortTestClosedBy {
+    let remote = conn.peer_endpoint();
+    let (dialed_at, far_end) = match &origin {
+        ServedOrigin::Accepted(_) => (None, None),
+        ServedOrigin::Dialed(dialed) => (Some(remote), Some(dialed.far_end.clone())),
+    };
+    let names = LinkName::proven(remote, &identity, dialed_at);
+    let mut conn = LinkConnection::new(conn, far_end.clone());
+    let (mut filing, joins, mut moving, mut serve) = match origin {
+        ServedOrigin::Dialed(DialedLink { in_flight, far_end }) => {
+            let (mut filing, joins) = in_flight.into_parts();
+            filing.refile(names);
+            filing.read_through(Some(&far_end));
+            (
+                filing,
+                joins,
+                Moving::default(),
+                ServeHold::dialed(remote, deps.buddy_slot.clone()),
+            )
+        }
+        // An accepted link, filed at its hello: a dial to its peer that had
+        // not sent its hello yielded to it, and that dial's downloads move
+        // over (ADR-0107 invariant 7).
+        ServedOrigin::Accepted(AcceptedLink {
+            filing,
+            joins,
+            moving,
+        }) => (
+            filing,
+            joins,
+            moving,
+            ServeHold::new(remote, deps.buddy_slot.clone()),
+        ),
+    };
+    moving.let_dead_dials_go();
+    let mut joins = Some(joins);
+    let mut riders = Riders::default();
+    // When the link last moved, either way (`ClientTCPSocket.cpp:201-229`).
+    let mut moved = Instant::now();
+    let closed_by = loop {
+        tokio::select! {
+            command = command_rx.recv(), if serve.serving() => match command {
+                Some(ServeOutput::Server(command)) => {
+                    moved = Instant::now();
+                    if conn.send(PeerCommand::Server(command)).await.is_err() {
+                        // The driver stopped first; its paired `Disconnected`
+                        // is queued behind whatever it said before.
+                        break close_reason(&mut conn).await;
+                    }
+                }
+                // The serve side let the link go: it ends with it, unless a
+                // download still holds it.
+                None | Some(ServeOutput::Disconnect) => {
+                    if riders.is_empty() && !moving.coming() {
+                        break PortTestClosedBy::Us;
+                    }
+                    serve.serve_ended();
+                }
+            },
+            join = recv_join(&mut joins), if joins.is_some() => match join {
+                Some(join) => riders.take(join, Some(&identity)),
+                // Every name of the link went to newer links.
+                None => joins = None,
+            },
+            join = moving.next(), if moving.coming() => match join {
+                Some(join) => riders.take(join, Some(&identity)),
+                // Every download of the dials this link overtook has joined:
+                // a grant held for them is the rider's own ask's now, or goes
+                // as any unasked grant does.
+                None => {
+                    if moving.release_grant()
+                        && !riders.is_ridden()
+                        && !deps
+                            .peer_links
+                            .offer_grant(&LinkName::proven(remote, &identity, dialed_at))
+                    {
+                        let decline = PeerCommand::Requester(RequesterCommand::DeclineSlot);
+                        if conn.send(decline).await.is_err() {
+                            break close_reason(&mut conn).await;
+                        }
+                    }
+                    // The serve side let the link go while they moved, and
+                    // none of them rides it.
+                    if riders.is_empty() && !serve.serving() {
+                        break PortTestClosedBy::Us;
+                    }
+                }
+            },
+            command = riders.next_command() => match command {
+                Some(command) => {
+                    moved = Instant::now();
+                    if conn.send(command).await.is_err() {
+                        break close_reason(&mut conn).await;
+                    }
+                }
+                None => {
+                    // An unasked grant the leaving rider never asked on is
+                    // nobody's now: it goes back before the link stays up for
+                    // another half or closes (ADR-0056 item 3); the session
+                    // sends nothing when none stands.
+                    if riders.rider_left(Some(&identity)) {
+                        let decline = PeerCommand::Requester(RequesterCommand::DeclineSlot);
+                        if conn.send(decline).await.is_err() {
+                            break close_reason(&mut conn).await;
+                        }
+                    }
+                    if riders.is_empty() && !moving.coming() && !serve.holds() {
+                        if serve.serving() {
+                            let _ = event_tx.send(ServeInput::closed_here()).await;
+                        }
+                        break PortTestClosedBy::Us;
+                    }
+                }
+            },
+            // Silent past stock's bound in both directions. A download riding
+            // the link, or the buddy slot, holds it (ADR-0031): the serve side
+            // judges the rest, a slot's silence being its own to bound.
+            () = sleep_until(moved + PEER_SOCKET_TIMEOUT) => {
+                moved = Instant::now();
+                if riders.is_empty()
+                    && !moving.coming()
+                    && serve.serving()
+                    && !serve.buddy_holds()
+                {
+                    let _ = event_tx.send(ServeInput::LinkSilent).await;
+                }
+            }
+            // Dead at the far end, with the peer's own link come: whatever
+            // rides it leaves it now (ADR-0107 invariant 7).
+            () = let_go_of(far_end.as_ref()) => {
+                if serve.serving() {
+                    let _ = event_tx.send(ServeInput::closed_here()).await;
+                }
+                break PortTestClosedBy::Us;
+            }
+            event = conn.next_event() => {
+                let Some(event) = event else {
+                    if serve.serving() {
+                        let _ = event_tx.send(ServeInput::closed_here()).await;
+                    }
+                    break PortTestClosedBy::DriverEnded;
+                };
+                moved = Instant::now();
+                let routed = route(&deps, remote, event, &mut identity, &event_tx, serve.serving(), riders.rider()).await;
+                match routed {
+                    Routed::Open => {}
+                    Routed::Pulled => serve.pulled(),
+                    Routed::Revised => {
+                        filing.refile(LinkName::proven(remote, &identity, dialed_at));
+                    }
+                    Routed::Offered(answer) => {
+                        if let Some(answer) = answer
+                            && conn.send(PeerCommand::Connection(answer)).await.is_err()
+                        {
+                            break close_reason(&mut conn).await;
+                        }
+                    }
+                    Routed::ServeGone => {
+                        if riders.is_empty() && !moving.coming() {
+                            break PortTestClosedBy::Us;
+                        }
+                        serve.serve_ended();
+                    }
+                    // An uploader's grant nobody on the link asked for: the
+                    // download awaiting it rides the link, or it goes back
+                    // (ADR-0057). A riding download's own ask is about to be
+                    // granted, and one moving over from a dial this link
+                    // overtook is about to ride it (ADR-0107 invariant 7).
+                    Routed::SlotOffered => {
+                        if !riders.is_ridden()
+                            && !moving.hold_grant()
+                            && !deps
+                                .peer_links
+                                .offer_grant(&LinkName::proven(remote, &identity, dialed_at))
+                        {
+                            let decline = PeerCommand::Requester(RequesterCommand::DeclineSlot);
+                            if conn.send(decline).await.is_err() {
+                                break close_reason(&mut conn).await;
+                            }
+                        }
+                    }
+                    Routed::Closed(closed_by) => break closed_by,
+                }
+            }
+        }
+    };
+    let _ = conn.shutdown().await;
+    // When this connection was the held buddy link, its close frees the
+    // buddy slot at once so a fresh recruit can take it.
+    if deps.buddy_slot.on_link_closed(remote) {
+        tracing::debug!(
+            peer = ?remote,
+            "held buddy link closed; buddy slot released"
+        );
+    }
+    closed_by
+}
+
+/// How a served link came up.
+pub(super) enum ServedOrigin {
+    /// The peer opened it, and its hello was answered and filed.
+    Accepted(AcceptedLink),
+    /// The serve side dialed it back to a waiter it promoted.
+    Dialed(DialedLink),
+}
+
+/// A link the serve side dialed back (ADR-0057): the Dial in Flight it was
+/// filed as, and the far end its driver notes what crosses it on.
+pub(super) struct DialedLink {
+    pub(super) in_flight: DialInFlight,
+    pub(super) far_end: FarEnd,
+}
+
+/// What routing one event left of the link.
+enum Routed {
+    Open,
+    /// The peer asked the serve side something over the link.
+    Pulled,
+    /// The session revised the peer's identity; the link's names follow it.
+    Revised,
+    /// What the peer sent wants a word back on the link, when it does: a
+    /// changed Client ID taken, or a link it cost.
+    Offered(Option<ConnectionCommand>),
+    /// The serve task is gone; the link lives on only for a download.
+    ServeGone,
+    /// The peer granted a slot nobody on the link asked for.
+    SlotOffered,
+    /// The peer closed it, and this is who closed it.
+    Closed(PortTestClosedBy),
+}
+
+/// Carry one event read off the link to the halves that keep it: the serve
+/// task while `serving`, the joined `download` when there is one, and the
+/// node-wide services for a side-channel frame. `identity` follows the
+/// session's revisions, so a download joining later starts from the current
+/// one.
+async fn route(
+    deps: &InboundPeerDeps,
+    remote: PeerEndpoint,
+    event: PeerEvent,
+    identity: &mut PeerIdentity,
+    event_tx: &mpsc::Sender<ServeInput>,
+    serving: bool,
+    download: Option<&super::peer_link::DownloadHalf>,
+) -> Routed {
+    let mut revised_now = false;
+    let input = match event {
+        PeerEvent::Server(request) => {
+            if serving && event_tx.send(ServeInput::Server(request)).await.is_err() {
+                return Routed::ServeGone;
+            }
+            return Routed::Pulled;
+        }
+        // Whether a changed Low ID stands is the node's to say: it knows the
+        // servers (ADR-0107).
+        PeerEvent::Connection(ConnectionEvent::ClientIdOffered { client_id, server }) => {
+            return Routed::Offered(deps.peer_links.take_client_id(client_id, server));
+        }
+        // One verification per link, bound by the link (ADR-0041): to the
+        // client's identity where the ledger keeps it, before any half could
+        // let the link go; the serve task reads the client identified while
+        // it serves, as it keys that on the link.
+        PeerEvent::Connection(ConnectionEvent::IdentityVerified {
+            user_hash,
+            public_key,
+        }) => match deps
+            .secured_identities
+            .bind(user_hash, &public_key, remote.ip())
+            .await
+        {
+            KeyProof::Bound => ServeInput::IdentityBound { user_hash },
+            KeyProof::Mismatch => ServeInput::KeyMismatch { user_hash },
+            KeyProof::Unsettled => return Routed::Open,
+        },
+        PeerEvent::Connection(fact) => {
+            if let ConnectionEvent::IdentityRevised {
+                identity: revised, ..
+            } = &fact
+            {
+                revised_now = true;
+                *identity = revised.clone();
+                if let Some(download) = download {
+                    let _ = download
+                        .worker_evt_tx
+                        .send(PeerWorkerEvent::Identity(revised.clone()))
+                        .await;
+                }
+            }
+            if let ConnectionEvent::Disconnected { reason } = &fact {
+                deps.hello_refusals.report_close(*reason);
+                let closed_by = PortTestClosedBy::from(reason);
+                if let Some(download) = download {
+                    let _ = download
+                        .requester_tx
+                        .send(PeerEvent::Connection(fact.clone()))
+                        .await;
+                }
+                if serving {
+                    let _ = event_tx.send(ServeInput::Connection(fact)).await;
+                }
+                return Routed::Closed(closed_by);
+            }
+            ServeInput::Connection(fact)
+        }
+        PeerEvent::Side(side) => return Routed::Offered(serve_side(deps, remote, side)),
+        PeerEvent::Requester(RequesterEvent::SlotOffered) => return Routed::SlotOffered,
+        // Whether the joined download's file request carried a source ask
+        // (ADR-0108), as a dialed link's router reports it.
+        PeerEvent::Requester(RequesterEvent::FileRequestSent { sources_asked, .. }) => {
+            if sources_asked && let Some(download) = download {
+                let _ = download
+                    .worker_evt_tx
+                    .send(PeerWorkerEvent::SourcesAsked)
+                    .await;
+            }
+            return Routed::Open;
+        }
+        // The link's own pull and its notices are the joined download's; with
+        // none they concern nobody.
+        event @ (PeerEvent::Requester(_) | PeerEvent::Notice(_)) => {
+            if let Some(download) = download {
+                let _ = download.requester_tx.send(event).await;
+            }
+            return Routed::Open;
+        }
+    };
+    if serving && event_tx.send(input).await.is_err() {
+        return Routed::ServeGone;
+    }
+    if revised_now {
+        Routed::Revised
+    } else {
+        Routed::Open
+    }
+}
+
+/// Drain a connection whose driver has stopped to its paired `Disconnected`
+/// and say who closed it.
+async fn close_reason(conn: &mut LinkConnection) -> PortTestClosedBy {
+    while let Some(event) = conn.next_event().await {
+        if let PeerEvent::Connection(ConnectionEvent::Disconnected { reason }) = event {
+            return (&reason).into();
+        }
+    }
+    PortTestClosedBy::DriverEnded
+}
+
+#[cfg(test)]
+mod tests;

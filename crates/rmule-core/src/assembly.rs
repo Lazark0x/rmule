@@ -1,182 +1,406 @@
-//! In-memory assembly of one in-flight ED2K part (ADR-0029). Workers fetch a
-//! part's blocks in order, so what has arrived is always a contiguous prefix —
-//! [`PartAssembly`] holds that prefix, absorbs the racers' redundant deliveries,
-//! and drops anything that would leave a gap. Nothing here touches disk: a part
-//! reaches the content store only once it is whole and verified.
+//! The record of one in-flight ED2K part (ADR-0029, ADR-0117). Bytes arrive
+//! from any worker, at any offset, on the 180 KiB grid or off it:
+//! [`PartAssembly`] keeps the part's **Arrived Ranges** exact to the byte,
+//! answers which bytes are new — so the first copy of a byte wins — and
+//! records every worker that wrote into each `EMBLOCKSIZE` cell for AICH
+//! repair, and for the **Failed Cells** a part with no trusted root keeps
+//! across its refetch ([`Attempt`]). It holds no byte: the new ones go to the
+//! `.part`, and the part is read back from there once its ranges cover it. As
+//! an [`ArrivedPart`] it is the row the **Arrived Checkpoint** keeps, and every
+//! run starts from those rows, so a resumed part is an assembly like any other.
 
-use std::collections::HashSet;
+use std::collections::HashMap;
 
-use rmule_primitives::{EMBLOCKSIZE, PeerEndpoint};
+use rmule_peer::PartIndex;
+use rmule_primitives::{EMBLOCKSIZE, PeerEndpoint, UserHash};
 
-/// In-memory assembly of one in-flight ED2K part as a contiguous prefix.
-///
-/// Workers fetch blocks sequentially, so received bytes always form a
-/// contiguous run `[0, bytes.len())` measured from the part's start. A
-/// chunk that covers the current prefix end extends it; a chunk wholly
-/// behind the prefix (a redundant delivery from a lockstep racer) is
-/// dropped; a chunk that starts past the prefix end (a gap) is dropped.
-/// Per ADR-0029 this is in-memory and per-session only.
-#[derive(Clone, Debug, Default)]
+use crate::byte_ranges::ByteRanges;
+use crate::planning::PartPlan;
+
+mod corruption_ledger;
+mod failed_cells;
+
+pub(crate) use corruption_ledger::CorruptionLedger;
+pub(crate) use failed_cells::{Attempt, Cell, KEPT_ATTEMPTS, Verdict};
+
+/// What the file held for one cell: the SHA-1 of its bytes, its AICH block
+/// hash, as the **Persist Lane** read them.
+pub(crate) type CellHash = [u8; 20];
+
+/// One in-flight part, in the file's offsets.
+#[derive(Clone, Debug)]
 pub(crate) struct PartAssembly {
-    bytes: Vec<u8>,
-    contributors: HashSet<PeerEndpoint>,
-    /// Per-AICH-block (`EMBLOCKSIZE`) contributor, indexed by block index
-    /// within the part: the peer that wrote each block's first byte. AICH
-    /// recovery uses it to retire exactly the peer that delivered a corrupt
-    /// block (ADR-0038). Exact for the one-peer-per-block common case; a
-    /// heuristic when a block is split across a mid-block handoff.
-    block_contributors: Vec<PeerEndpoint>,
+    /// The part.
+    plan: PartPlan,
+    /// The **Arrived Ranges**, in the file's offsets.
+    arrived: ByteRanges,
+    /// Per cell, every worker that wrote a byte into it: the provenance AICH
+    /// repair retires by (ADR-0038).
+    writers: Vec<Vec<PeerEndpoint>>,
+    /// The User Hash each writer's hello named when it wrote, so a writer
+    /// proven after its worker ended is still distrusted (ADR-0090).
+    user_hashes: HashMap<PeerEndpoint, UserHash>,
+    /// Each cell's hash as the lane read it from the file, once a part's check
+    /// needed it; empty before that.
+    cell_hashes: Vec<CellHash>,
+}
+
+/// One writer of a part as a checkpoint holds it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct ArrivedWriter {
+    /// Where it wrote from.
+    pub(crate) endpoint: PeerEndpoint,
+    /// The User Hash its hello named.
+    pub(crate) user_hash: Option<UserHash>,
+}
+
+/// One part's row of the **Arrived Checkpoint** (ADR-0117 §4). No range left
+/// says the part has no row.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ArrivedPart {
+    /// The part.
+    pub(crate) part_index: PartIndex,
+    /// The Arrived Ranges, in the file's offsets.
+    pub(crate) ranges: Vec<(u64, u64)>,
+    /// The part's writers.
+    pub(crate) writers: Vec<ArrivedWriter>,
+    /// Per cell, the positions in `writers` of those that wrote into it.
+    pub(crate) cells: Vec<Vec<u16>>,
+}
+
+impl ArrivedPart {
+    /// The row of a part with no bytes left.
+    pub(crate) const fn none(part_index: PartIndex) -> Self {
+        Self {
+            part_index,
+            ranges: Vec::new(),
+            writers: Vec::new(),
+            cells: Vec::new(),
+        }
+    }
+
+    /// This row with its claims cut to `end`, where the file ends: a byte past
+    /// it has not reached the file, whatever the row says.
+    pub(crate) fn cut_to(mut self, end: u64) -> Self {
+        self.ranges = self
+            .ranges
+            .into_iter()
+            .filter_map(|(start, stop)| (start < end).then_some((start, stop.min(end))))
+            .collect();
+        self
+    }
 }
 
 impl PartAssembly {
-    pub(crate) fn prefix_len(&self) -> u64 {
-        self.bytes.len() as u64
-    }
-
-    pub(crate) fn contributors(&self) -> &HashSet<PeerEndpoint> {
-        &self.contributors
-    }
-
-    /// Merge a block delivered by `peer` at byte `offset` within the part
-    /// (offset relative to the part start). Returns `true` if the prefix
-    /// advanced. Always records `peer` as a contributor when the chunk is
-    /// at least partially useful.
-    pub(crate) fn merge_block(&mut self, peer: PeerEndpoint, offset: u64, bytes: &[u8]) -> bool {
-        let prefix = self.bytes.len() as u64;
-        let end = offset + bytes.len() as u64;
-        if offset > prefix || end <= prefix {
-            // Gap ahead, or wholly-redundant chunk behind the prefix.
-            return false;
+    /// An empty assembly for `plan`.
+    pub(crate) fn new(plan: PartPlan) -> Self {
+        Self {
+            plan,
+            arrived: ByteRanges::default(),
+            writers: vec![Vec::new(); plan.cells()],
+            user_hashes: HashMap::new(),
+            cell_hashes: Vec::new(),
         }
-        let start_in_chunk = (prefix - offset) as usize;
-        self.bytes.extend_from_slice(&bytes[start_in_chunk..]);
-        self.contributors.insert(peer);
-        // Attribute every AICH block this merge started (wrote the first byte
-        // of) to `peer`. Blocks start in prefix order, so the vec grows by
-        // index; the next unrecorded block is `block_contributors.len()`.
-        let new_len = self.bytes.len() as u64;
-        let mut block = self.block_contributors.len() as u64;
-        while block * EMBLOCKSIZE < new_len {
-            self.block_contributors.push(peer);
-            block += 1;
+    }
+
+    /// The assembly a checkpoint's `row` keeps for `plan`. A claim outside the
+    /// part is no claim, and a writer position no row wrote names nobody.
+    pub(crate) fn resumed(plan: PartPlan, row: &ArrivedPart) -> Self {
+        let mut assembly = Self::new(plan);
+        for &(start, end) in &row.ranges {
+            assembly
+                .arrived
+                .insert(start.max(plan.offset), end.min(plan.end()));
         }
-        true
+        let writer = |at: &u16| row.writers.get(usize::from(*at));
+        for (cell, positions) in assembly.writers.iter_mut().zip(&row.cells) {
+            *cell = positions
+                .iter()
+                .filter_map(writer)
+                .map(|writer| writer.endpoint)
+                .collect();
+        }
+        assembly.user_hashes = row
+            .writers
+            .iter()
+            .filter_map(|writer| Some((writer.endpoint, writer.user_hash?)))
+            .collect();
+        assembly
     }
 
-    /// The peer that delivered AICH block `block_index` of this part, or
-    /// `None` if that block is not yet present. The AICH repair (ADR-0038) reads
-    /// it to retire exactly the peer that delivered a corrupt block.
-    pub(crate) fn contributor_of_block(&self, block_index: usize) -> Option<PeerEndpoint> {
-        self.block_contributors.get(block_index).copied()
+    /// This assembly as its checkpoint row.
+    pub(crate) fn arrived_part(&self) -> ArrivedPart {
+        let mut writers: Vec<ArrivedWriter> = Vec::new();
+        let mut position = |endpoint: PeerEndpoint| {
+            let found = writers.iter().position(|w| w.endpoint == endpoint);
+            let at = found.unwrap_or_else(|| {
+                writers.push(ArrivedWriter {
+                    endpoint,
+                    user_hash: self.user_hashes.get(&endpoint).copied(),
+                });
+                writers.len() - 1
+            });
+            u16::try_from(at).unwrap_or(u16::MAX)
+        };
+        let cells = self
+            .writers
+            .iter()
+            .map(|cell| cell.iter().map(|&writer| position(writer)).collect())
+            .collect();
+        ArrivedPart {
+            part_index: self.plan.part_index,
+            ranges: self.arrived.ranges().collect(),
+            writers,
+            cells,
+        }
     }
 
-    /// Roll the assembled prefix back to `len` bytes, dropping later bytes and
-    /// their per-block provenance. AICH repair truncates to the earliest corrupt
-    /// block so the re-stream resumes from there, reusing the contiguous-prefix
-    /// model (ADR-0038).
-    pub(crate) fn truncate(&mut self, len: u64) {
-        self.bytes.truncate(len as usize);
-        let blocks_kept = self.bytes.len().div_ceil(EMBLOCKSIZE as usize);
-        self.block_contributors.truncate(blocks_kept);
+    /// Merge the `len` bytes that `peer`, whose hello named `user_hash`,
+    /// delivered at file offset `offset`, and answer the ranges of them that
+    /// are new, in order: only those are written. Bytes outside the part go
+    /// nowhere.
+    pub(crate) fn merge(
+        &mut self,
+        peer: PeerEndpoint,
+        user_hash: Option<UserHash>,
+        offset: u64,
+        len: u64,
+    ) -> Vec<(u64, u64)> {
+        let start = offset.max(self.plan.offset);
+        let end = offset.saturating_add(len).min(self.plan.end());
+        if let Some(user_hash) = user_hash {
+            self.user_hashes.insert(peer, user_hash);
+        }
+        let fresh = self.arrived.insert(start, end);
+        for &(first, stop) in &fresh {
+            let last = self.plan.cell_of(stop - 1);
+            for cell in self.plan.cell_of(first)..=last {
+                if !self.writers[cell].contains(&peer) {
+                    self.writers[cell].push(peer);
+                }
+            }
+        }
+        fresh
     }
 
-    pub(crate) fn is_complete(&self, part_len: u64) -> bool {
-        self.bytes.len() as u64 == part_len
+    /// The **Arrived Ranges**, in the file's offsets.
+    pub(crate) fn arrived(&self) -> &ByteRanges {
+        &self.arrived
     }
 
-    pub(crate) fn bytes(&self) -> &[u8] {
-        &self.bytes
+    /// Whether every byte of the part has arrived.
+    pub(crate) fn is_complete(&self) -> bool {
+        self.arrived.covers(self.plan.offset, self.plan.end())
+    }
+
+    /// The workers that wrote into AICH block `block` of the part; empty when
+    /// none of it has arrived.
+    pub(crate) fn writers_of_block(&self, block: usize) -> &[PeerEndpoint] {
+        self.writers.get(block).map_or(&[], Vec::as_slice)
+    }
+
+    /// Forget AICH blocks `blocks`: their bytes leave the Arrived Ranges and
+    /// are fetched again (ADR-0038).
+    pub(crate) fn drop_blocks(&mut self, blocks: &[u16]) {
+        for &block in blocks {
+            let cell = usize::from(block);
+            let start = self.plan.cell_start(cell);
+            self.arrived
+                .remove(start, (start + EMBLOCKSIZE).min(self.plan.end()));
+            if let Some(writers) = self.writers.get_mut(cell) {
+                writers.clear();
+            }
+        }
+        self.cell_hashes.clear();
+    }
+
+    /// The lane read the part's cells: what [`Self::attempt`] judges by.
+    pub(crate) fn read_back(&mut self, cell_hashes: Vec<CellHash>) {
+        self.cell_hashes = cell_hashes;
+    }
+
+    /// What this record costs the heap: the review's question of a part in
+    /// flight, read by the rig.
+    #[cfg(test)]
+    pub(crate) fn heap_bytes(&self) -> usize {
+        let writers: usize = self.writers.iter().map(Vec::capacity).sum();
+        std::mem::size_of::<Self>()
+            + self.arrived.ranges().count() * 2 * std::mem::size_of::<u64>() * 2
+            + self.writers.capacity() * std::mem::size_of::<Vec<PeerEndpoint>>()
+            + writers * std::mem::size_of::<PeerEndpoint>()
+            + self.user_hashes.capacity()
+                * (std::mem::size_of::<PeerEndpoint>() + std::mem::size_of::<UserHash>())
+    }
+
+    /// The User Hash each writer's hello named when it wrote.
+    pub(crate) const fn user_hashes(&self) -> &HashMap<PeerEndpoint, UserHash> {
+        &self.user_hashes
+    }
+
+    /// The bytes each writer holds in this assembly, for the **Corruption
+    /// Ledger**: a cell's bytes split evenly among its writers, since a cell
+    /// records who wrote and not how much.
+    pub(crate) fn shares(&self) -> HashMap<PeerEndpoint, u64> {
+        let mut shares = HashMap::new();
+        for (cell, writers) in self.writers.iter().enumerate() {
+            let len = (self.plan.len - cell as u64 * EMBLOCKSIZE).min(EMBLOCKSIZE);
+            for &writer in writers {
+                *shares.entry(writer).or_default() += len / writers.len() as u64;
+            }
+        }
+        shares
+    }
+
+    /// The part's cells as one attempt at it: each cell's AICH block hash and
+    /// writers (ADR-0117 §1). `None` before the lane read them.
+    pub(crate) fn attempt(&self) -> Option<Attempt> {
+        if self.cell_hashes.len() != self.writers.len() {
+            return None;
+        }
+        let cells = self
+            .cell_hashes
+            .iter()
+            .zip(&self.writers)
+            .map(|(&hash, writers)| Cell {
+                hash,
+                writers: writers.clone(),
+            })
+            .collect();
+        Some(Attempt::new(cells, self.user_hashes.clone()))
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rmule_primitives::{Ipv4Endpoint, PeerEndpoint};
+    use rmule_primitives::{ED2K_PART_SIZE, Ipv4Endpoint, PeerEndpoint};
+    use std::collections::BTreeSet;
     use std::net::Ipv4Addr;
 
     fn peer(n: u8) -> PeerEndpoint {
         PeerEndpoint::V4(Ipv4Endpoint::new(Ipv4Addr::new(10, 0, 0, n), 4662))
     }
 
-    #[test]
-    fn sequential_blocks_extend_the_prefix() {
-        let mut a = PartAssembly::default();
-        assert!(a.merge_block(peer(1), 0, &[1, 2, 3]));
-        assert!(a.merge_block(peer(1), 3, &[4, 5]));
-        assert_eq!(a.bytes(), &[1, 2, 3, 4, 5]);
-        assert_eq!(a.prefix_len(), 5);
+    /// Part 0 of `len` bytes.
+    fn part(len: u64) -> PartPlan {
+        PartPlan {
+            part_index: PartIndex::new(0),
+            offset: 0,
+            len,
+        }
     }
 
-    #[test]
-    fn a_dropped_peers_prefix_is_continued_by_another_peer() {
-        let mut a = PartAssembly::default();
-        assert!(a.merge_block(peer(1), 0, &[1, 2, 3])); // peer 1 then drops
-        assert!(a.merge_block(peer(2), 3, &[4, 5, 6])); // peer 2 resumes
-        assert_eq!(a.bytes(), &[1, 2, 3, 4, 5, 6]);
-        assert!(a.contributors().contains(&peer(1)));
-        assert!(a.contributors().contains(&peer(2)));
+    fn cell_hashes(assembly: &mut PartAssembly) {
+        let cells = assembly.writers.len();
+        assembly.read_back(vec![[0; 20]; cells]);
     }
 
+    /// Blocks asked a byte shorter around a link's Asked Ranges leave the
+    /// grid (ADR-0107): they merge wherever they land, from whichever worker,
+    /// and the part completes once the ranges cover it (ADR-0117).
     #[test]
-    fn redundant_lockstep_chunk_behind_the_prefix_is_dropped() {
-        let mut a = PartAssembly::default();
-        a.merge_block(peer(1), 0, &[1, 2, 3, 4]);
-        // A slower racer re-delivers an earlier chunk: no advance, not a contributor.
-        assert!(!a.merge_block(peer(2), 0, &[1, 2]));
-        assert_eq!(a.prefix_len(), 4);
-        assert!(!a.contributors().contains(&peer(2)));
+    fn assembly_merges_off_grid_blocks() {
+        let len = 3 * EMBLOCKSIZE + 1_000;
+        let mut a = PartAssembly::new(part(len));
+        let first = EMBLOCKSIZE - 1;
+        // Worker 2's off-grid block lands first, across the first cell edge.
+        assert_eq!(
+            a.merge(peer(2), None, first, EMBLOCKSIZE),
+            vec![(first, first + EMBLOCKSIZE)]
+        );
+        // Worker 1's block a byte short of the grid, then the byte it left.
+        assert_eq!(a.merge(peer(1), None, 0, first), vec![(0, first)]);
+        assert!(!a.is_complete());
+        // A tail block overlapping what arrived writes only what is new.
+        let tail = 2 * EMBLOCKSIZE - 10;
+        assert_eq!(
+            a.merge(peer(3), None, tail, len - tail),
+            vec![(2 * EMBLOCKSIZE - 1, len)]
+        );
+        assert!(a.is_complete());
+        // Each cell names every worker that wrote into it: worker 2's block
+        // spans cells 0 and 1, and the tail worker wrote only the byte it left.
+        assert_eq!(a.writers_of_block(0), &[peer(2), peer(1)]);
+        assert_eq!(a.writers_of_block(1), &[peer(2), peer(3)]);
+        assert_eq!(a.writers_of_block(2), &[peer(3)]);
     }
 
+    /// The first copy of a byte wins: a duplicate's later bytes, the same or
+    /// not, are dropped, and its sender is no contributor.
     #[test]
-    fn overlapping_chunk_extends_only_the_new_tail() {
-        let mut a = PartAssembly::default();
-        a.merge_block(peer(1), 0, &[1, 2]);
-        // Chunk [1,4) overlaps the prefix end at 2; only [2,4) is appended.
-        assert!(a.merge_block(peer(2), 1, &[2, 3, 4]));
-        assert_eq!(a.bytes(), &[1, 2, 3, 4]);
+    fn a_later_copy_of_an_arrived_byte_is_dropped() {
+        let mut a = PartAssembly::new(part(10));
+        assert_eq!(a.merge(peer(1), None, 2, 3), vec![(2, 5)]);
+        assert!(a.merge(peer(2), None, 2, 3).is_empty());
+        cell_hashes(&mut a);
+        assert!(!a.attempt().unwrap().writers().contains(&peer(2)));
+        // Bytes past the part's end go nowhere.
+        assert_eq!(a.merge(peer(2), None, 8, 4), vec![(8, 10)]);
+        assert_eq!(a.arrived().gaps(0, 10), vec![(0, 2), (5, 8)]);
     }
 
+    /// AICH repair forgets exactly the corrupt cells: the rest of the part
+    /// stays, and the dropped cell's bytes are missing again (ADR-0038).
     #[test]
-    fn gap_chunk_ahead_of_the_prefix_is_dropped() {
-        let mut a = PartAssembly::default();
-        a.merge_block(peer(1), 0, &[1, 2]);
-        assert!(!a.merge_block(peer(1), 5, &[9])); // gap at [2,5)
-        assert_eq!(a.prefix_len(), 2);
+    fn dropping_a_block_forgets_only_its_cell() {
+        let len = 2 * EMBLOCKSIZE;
+        let mut a = PartAssembly::new(part(len));
+        a.merge(peer(1), None, 0, EMBLOCKSIZE);
+        a.merge(peer(2), None, EMBLOCKSIZE, EMBLOCKSIZE);
+        a.drop_blocks(&[0]);
+        assert_eq!(a.arrived().gaps(0, len), vec![(0, EMBLOCKSIZE)]);
+        assert!(a.writers_of_block(0).is_empty());
+        cell_hashes(&mut a);
+        assert_eq!(a.attempt().unwrap().writers(), BTreeSet::from([peer(2)]));
     }
 
+    /// An arrival is in the file's offsets, on any part: bytes before the
+    /// part's start or past its end go nowhere, never to its first byte.
     #[test]
-    fn is_complete_at_part_len() {
-        let mut a = PartAssembly::default();
-        a.merge_block(peer(1), 0, &[1, 2, 3, 4]);
-        assert!(a.is_complete(4));
-        assert!(!a.is_complete(5));
+    fn an_arrival_outside_its_part_lands_nowhere() {
+        let plan = PartPlan {
+            part_index: PartIndex::new(2),
+            offset: 2 * ED2K_PART_SIZE,
+            len: 100,
+        };
+        let mut a = PartAssembly::new(plan);
+        assert!(a.merge(peer(1), None, 0, 50).is_empty());
+        assert_eq!(
+            a.merge(peer(1), None, plan.offset - 10, 20),
+            vec![(plan.offset, plan.offset + 10)]
+        );
+        assert_eq!(
+            a.arrived().gaps(plan.offset, plan.end()),
+            vec![(plan.offset + 10, plan.end())]
+        );
     }
 
+    /// A resumed assembly is the one its row was taken from: the same ranges,
+    /// the same writers in each cell, the same hash under each writer.
     #[test]
-    fn block_contributors_attribute_each_aich_block_to_its_deliverer() {
-        // Two full EMBLOCKSIZE blocks from different peers: AICH attribution
-        // names the exact deliverer of each block so a corrupt block retires
-        // only its source (ADR-0038).
-        let mut a = PartAssembly::default();
-        let emb = EMBLOCKSIZE as usize;
-        assert!(a.merge_block(peer(1), 0, &vec![0u8; emb]));
-        assert!(a.merge_block(peer(2), EMBLOCKSIZE, &vec![0u8; emb]));
-        assert_eq!(a.contributor_of_block(0), Some(peer(1)));
-        assert_eq!(a.contributor_of_block(1), Some(peer(2)));
-        assert_eq!(a.contributor_of_block(2), None);
+    fn a_checkpoint_row_resumes_the_assembly_it_was_taken_from() {
+        let plan = PartPlan {
+            part_index: PartIndex::new(1),
+            offset: ED2K_PART_SIZE,
+            len: 2 * EMBLOCKSIZE,
+        };
+        let hash = UserHash::from_bytes([7; 16]);
+        let mut a = PartAssembly::new(plan);
+        a.merge(peer(1), Some(hash), plan.offset, EMBLOCKSIZE + 1);
+        a.merge(peer(2), None, plan.offset + EMBLOCKSIZE + 1, 9);
+        let resumed = PartAssembly::resumed(plan, &a.arrived_part());
+        assert_eq!(resumed.arrived(), a.arrived());
+        assert_eq!(resumed.writers_of_block(0), &[peer(1)]);
+        assert_eq!(resumed.writers_of_block(1), &[peer(1), peer(2)]);
+        assert_eq!(resumed.arrived_part(), a.arrived_part());
     }
 
+    /// A claim past the file's end is no claim: the checkpoint is cut to the
+    /// file it speaks for.
     #[test]
-    fn block_contributor_follows_a_mid_block_handoff_by_first_byte() {
-        // peer 1 writes the first half of block 0 then drops; peer 2 resumes
-        // and finishes block 0 and starts block 1. Block 0 is attributed to
-        // its first-byte writer (peer 1); block 1 to peer 2.
-        let mut a = PartAssembly::default();
-        let half = (EMBLOCKSIZE / 2) as usize;
-        assert!(a.merge_block(peer(1), 0, &vec![0u8; half]));
-        assert!(a.merge_block(peer(2), half as u64, &vec![0u8; EMBLOCKSIZE as usize]));
-        assert_eq!(a.contributor_of_block(0), Some(peer(1)));
-        assert_eq!(a.contributor_of_block(1), Some(peer(2)));
+    fn a_checkpoint_is_cut_to_the_file_it_speaks_for() {
+        let mut row = ArrivedPart::none(PartIndex::new(0));
+        row.ranges = vec![(0, 10), (20, 30), (40, 50)];
+        assert_eq!(row.cut_to(25).ranges, vec![(0, 10), (20, 25)]);
     }
 }

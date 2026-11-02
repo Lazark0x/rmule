@@ -6,6 +6,7 @@ use ratatui::crossterm::event::KeyCode;
 use rmule_primitives::{Ed2kText, FileHash, SearchResult};
 
 use crate::state::{SearchPane, SearchStatus, SessionConfig, UiState};
+use crate::views::View;
 use crate::views::searches::SearchesView;
 
 use super::{endpoint, press, search_id};
@@ -39,7 +40,7 @@ pub(crate) fn state_with(results: Vec<SearchResult>, status: SearchStatus) -> Ui
         search_id(1),
         SearchPane {
             status,
-            results,
+            results: results.into(),
             skipped: 0,
             waiting_for_turn: None,
             more_ended: None,
@@ -47,7 +48,8 @@ pub(crate) fn state_with(results: Vec<SearchResult>, status: SearchStatus) -> Ui
         },
     );
     UiState {
-        searches,
+        searches: searches.into(),
+        session: session_state().session,
         ..UiState::default()
     }
 }
@@ -94,10 +96,10 @@ pub(crate) fn three_tier_results() -> Vec<SearchResult> {
 /// instead of flashing the honest reason.
 pub(crate) fn session_state() -> UiState {
     UiState {
-        session: Some(SessionConfig {
+        session: SessionConfig {
             server: Some(endpoint("srv.example", 4661)),
             download_dir: Some(std::path::PathBuf::from("/tmp/dl")),
-        }),
+        },
         ..UiState::default()
     }
 }
@@ -117,7 +119,7 @@ pub(crate) fn connected_granting(mut state: UiState, related_search: bool) -> Ui
 /// Drive `o`, then a scripted key sequence, on a fresh view.
 pub(crate) fn view_with_filters(keys: &[KeyCode]) -> (SearchesView, UiState) {
     let state = session_state();
-    let mut view = SearchesView::new();
+    let mut view = SearchesView::by_name();
     view.handle_key(press(KeyCode::Char('o')), &state);
     for code in keys {
         view.handle_key(press(*code), &state);

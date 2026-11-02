@@ -1,6 +1,8 @@
 //! The Run Log's record of each download event.
 
-use crate::{DownloadEvent, PurgedSource, RestartOutcome};
+use rmule_primitives::PeerEndpoint;
+
+use crate::{CallbackKey, DownloadEvent, PurgedSource, RestartOutcome};
 
 use crate::run_log::codes;
 use crate::run_log::record::Record;
@@ -15,24 +17,28 @@ impl DownloadEvent {
                 download_id,
                 file_hash,
                 metadata,
+                file_path,
             } => Record::new("download.queued")
                 .count("id", download_id.as_u64())
                 .file_hash("file_hash", file_hash)
                 .file_name("name", &metadata.name.to_display_string())
-                .file_size("size", metadata.size),
+                .file_size("size", metadata.size)
+                .path("file_path", file_path),
             D::DownloadRecovered {
                 download_id,
                 state,
                 failure,
                 file_hash,
                 metadata,
+                file_path,
             } => {
                 let record = Record::new("download.recovered")
                     .count("id", download_id.as_u64())
                     .code("state", codes::lifecycle(*state))
                     .file_hash("file_hash", file_hash)
                     .file_name("name", &metadata.name.to_display_string())
-                    .file_size("size", metadata.size);
+                    .file_size("size", metadata.size)
+                    .path("file_path", file_path);
                 match failure {
                     Some(failure) => codes::failure(record, failure),
                     None => record,
@@ -69,6 +75,14 @@ impl DownloadEvent {
                 ),
                 *lost,
             ),
+            D::PartsDisproved {
+                download_id,
+                parts,
+                bytes,
+            } => Record::new("download.parts_disproved")
+                .count("id", download_id.as_u64())
+                .count("parts", *parts)
+                .count("bytes", *bytes),
             D::FinishedFileRejected {
                 download_id,
                 parts_dropped,
@@ -176,10 +190,33 @@ impl DownloadEvent {
                 download_id,
                 peer,
                 rank,
-            } => Record::new("download.source_remote_queued")
+            } => {
+                let record = Record::new("download.source_remote_queued")
+                    .count("id", download_id.as_u64())
+                    .peer_address("peer", peer);
+                match rank {
+                    Some(rank) => record.count("rank", *rank),
+                    None => record.code("rank", "unknown"),
+                }
+            }
+            D::SourceSpared { download_id, peer } => Record::new("download.source_spared")
                 .count("id", download_id.as_u64())
-                .peer_address("peer", peer)
-                .count("rank", *rank),
+                .peer_address("peer", peer),
+            D::SourceWaitsOnStanding { download_id, peer } => {
+                Record::new("download.source_waits_on_standing")
+                    .count("id", download_id.as_u64())
+                    .peer_address("peer", peer)
+            }
+            D::SourceRoadHeld {
+                download_id,
+                source,
+            } => callback_fields(
+                Record::new("download.source_road_held").count("id", download_id.as_u64()),
+                *source,
+            ),
+            D::SourceHandedOver { download_id, peer } => Record::new("download.source_handed_over")
+                .count("id", download_id.as_u64())
+                .peer_address("peer", peer),
             D::SourceReaskAcked {
                 download_id,
                 peer,
@@ -198,6 +235,9 @@ impl DownloadEvent {
                     .count("id", download_id.as_u64())
                     .peer_address("peer", peer)
             }
+            D::SlotOffered { download_id, peer } => Record::new("download.slot_offered")
+                .count("id", download_id.as_u64())
+                .peer_address("peer", peer),
             D::SourcePurged {
                 download_id,
                 source,
@@ -208,13 +248,7 @@ impl DownloadEvent {
                     .code("reason", codes::source_purge_reason(*reason));
                 match source {
                     PurgedSource::Endpoint(peer) => record.peer_address("peer", peer),
-                    PurgedSource::LowId { low_id, server } => {
-                        let record = record.peer_id("low_id", *low_id);
-                        match server {
-                            Some(server) => record.server_address("server", server),
-                            None => record,
-                        }
-                    }
+                    PurgedSource::Callback(key) => callback_fields(record, *key),
                 }
             }
             D::SourceReaskDropped { download_id, peer } => {
@@ -239,6 +273,14 @@ impl DownloadEvent {
                 *cause,
             )
             .peer_address("peer", peer),
+            D::LinkShared {
+                download_id,
+                peer,
+                turn,
+            } => Record::new("download.link_shared")
+                .count("id", download_id.as_u64())
+                .code("turn", codes::link_turn(*turn))
+                .peer_address("peer", peer),
             D::HashSetReceived {
                 download_id,
                 part_count,
@@ -255,6 +297,56 @@ impl DownloadEvent {
                 .count("id", download_id.as_u64())
                 .peer_address("peer", peer)
                 .count("part_index", *part_index),
+            D::EndGameBlocks {
+                download_id,
+                peer,
+                part_index,
+                blocks,
+                bytes,
+            } => Record::new("download.end_game_blocks")
+                .count("id", download_id.as_u64())
+                .peer_address("peer", peer)
+                .count("part_index", *part_index)
+                .count("blocks", *blocks)
+                .count("bytes", *bytes),
+            D::KadAichRootContested {
+                download_id,
+                kad_root,
+                voted_root,
+            } => Record::new("download.kad_aich_root_contested")
+                .count("id", download_id.as_u64())
+                .aich_root("kad_root", kad_root)
+                .aich_root("voted_root", voted_root),
+            D::PartCorrupt {
+                download_id,
+                part_index,
+                writers,
+                named,
+            } => Record::new("download.part_corrupt")
+                .count("id", download_id.as_u64())
+                .count("part_index", *part_index)
+                .count("writers", *writers)
+                .count("named", *named),
+            D::SourceSetAside {
+                download_id,
+                peer,
+                part_index,
+                proven,
+            } => Record::new("download.source_set_aside")
+                .count("id", download_id.as_u64())
+                .peer_address("peer", peer)
+                .count("part_index", *part_index)
+                .code("evidence", if *proven { "proven" } else { "suspected" }),
+            D::BadDataCounted {
+                download_id,
+                peer,
+                bad_bytes,
+                total_bytes,
+            } => Record::new("download.bad_data_counted")
+                .count("id", download_id.as_u64())
+                .peer_address("peer", peer)
+                .count("bad_bytes", *bad_bytes)
+                .count("total_bytes", *total_bytes),
             D::PartReleased {
                 download_id,
                 peer,
@@ -315,6 +407,63 @@ impl DownloadEvent {
             D::WaitingForConnection { download_id } => {
                 Record::new("download.waiting_for_connection").count("id", download_id.as_u64())
             }
+            D::HoleLessDestination {
+                download_id,
+                directory,
+            } => Record::new("download.hole_less_destination")
+                .count("id", download_id.as_u64())
+                .path("directory", directory),
+            D::CancelledFileLeft {
+                download_id,
+                part_path,
+            } => Record::new("download.cancelled_file_left")
+                .count("id", download_id.as_u64())
+                .path("part_path", part_path),
+            D::RowsUnreadable { rows } => {
+                Record::new("download.rows_unreadable").count("rows", u64::from(*rows))
+            }
+            D::PartFilesAdopted { parts } => {
+                Record::new("download.part_files_adopted").count("parts", u64::from(*parts))
+            }
+            D::StoreStopped => Record::new("download.store_stopped"),
+            D::VolumeStopped {
+                download_id,
+                directory,
+                stop,
+            } => codes::volume_stop(
+                Record::new("download.volume_stopped")
+                    .count("id", download_id.as_u64())
+                    .path("directory", directory),
+                *stop,
+            ),
+            D::Completing {
+                download_id,
+                to,
+                step,
+            } => Record::new("download.completing")
+                .count("id", download_id.as_u64())
+                .path("to", to)
+                .code("step", codes::completion_step(*step)),
+        }
+    }
+}
+
+/// A firewalled source's fields: its ID and, when not ours, the server that
+/// assigned it, or the address a Kad row was seen at.
+fn callback_fields(record: Record, key: CallbackKey) -> Record {
+    match key {
+        CallbackKey::Server {
+            low_id,
+            server: Some(server),
+        } => record
+            .peer_id("low_id", low_id)
+            .server_address("server", &server),
+        CallbackKey::Server {
+            low_id,
+            server: None,
+        } => record.peer_id("low_id", low_id),
+        CallbackKey::KadRow { observed } => {
+            record.peer_address("kad_row", &PeerEndpoint::V4(observed))
         }
     }
 }

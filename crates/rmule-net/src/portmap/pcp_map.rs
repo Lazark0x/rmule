@@ -82,10 +82,12 @@ impl MapRequest {
 
     /// Read one datagram as the answer to this request.
     ///
-    /// A success must echo this request's nonce, protocol and internal port
-    /// (§11.3) or it answers someone else. An error response is accepted from
-    /// its header alone when it is too short to carry the body — §7.2 lets a
-    /// server that cannot parse the request answer with only the header.
+    /// A success and a refusal alike must echo this request's nonce,
+    /// protocol and internal port (§11.3, §11.4) or they answer someone else.
+    /// §7.2 builds an error response by copying the request, up to 1100
+    /// octets, so a genuine refusal of a 60-octet `MAP` carries the whole
+    /// body: anything shorter is not an answer to this request, and must not
+    /// put a hold-off on it.
     pub(super) fn decode(&self, datagram: &[u8]) -> MapReply {
         if datagram.len() < 2 {
             return MapReply::Foreign;
@@ -98,16 +100,12 @@ impl MapRequest {
         if datagram.len() < HEADER_LEN || datagram[1] != RESPONSE_BIT | OPCODE_MAP {
             return MapReply::Foreign;
         }
+        if datagram.len() < MAP_LEN {
+            return MapReply::Foreign;
+        }
         let code = datagram[3];
         let lifetime = be_u32(&datagram[4..8]);
         let epoch = be_u32(&datagram[8..12]);
-        if datagram.len() < MAP_LEN {
-            return if code == 0 {
-                MapReply::Foreign
-            } else {
-                MapReply::Refused { code, lifetime }
-            };
-        }
         let echoes = datagram[24..36] == self.encode()[24..36]
             && datagram[36] == self.protocol
             && datagram[40..42] == self.internal_port.to_be_bytes();
@@ -117,12 +115,18 @@ impl MapRequest {
         if code != 0 {
             return MapReply::Refused { code, lifetime };
         }
+        let external_port = u16::from_be_bytes([datagram[42], datagram[43]]);
+        // §11.1: lifetime 0 is a delete. A create answered with no lifetime
+        // or no port granted nothing, whatever its result code says.
+        if self.lifetime > 0 && (lifetime == 0 || external_port == 0) {
+            return MapReply::Empty;
+        }
         let mut external = [0_u8; 16];
         external.copy_from_slice(&datagram[44..60]);
         MapReply::Granted(MapGrant {
             lifetime,
             epoch,
-            external_port: u16::from_be_bytes([datagram[42], datagram[43]]),
+            external_port,
             external_address: Ipv6Addr::from(external),
         })
     }
@@ -135,6 +139,8 @@ pub(super) enum MapReply {
     Granted(MapGrant),
     /// A PCP error: the result code, and the lifetime — §7.4's hold-off.
     Refused { code: u8, lifetime: u32 },
+    /// A success to a create that granted no lifetime or no port.
+    Empty,
     /// The server speaks another version (a NAT-PMP box answers `0`).
     UnsupportedVersion(u8),
     /// Not an answer to this request; keep waiting.
@@ -179,12 +185,7 @@ pub(super) async fn exchange(
             fault: MappingTransportFault::io(&error),
         }
     };
-    let source = SocketAddr::new(IpAddr::V6(request.client), 0);
-    // Not `family::bind_udp`: this socket is connected, and on every platform
-    // a connected socket's ICMP port-unreachable is the gateway's answer that
-    // it speaks no PCP, ending the exchange before the ladder runs out. The
-    // Windows ICMP-reset switch would hide that answer on Windows alone.
-    let socket = UdpSocket::bind(source).await.map_err(transport)?;
+    let socket = bind_pinned(request.client).await.map_err(transport)?;
     socket
         .connect(SocketAddr::V6(server))
         .await
@@ -203,6 +204,17 @@ pub(super) async fn exchange(
         }
     }
     Err(MappingError::Timeout(MappingProtocol::Pcp))
+}
+
+/// The exchange's socket, bound to `client` — the pin itself (§8.2, §8.4):
+/// the kernel then sources every request from the address its header names.
+///
+/// Not `family::bind_udp`: this socket is connected, and on every platform
+/// a connected socket's ICMP port-unreachable is the gateway's answer that
+/// it speaks no PCP, ending the exchange before the ladder runs out. The
+/// Windows ICMP-reset switch would hide that answer on Windows alone.
+async fn bind_pinned(client: Ipv6Addr) -> std::io::Result<UdpSocket> {
+    UdpSocket::bind(SocketAddr::new(IpAddr::V6(client), 0)).await
 }
 
 /// How long each send of `ladder` waits for its answer: one send, then

@@ -118,9 +118,9 @@ impl AdvertisedEndpoints {
     }
 
     /// The IPv4 TCP endpoint peers can actually dial: Known *and* proven
-    /// reachable. The ADR-0047 connect-options bits and the ADR-0061 route
-    /// chooser read this rather than the raw verdict — an endpoint nobody can
-    /// reach is not an advertisement, it is a dead invitation.
+    /// reachable. An endpoint nobody can reach is not an advertisement, it is
+    /// a dead invitation.
+    #[cfg(test)]
     pub(crate) fn dialable_tcp(&self) -> Option<PeerEndpoint> {
         self.tcp_dialable
             .then(|| self.endpoint(AddressFamily::V4, SocketRole::Tcp))

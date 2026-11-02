@@ -13,9 +13,9 @@ use std::net::Ipv4Addr;
 use rmule_peer::multipacket::{AnswerItem, MultiPacketAnswer, MultiPacketRequest, RequestItem};
 use rmule_peer::{
     BundledAsk, FileProbeStatus, FileStatus, Hello, HelloAnswer, MiscOptions1, NoticeEvent,
-    PartBitmap, PeerCommand, PeerEvent, PeerHelloBody, PeerOpcode, PeerOutput, PeerPacket,
-    PeerSession, ReqFileNameAnswer, RequestFileName, RequesterCommand, RequesterEvent,
-    ServerCommand, ServerEvent, SetReqFileId,
+    PeerCommand, PeerEvent, PeerHelloBody, PeerOpcode, PeerOutput, PeerPacket, PeerSession,
+    ReqFileNameAnswer, RequestFileName, RequesterCommand, RequesterEvent, ServerCommand,
+    ServerEvent, SetReqFileId, WireStatus,
 };
 use rmule_primitives::session::drain;
 use rmule_primitives::{
@@ -78,7 +78,7 @@ fn identified_outbound_session() -> PeerSession {
 fn bundled_serve_request_fans_in_identically_to_the_standalone_sequence() {
     let fh = FileHash::from_bytes([0xB1; FileHash::BYTE_LEN]);
     let name = Ed2kText::from_utf8("movie.avi");
-    let bitmap = PartBitmap::decode(1, &[0b1]).unwrap();
+    let bitmap = WireStatus::decode(1, &[0b1]).unwrap();
 
     // Standalone: two separate requests, two separate events, two separate
     // answer packets.
@@ -167,7 +167,7 @@ fn bundled_serve_request_fans_in_identically_to_the_standalone_sequence() {
                 // sentinel at the writer — same for both shapes.
                 vec![
                     AnswerItem::Name(name),
-                    AnswerItem::Status(PartBitmap::complete_source_sentinel())
+                    AnswerItem::Status(WireStatus::complete_source())
                 ]
             );
         }
@@ -179,7 +179,7 @@ fn bundled_serve_request_fans_in_identically_to_the_standalone_sequence() {
 fn bundled_answer_fans_in_identically_to_the_standalone_sequence() {
     let fh = FileHash::from_bytes([0xB2; FileHash::BYTE_LEN]);
     let name = Ed2kText::from_utf8("clip.mkv");
-    let bitmap = PartBitmap::decode(2, &[0b11]).unwrap();
+    let bitmap = WireStatus::decode(3, &[0b011]).unwrap();
 
     // Both shapes solicit the probe first: an answer for a
     // never-solicited file is dropped — identically in both shapes, which is
@@ -189,7 +189,7 @@ fn bundled_answer_fans_in_identically_to_the_standalone_sequence() {
     standalone.handle_command(PeerCommand::Requester(RequesterCommand::ProbeFile {
         file_hash: fh,
         file_size: 20_000_000,
-        own_status: PartBitmap::downloader_empty(20_000_000),
+        own_status: WireStatus::downloader_empty(20_000_000),
     }));
     let _ = drain(|| standalone.poll_output());
     standalone.handle_bytes(
@@ -227,7 +227,7 @@ fn bundled_answer_fans_in_identically_to_the_standalone_sequence() {
     bundled.handle_command(PeerCommand::Requester(RequesterCommand::ProbeFile {
         file_hash: fh,
         file_size: 20_000_000,
-        own_status: PartBitmap::downloader_empty(20_000_000),
+        own_status: WireStatus::downloader_empty(20_000_000),
     }));
     let _ = drain(|| bundled.poll_output());
     let answer = MultiPacketAnswer {
@@ -291,7 +291,7 @@ fn not_shared_answers_plain_file_req_ans_no_fil_and_sends_no_bundle() {
 fn aich_omitted_from_the_composed_answer_when_it_has_not_arrived_by_flush() {
     let fh = FileHash::from_bytes([0xB4; FileHash::BYTE_LEN]);
     let name = Ed2kText::from_utf8("f.bin");
-    let bitmap = PartBitmap::decode(1, &[0b1]).unwrap();
+    let bitmap = WireStatus::decode(1, &[0b1]).unwrap();
     let mut session = identified_inbound_session();
     let request = MultiPacketRequest {
         file_hash: fh,
@@ -330,7 +330,7 @@ fn aich_omitted_from_the_composed_answer_when_it_has_not_arrived_by_flush() {
                 // sentinel at the writer.
                 vec![
                     AnswerItem::Name(name),
-                    AnswerItem::Status(PartBitmap::complete_source_sentinel())
+                    AnswerItem::Status(WireStatus::complete_source())
                 ],
                 "AICH is silently omitted, per ADR-0054"
             );
@@ -348,6 +348,7 @@ fn aich_omitted_from_the_composed_answer_when_it_has_not_arrived_by_flush() {
     // packet does not.
     let root = AichRootHash::from_bytes([0x77; AichRootHash::BYTE_LEN]);
     session.handle_command(PeerCommand::Server(ServerCommand::AnswerAichFileHash {
+        file_hash: fh,
         root,
     }));
     let late = drain(|| session.poll_output());
@@ -382,6 +383,7 @@ fn aich_only_bundle_flushes_once_its_answer_arrives() {
     assert!(writes(&request_out).is_empty());
 
     session.handle_command(PeerCommand::Server(ServerCommand::AnswerAichFileHash {
+        file_hash: fh,
         root,
     }));
     let out = drain(|| session.poll_output());
@@ -398,6 +400,34 @@ fn aich_only_bundle_flushes_once_its_answer_arrives() {
         }
         other => panic!("expected MultiPacketAnswer, got {other:?}"),
     }
+}
+
+/// An open bundle takes only what it asked for: a standalone name ask answered
+/// while an AICH-only bundle waits goes out by itself, rather than into a
+/// composition that never names it.
+#[test]
+fn a_standalone_answer_never_composes_into_a_bundle_that_did_not_ask_for_it() {
+    let fh = FileHash::from_bytes([0xBA; FileHash::BYTE_LEN]);
+    let mut session = identified_inbound_session();
+    let request = MultiPacketRequest {
+        file_hash: fh,
+        file_size: None,
+        items: vec![RequestItem::AichRoot],
+        unknown_sub: None,
+        cut: None,
+    };
+    session.handle_bytes(&request.encode_packet().encode());
+    let _ = drain(|| session.poll_output());
+
+    session.handle_command(PeerCommand::Server(ServerCommand::AnswerFileName {
+        file_hash: fh,
+        file_name: rmule_primitives::Ed2kText::from_utf8("alone.bin"),
+    }));
+    let written = writes(&drain(|| session.poll_output()));
+    assert_eq!(
+        written.iter().map(Packet::opcode).collect::<Vec<_>>(),
+        vec![PeerOpcode::ReqFileNameAnswer.as_u8()],
+    );
 }
 
 #[test]
@@ -483,6 +513,12 @@ fn unknown_sub_in_a_bundled_answer_keeps_the_valid_prefix_and_stays_open() {
     .encode();
 
     let mut session = identified_outbound_session();
+    session.handle_command(PeerCommand::Requester(RequesterCommand::ProbeFile {
+        file_hash: fh,
+        file_size: 20_000_000,
+        own_status: rmule_peer::WireStatus::downloader_empty(20_000_000),
+    }));
+    let _ = drain(|| session.poll_output());
     session.handle_bytes(&bytes);
     let out = drain(|| session.poll_output());
 
@@ -495,7 +531,7 @@ fn unknown_sub_in_a_bundled_answer_keeps_the_valid_prefix_and_stays_open() {
 }
 
 #[test]
-fn bundled_request_before_hello_is_unknown_preserved_and_stays_open() {
+fn bundled_request_before_hello_costs_the_link() {
     let fh = FileHash::from_bytes([0xB9; FileHash::BYTE_LEN]);
     let mut session = PeerSession::new_inbound(peer_at(40), serverless_ctx());
     let request = MultiPacketRequest {
@@ -507,18 +543,13 @@ fn bundled_request_before_hello_is_unknown_preserved_and_stays_open() {
     };
     session.handle_bytes(&request.encode_packet().encode());
     let out = drain(|| session.poll_output());
-
-    assert!(
-        events(&out)
-            .iter()
-            .any(|e| matches!(e, PeerEvent::Notice(NoticeEvent::UnknownPacket { .. })))
-    );
+    assert!(out.iter().any(|o| matches!(o, PeerOutput::Close(_))));
     assert!(
         !events(&out)
             .iter()
-            .any(|e| matches!(e, PeerEvent::Server(ServerEvent::FileRequested { .. })))
+            .any(|e| matches!(e, PeerEvent::Server(_))),
+        "nothing reaches core: {out:?}"
     );
-    assert!(!out.iter().any(|o| matches!(o, PeerOutput::Close(_))));
 }
 
 #[test]

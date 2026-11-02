@@ -1,9 +1,7 @@
 //! The buddy callback's second spelling. A firewalled source's
-//! `TAG_BUDDYHASH` is read aMule's way first — the captured form — and only a
-//! primary `0x52` that drew no dial-back in the whole callback wait earns one
-//! more, addressed under the eMule 0.70b / eMuleAI `GetData()` spelling of the
-//! same tag. That fallback leg is **source-derived**: no eMule-family row has
-//! been captured, and every test here that sends it says so.
+//! `TAG_BUDDYHASH` is read the eMule way first, and only a primary `0x52` that
+//! drew no dial-back in the whole callback wait earns one more, addressed under
+//! the reading aMule through 3.1.0 wrote.
 
 use rmule_kad::KadId;
 use rmule_primitives::UserHash;
@@ -84,6 +82,68 @@ fn source_derived_a_silent_primary_callback_earns_one_fallback_spelling_callback
     let ended = state.on_tick(t0() + CALLBACK_TIMEOUT * 2);
     assert!(asks(&ended).is_empty(), "one extra 0x52 at most: {ended:?}");
     assert!(released(&ended, key), "then the road ends: {ended:?}");
+}
+
+/// The primary `0x52` left and drew nothing, so the road invited: a fallback
+/// spelling refused at our end changes neither, and the key is spent at the
+/// road's end, as any lapse with its invitation out
+/// (`BaseClient.cpp:1340-1346`).
+#[test]
+fn a_refused_fallback_spelling_spends_the_key_its_primary_invited() {
+    let mut state = callback_state(Vec::new(), Vec::new(), true, 1);
+    let opened = via_kad(&mut state, vec![row(PRIMARY, buddy_udp())]);
+    let key = super::buddy_callback::buddy_key(&opened);
+    let lapsed = state.on_tick(t0() + CALLBACK_TIMEOUT);
+    assert_eq!(asks(&lapsed), vec![(PRIMARY.word_swapped(), true)]);
+
+    let refused = state.on_traversal_retired(
+        t0() + CALLBACK_TIMEOUT,
+        key,
+        crate::diagnostics::NattRetirement::CallbackNotSent,
+    );
+    assert!(released(&refused, key), "{refused:?}");
+
+    let again = via_kad(&mut state, vec![row(PRIMARY, buddy_udp())]);
+    assert!(asks(&again).is_empty(), "{again:?}");
+}
+
+/// The **Callback Pace** holds the fallback, which the stock window shuts at
+/// the end of the primary's wait: it is deferred, and its wait counts from
+/// when it leaves, so the road does not end on a `0x52` the buddy has not yet
+/// had the chance to relay.
+#[test]
+fn a_held_fallback_gets_its_whole_wait_from_when_it_leaves() {
+    let mut state = callback_state(Vec::new(), Vec::new(), true, 1);
+    let opened = via_kad(&mut state, vec![row(PRIMARY, buddy_udp())]);
+    let key = super::buddy_callback::buddy_key(&opened);
+
+    let lapsed = t0() + CALLBACK_TIMEOUT;
+    assert_eq!(asks(&state.on_tick(lapsed)).len(), 1);
+    let leaves_in = Duration::from_secs(35);
+    state.on_callback_held(lapsed, key, leaves_in);
+
+    let leaves = lapsed + leaves_in;
+    assert_eq!(state.next_wake(), Some(leaves + CALLBACK_TIMEOUT));
+    let early = state.on_tick(t0() + CALLBACK_TIMEOUT * 2);
+    assert!(!released(&early, key), "still ahead of the wait: {early:?}");
+    assert!(released(&state.on_tick(leaves + CALLBACK_TIMEOUT), key));
+}
+
+/// A second download's primary, held behind the first's: its silence has not
+/// begun, so the fallback waits a whole callback wait past the leaving.
+#[test]
+fn a_held_primary_earns_no_fallback_until_a_whole_wait_past_its_leaving() {
+    let mut state = callback_state(Vec::new(), Vec::new(), true, 1);
+    let opened = via_kad(&mut state, vec![row(PRIMARY, buddy_udp())]);
+    let key = super::buddy_callback::buddy_key(&opened);
+    let leaves_in = Duration::from_secs(64);
+    state.on_callback_held(t0(), key, leaves_in);
+
+    assert!(asks(&state.on_tick(t0() + CALLBACK_TIMEOUT)).is_empty());
+    assert_eq!(
+        asks(&state.on_tick(t0() + leaves_in + CALLBACK_TIMEOUT)),
+        vec![(PRIMARY.word_swapped(), true)],
+    );
 }
 
 /// A primary that drew its dial-back is done: the wait never lapses, so no

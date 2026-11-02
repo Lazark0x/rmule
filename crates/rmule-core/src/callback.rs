@@ -60,7 +60,7 @@ use tokio::sync::mpsc;
 use crate::adapters::CallbackKey;
 use crate::dialable::{DialPosition, choose_dial};
 use crate::service::{
-    NatTraversalUnavailableReason, PeerReach, PeerReachDropReason, PeerReachRoute,
+    NatTraversalUnavailableReason, PeerReach, PeerReachDropReason, PeerReachRoute, ReachAddress,
 };
 
 use rmule_kad::KadId;
@@ -69,13 +69,10 @@ use rmule_kad::KadId;
 /// `CUpDownClient::TryToConnect`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct CallbackTarget {
-    /// The candidate's server-assigned client ID — its LowID/HighID class, and
-    /// (when LowID) the id a server callback names.
-    pub(crate) id: ClientId,
-    /// The candidate's dialable TCP endpoint — used only for the HighID
-    /// [`Direct`](PeerReachRoute::Direct) route; a LowID candidate has no plain
-    /// dial, so callers may pass its last-seen endpoint (never read).
-    pub(crate) tcp: PeerEndpoint,
+    /// What the candidate can be reached by on its own: a High ID's endpoint
+    /// takes the [`Direct`](PeerReachRoute::Direct) route, and a Low ID is what
+    /// a server callback names.
+    pub(crate) address: ReachAddress,
     /// The candidate advertised `SupportsDirectUDPCallback` (ADR-0047): it can
     /// be reached by a `0x95` to its Kad UDP port.
     pub(crate) supports_direct_udp_callback: bool,
@@ -155,6 +152,9 @@ impl NattFacts {
 /// walk/verify target) and its UDP endpoint when the candidate carried it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct BuddyContact {
+    /// The held reading of the row's `TAG_BUDDYHASH`: the primary, until the
+    /// fallback draws a dial-back and takes its place (ADR-0061). Everything
+    /// that names the buddy reads this, so a source has one reading at a time.
     pub(crate) buddy_id: KadId,
     /// The buddy's UDP endpoint when known (`0x52` straight to it); `None`
     /// means the buddy-callback road walks toward `buddy_id` first
@@ -175,6 +175,19 @@ impl BuddyContact {
             buddy_udp_ipv6: None,
         }
         .fallback_buddy_id()
+    }
+
+    /// Whether `other` names this same buddy, in either reading.
+    pub(crate) fn same_buddy(&self, other: &Self) -> bool {
+        other.buddy_id == self.buddy_id || Some(other.buddy_id) == self.fallback_buddy_id()
+    }
+
+    /// This buddy under its other reading: the fallback, once it has answered.
+    pub(crate) fn fallback_reading(self) -> Self {
+        Self {
+            buddy_id: self.fallback_buddy_id().unwrap_or(self.buddy_id),
+            ..self
+        }
     }
 }
 
@@ -259,12 +272,10 @@ pub(crate) fn select_callback_route(
         };
     }
     // A HighID peer is reachable by a plain dial — never the callback tree.
-    if target.id.is_high_id() {
-        return PeerReachRoute::Direct {
-            endpoint: target.tcp,
-        };
+    if let ReachAddress::Dial(endpoint) = target.address {
+        return PeerReachRoute::Direct { endpoint };
     }
-    // The candidate is LowID from here — the four-route callback tree.
+    // The candidate is firewalled from here — the four-route callback tree.
     //
     // 1. LowID→LowID: we are firewalled too, so no callback can work — every
     //    one of them asks the target to dial *us*. This was aMule's
@@ -297,8 +308,8 @@ pub(crate) fn select_callback_route(
     }
     // 3. Server callback: the target is on our connected server, which relays
     //    the invitation (`0x1C`, ADR-0039).
-    if target.on_our_server {
-        return PeerReachRoute::Server { low_id: target.id };
+    if let (true, Some(low_id)) = (target.on_our_server, target.address.low_id()) {
+        return PeerReachRoute::Server { low_id };
     }
     // 4. Kad buddy callback: with Kad up and a buddy contact, `0x52` to the
     //    buddy's UDP (or a walk toward its ID); otherwise the candidate is
@@ -351,8 +362,9 @@ fn natt_coordinator(target: &CallbackTarget, ours: &RoutePosition) -> Option<Nat
 /// Our server can introduce us: the target is on it, and our session
 /// advertised and keeps alive the UDP port a punch would land on.
 fn server_coordinator(target: &CallbackTarget, ours: &RoutePosition) -> Option<NattCoordinator> {
+    let low_id = target.address.low_id()?;
     (ours.udp_on && ours.server_punch && target.natt_facts().on_our_server)
-        .then_some(NattCoordinator::Server { low_id: target.id })
+        .then_some(NattCoordinator::Server { low_id })
 }
 
 /// The target's Kad serving buddy can: the target speaks NAT-T — nobody else
@@ -387,8 +399,7 @@ fn buddy_coordinator(facts: &NattFacts, ours: &RoutePosition) -> Option<NattCoor
 /// read the same peer differently.
 pub(crate) fn callback_target(peer: &PeerReach) -> CallbackTarget {
     CallbackTarget {
-        id: peer.id,
-        tcp: peer.tcp,
+        address: peer.address,
         supports_direct_udp_callback: peer.supports_direct_udp_callback,
         kad_udp: peer.kad_udp,
         on_our_server: peer.on_our_server,
@@ -396,7 +407,9 @@ pub(crate) fn callback_target(peer: &PeerReach) -> CallbackTarget {
         // a Kad `ip6` row; each has already passed `IsUsableTagIdentity`. A
         // dual-stack peer keeps both halves here, because which one gets dialed
         // is the Dial Chooser's call.
-        ipv6: peer.ipv6.or_else(|| peer.tcp.as_v6()),
+        ipv6: peer
+            .ipv6
+            .or_else(|| peer.address.dial().and_then(PeerEndpoint::as_v6)),
         supports_natt: peer.supports_natt,
         buddy: peer.buddy.map(|buddy| BuddyContact {
             buddy_id: buddy.buddy_id,
@@ -446,6 +459,8 @@ pub(crate) struct PendingCallback {
     /// Where a road that never opened is reported, exactly as one that
     /// retired is.
     pub(crate) retire_tx: mpsc::Sender<(CallbackKey, crate::diagnostics::NattRetirement)>,
+    /// Where the **Callback Pace** says it holds this road's `0x52`.
+    pub(crate) held_tx: crate::adapters::HeldSender,
 }
 
 /// Which road a [`DownloadReach`] asks Peer Reach to enact. The brain has

@@ -13,9 +13,9 @@
 //! with aMule's crypt layer on sent the same `0x52` inside a Kad crypt envelope
 //! keyed on the buddy's Kad ID, and the rmule buddy relayed it.
 
+use rmule_kad::KadId;
 use rmule_kad::KadInstant;
 use rmule_kad::KadNodeStart;
-use std::net::Ipv4Addr;
 
 use rmule_kad::opcode::KADEMLIA2_SEARCH_RES;
 use rmule_kad::{
@@ -25,7 +25,7 @@ use rmule_kad::{
 use rmule_primitives::{
     ClientDecryptKeys, DatagramKeyFamily, Ipv4Endpoint, decrypt_datagram_client,
 };
-use rmule_testkit::kad_node::endpoint;
+use rmule_testkit::kad_node::{endpoint, host_ip};
 
 use crate::fixture::{KAD_PROTO, captured};
 
@@ -50,6 +50,16 @@ fn row() -> KadSourceRowFacts {
     row.facts().expect("a decoded row carries its facts")
 }
 
+/// The ID the stock aMule publisher holds: its row is in the aMule layout, the
+/// fallback reading.
+fn stock_buddy_id() -> KadId {
+    row()
+        .buddy
+        .expect("a type-3 row names its buddy")
+        .fallback_buddy_id()
+        .expect("an asymmetric ID")
+}
+
 /// The row names a buddy and no endpoint: the reader has only the ID to go on,
 /// which is what sent aMule down `BaseClient.cpp:2159-2175` (kno `ab483654`).
 #[test]
@@ -68,7 +78,7 @@ fn amules_walk_asked_the_buddy_for_its_own_id() {
     let KadDecoded::Plain(envelope) = decode_exact(&frame).expect("a plain 0xE4 datagram") else {
         panic!("the walk left in the clear");
     };
-    let buddy_id = row().buddy.expect("a type-3 row names its buddy").buddy_id;
+    let buddy_id = stock_buddy_id();
     assert_eq!(
         Kad2Message::decode(&envelope),
         Ok(Kad2Message::LookupReq {
@@ -87,8 +97,7 @@ fn amules_findsource_callback_is_its_endpoint_branch_callback() {
     let frame = captured(FIXTURE_DIR, "callback_req_0x52.bin");
     assert_eq!(frame.len(), 36);
     assert_eq!((frame[0], frame[1]), (KAD_PROTO, OP_CALLBACK_REQ));
-    let buddy = row().buddy.expect("a type-3 row names its buddy");
-    assert_eq!(&frame[2..18], buddy.buddy_id.as_bytes());
+    assert_eq!(&frame[2..18], stock_buddy_id().as_bytes());
     assert_eq!(
         frame,
         captured(ENDPOINT_BRANCH_DIR, "callback_req_0x52.bin")
@@ -102,7 +111,7 @@ fn amules_findsource_callback_is_its_endpoint_branch_callback() {
 #[test]
 fn amules_keyed_findsource_callback_opens_under_the_buddys_kad_id() {
     let envelope = captured(KEYED_DIR, "callback_req_0x52_envelope.bin");
-    let buddy_id = row().buddy.expect("a type-3 row names its buddy").buddy_id;
+    let buddy_id = stock_buddy_id();
     let opened = decrypt_datagram_client(
         &envelope,
         &ClientDecryptKeys {
@@ -125,7 +134,7 @@ fn amules_keyed_findsource_callback_opens_under_the_buddys_kad_id() {
 /// `0x99`.
 #[test]
 fn a_buddy_node_asks_to_relay_amules_keyed_findsource_callback() {
-    let buddy_id = row().buddy.expect("a type-3 row names its buddy").buddy_id;
+    let buddy_id = stock_buddy_id();
     let mut node = KadNode::new(KadNodeStart::new(
         KadNodeConfig {
             id: buddy_id,
@@ -151,7 +160,7 @@ fn a_buddy_node_asks_to_relay_amules_keyed_findsource_callback() {
     assert_eq!(
         relay,
         vec![KadEvent::CallbackRelayRequested {
-            requester: Ipv4Endpoint::new(Ipv4Addr::new(203, 0, 113, 7), 4704),
+            requester: Ipv4Endpoint::new(host_ip(7), 4704),
             buddy_id,
             file_hash: FileHash::from_hex("009D91607B0D86D64FAFF631E02ED864").unwrap(),
             requester_tcp_port: 4662,

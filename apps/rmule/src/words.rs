@@ -3,8 +3,8 @@
 //! speaks from too, and are re-exported here under the same module names;
 //! the modules declared here word the TUI's own types — its command line,
 //! a run with no core, a Settings edit, a server-health edge, a search
-//! entry's paging, the share set's tally — beside the shared words of their
-//! domain.
+//! entry's paging, the share set's tally, the player Preview starts, a
+//! list's count, a row's actions — beside the shared words of their domain.
 //!
 //! The log pane, the status bar's note and the flash take a [`Sentence`],
 //! and only a words module — `rmule_words` or this one and its children —
@@ -12,11 +12,27 @@
 //! else cannot reach those surfaces.
 
 pub use rmule_words::{
-    Sentence, download, event, kad, login, os, peer, portmap, reach, serve, software, store, units,
+    Sentence, absent, download, event, kad, login, os, peer, plain, plural, portmap, reach, serve,
+    severity, software, store, units,
 };
 
 pub mod app;
+pub mod columns;
+pub mod forms;
 pub mod front_door;
+pub mod help;
+pub mod hints;
+pub mod labels;
+pub mod log;
+pub mod networks;
+pub mod player;
+pub mod readd;
+pub mod rows;
 pub mod scan;
 pub mod search;
 pub mod server;
+pub mod settings;
+pub mod shared;
+pub mod statistics;
+pub mod transfers;
+pub mod viewport;

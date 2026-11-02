@@ -55,6 +55,9 @@ impl CoreEvent {
                     .os_error(half_bound.kind, None)
             }
             CoreEvent::PeerHelloRefused { refusal } => hello_refused(refusal),
+            CoreEvent::PeerLinkBroken { violation } => {
+                Record::new("peer.link_broken").code("violation", violation.code())
+            }
             CoreEvent::DiagnosticsSnapshot { .. } => Record::new("diagnostics.snapshot"),
             CoreEvent::FileHistory { history } => Record::new("file_history.read")
                 .count("shared", history.shared.len())
@@ -67,6 +70,9 @@ impl CoreEvent {
             CoreEvent::Quitting { step } => {
                 Record::new("quit.step").code("step", codes::quit_step(*step))
             }
+            CoreEvent::TaskDied { task } => {
+                Record::new("task.died").code("task", codes::long_task(*task))
+            }
             CoreEvent::ServerLogin { server, step } => login::record(server, step),
             CoreEvent::BuddyDialFailed { buddy, cause } => buddy::dial_failed(buddy, *cause),
             CoreEvent::KadHelperTestLate {
@@ -76,6 +82,13 @@ impl CoreEvent {
             } => login::kad_helper_test_late(*helper, *late_by, *admission),
             CoreEvent::ObfuscationPolicyAtStart { policy } => Record::new("obfuscation.policy")
                 .code("policy", crate::obfuscation_policy::policy_name(*policy)),
+            CoreEvent::EventsShed { count } => Record::new("events.shed").count("count", *count),
+            CoreEvent::MappingReleaseKept {
+                mapping,
+                protocol,
+                external_port,
+                kept,
+            } => release_kept(mapping, *protocol, *external_port, kept),
             CoreEvent::ObfuscationPolicyChanged { policy } => {
                 Record::new("obfuscation.policy_changed")
                     .code("policy", crate::obfuscation_policy::policy_name(*policy))
@@ -86,9 +99,14 @@ impl CoreEvent {
 
 /// How the route chosen for a peer reaches it. The peer, its Kad UDP
 /// endpoint, its Low ID and its buddy are the peer's; only the code is ours.
-fn reach_route(peer: &rmule_primitives::PeerEndpoint, route: &crate::PeerReachRoute) -> Record {
+fn reach_route(peer: &crate::ReachAddress, route: &crate::PeerReachRoute) -> Record {
     use crate::PeerReachRoute as R;
-    let record = Record::new("peer_reach.routed").peer_address("peer", peer);
+    let record = Record::new("peer_reach.routed");
+    let record = match peer {
+        crate::ReachAddress::Dial(endpoint) => record.peer_address("peer", endpoint),
+        crate::ReachAddress::LowId(id) => record.peer_id("low_id", *id),
+        crate::ReachAddress::KadRow => record.code("peer", "kad_row"),
+    };
     match route {
         R::Direct { endpoint } => record
             .code("route", "direct")
@@ -155,4 +173,37 @@ fn hello_refused(refusal: &crate::HelloRefusal) -> Record {
     record
         .peer_software("client_mod", &text(&refusal.client_mod))
         .peer_software("client_name", &text(&refusal.name))
+}
+
+/// A release that sent no delete (ADR-0086, "A release takes down only
+/// rmule's own mapping"): the row, the external port, and why. The endpoint
+/// the entry forwards to is a LAN host's, so the full level's alone.
+fn release_kept(
+    mapping: &crate::port_mapping::DesiredMapping,
+    protocol: crate::port_mapping::MappingProtocol,
+    external_port: u16,
+    kept: &crate::port_mapping::ReleaseKept,
+) -> Record {
+    use crate::port_mapping::ReleaseKept;
+    let record = Record::new("port_mapping.release_kept")
+        .code("role", codes::role(mapping.role))
+        .code("family", codes::family(mapping.family))
+        .port("internal_port", mapping.internal_port);
+    let record = match mapping.pinhole {
+        Some(pinhole) => record.own_address("pinhole", &pinhole),
+        None => record,
+    }
+    .port("external_port", external_port);
+    match kept {
+        ReleaseKept::Absent => record
+            .code("kept", "absent")
+            .code("protocol", codes::protocol(protocol)),
+        ReleaseKept::ForwardsElsewhere(holder) => record
+            .code("kept", "forwards_elsewhere")
+            .code("protocol", codes::protocol(protocol))
+            .peer_address("holder", holder),
+        ReleaseKept::Unchecked(error) => {
+            codes::mapping_error(record.code("kept", "unchecked"), error)
+        }
+    }
 }

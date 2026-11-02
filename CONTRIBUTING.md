@@ -199,6 +199,13 @@ While you develop, point the binaries at a scratch data directory: `--data-dir`
 on `rmule-cli`, or `RMULE_DATA` for `rmule`. A work-in-progress build should
 never touch your real downloads or identity.
 
+Fuzz targets on everything a stranger can send live in `fuzz/`, a package of its
+own built with a nightly toolchain. One target, or a bounded pass over all of them
+as the `Fuzz` workflow runs each night:
+
+    cargo +nightly fuzz run peer_session -- -max_total_time=60
+    scripts/fuzz-pass.sh 30
+
 ## The interop bench
 
 Wire behaviour is proven against real software: stock aMule and real eD2k
@@ -208,9 +215,13 @@ accepts, run the bench flows that cover it and say which ones in the pull reques
 You need a Docker-compatible runtime (`--container-runtime <BIN>` selects another
 CLI than `docker`). The images are built on your machine from the recipes under
 [`tools/interop-harness/images/`](tools/interop-harness/images/), which fetch
-pinned upstream inputs (versions, commits and checksums are in the recipes).
-Nothing prebuilt is downloaded and no built image is committed. If your container
-runtime runs in a VM, keep the checkout and the run directory under your home
+pinned upstream inputs (base images by digest; versions, commits and checksums
+are in the recipes). No built image is committed. One input is a prebuilt binary:
+the `server` recipe downloads Lugdunum's closed `eserver` for `linux/amd64` from
+its author's site and checks its SHA-256, because no source exists to build it
+from. The flows that stand Lugdunum need that download, and on another
+architecture they run under your runtime's `linux/amd64` emulation. If your
+container runtime runs in a VM, keep the checkout and the run directory under your home
 directory, which is what such VMs usually mount.
 
 Run one flow end to end. aMule shares a synthetic file, rmule finds it through a
@@ -276,20 +287,23 @@ mechanical ones; review enforces the rest.
 - **Text people read.** Anything printed for a user, front-end output and error
   messages alike, is written in words, never with `{:?}` Debug formatting. The
   guard checks this.
-- **`unsafe`** is forbidden across the workspace.
+- **`unsafe`** is forbidden across the workspace but in `crates/rmule-os`,
+  which holds every operating-system call std does not expose (ADR-0111): only
+  the functions `scripts/guards.sh` pins may hold an `unsafe` block, each under
+  a `// SAFETY:` comment, and may declare the foreign function they call, when
+  no crate does, in one `unsafe extern` block under a comment of its own.
 
 ## Docs
 
 - **Delete over archive.** A document that has been superseded or acted on is
   deleted; git history is the archive. There are no `archive/` folders and no
   dated one-off plan files.
-- **A small docs tree.** `docs/` holds `adr`, `architecture`, `parity`,
-  `protocol` and `reference`, and nothing else at the top level.
-- **Decisions are ADRs.** Every ADR in `docs/adr/` carries a `Status:` line
-  (`live`, `amended-by NNNN` or `superseded-by NNNN`). The text of a decision is
-  never rewritten to match later events: the status line and an amendment section
-  carry the change. Adding or amending an ADR updates the index in
-  `docs/adr/README.md` and the affected status lines in the same change.
+- **A small docs tree.** `docs/` holds `adr`, `architecture`, `protocol` and
+  `reference`, and nothing else at the top level.
+- **Decisions are ADRs.** Each file in `docs/adr/` is a decision in force: a
+  changed decision is edited in place and a dropped one is deleted, so no ADR
+  carries a status line. Adding or changing an ADR updates its row in the index,
+  `docs/adr/README.md`, in the same change.
 - **Glossaries.** Each crate has a `CONTEXT.md`, indexed from the repository
   root. A new crate arrives with its glossary and its index row in the same pull
   request.

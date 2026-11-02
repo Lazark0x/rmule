@@ -1,0 +1,14 @@
+┌ Downloads (1) ─ p pause  m menu  / filter  L add ┐
+│  File ▲                               Status     │
+│▸┌ film.mkv ────────────────────────────────────┐g│
+│ │▸ Pause (p)                                   │ │
+│ │  Cancel… (x)                                 │ │
+│ │  Show file details (d)                       │ │
+│ │  Preview (v)  first part not verified yet    │ │
+│ │  Copy eD2k link                              │ │
+│O│  Search related  not connected               │s│
+│·│  Pause or resume all (P)                     │ │
+└ └─────────────────────────────────────── 1 / 7 ┘ ┘
+┌ Sources · film.mkv ──────────────────────────────┐
+│                 no active sources                │
+└──────────────────────────────────────────────────┘

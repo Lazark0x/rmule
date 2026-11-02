@@ -11,7 +11,8 @@ use std::path::{Path, PathBuf};
 use anyhow::{Result, bail};
 use clap::Args;
 use rmule_interop_harness::artifacts::{
-    Ed2kHashCommand, RunLayout, write_synthetic_ed2k_link, write_synthetic_file,
+    Ed2kHashCommand, RunLayout, write_incompressible_file, write_sparse_file,
+    write_synthetic_ed2k_link, write_synthetic_file,
 };
 use rmule_interop_harness::flow::KadCaptureOptions;
 use serde::Serialize;
@@ -27,7 +28,8 @@ pub(crate) const DEFAULT_FILE_SIZE: u64 = 64 * 1024;
 /// The per-step readiness budget most flows run under.
 pub(crate) const DEFAULT_TIMEOUT_SECS: u64 = 300;
 /// The rust image rmule containers compile and run `rmule-tools` in.
-pub(crate) const DEFAULT_RMULE_CLIENT_IMAGE: &str = "rust:1.94.0-bookworm";
+pub(crate) const DEFAULT_RMULE_CLIENT_IMAGE: &str =
+    rmule_interop_harness::rmule::DRIVER_PREBUILD_IMAGE;
 /// The project-owned Lugdunum eserver image and its recipe.
 pub(crate) const DEFAULT_ESERVER_IMAGE: &str = "rmule/interop-eserver:local";
 pub(crate) const DEFAULT_ESERVER_BUILD_CONTEXT: &str = "tools/interop-harness/images/server";
@@ -91,6 +93,20 @@ impl BenchArgs {
     }
 }
 
+/// What the **Synthetic File** holds.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, clap::ValueEnum)]
+pub(crate) enum FileContent {
+    /// The `offset % 251` pattern every flow defaults to.
+    #[default]
+    Pattern,
+    /// One hole of zero bytes: no block on disk, so a file past 4 GiB costs
+    /// nothing to stage.
+    Sparse,
+    /// A xorshift stream no compressor shrinks, so a throttled sharer cannot
+    /// send it compressed at many times its cap.
+    Incompressible,
+}
+
 /// Stage the **Synthetic File** and its ed2k link in the run dir; `hash_hook`
 /// is the test seam that replaces `cargo run -p rmule-tools -- ed2k hash-file`.
 pub(crate) fn stage_synthetic(
@@ -98,7 +114,22 @@ pub(crate) fn stage_synthetic(
     file_size: u64,
     hash_hook: Option<&Path>,
 ) -> Result<()> {
-    write_synthetic_file(layout, file_size)?;
+    stage_synthetic_content(layout, file_size, FileContent::Pattern, hash_hook)
+}
+
+/// [`stage_synthetic`] with the file's `content` chosen.
+pub(crate) fn stage_synthetic_content(
+    layout: &RunLayout,
+    file_size: u64,
+    content: FileContent,
+    hash_hook: Option<&Path>,
+) -> Result<()> {
+    let path = layout.synthetic_shared_file();
+    match content {
+        FileContent::Pattern => write_synthetic_file(layout, file_size)?,
+        FileContent::Sparse => write_sparse_file(&path, file_size)?,
+        FileContent::Incompressible => write_incompressible_file(&path, file_size, 0x5EED_0531)?,
+    }
     let hash_command = hash_hook.map_or_else(Ed2kHashCommand::cargo_rmule_tools, |path| {
         Ed2kHashCommand::new(path)
     });
@@ -123,14 +154,48 @@ pub(crate) struct EserverArgs {
     pub(crate) server_env: Vec<String>,
 }
 
-impl EserverArgs {
-    /// Port 0 would mean "let docker pick", which the host readiness probe
-    /// cannot discover.
+/// [`EserverArgs`]' flags for a flow whose question is not about the server:
+/// ed2k-server by default, rmule's first server counterparty. The flow reads the
+/// same fields; `--server-image rmule/interop-eserver:local` runs it on Lugdunum.
+#[derive(Debug, Args)]
+pub(crate) struct FirstServerArgs {
+    /// Real eD2k server container image to run.
+    #[arg(long, default_value = crate::cli::nat::DEFAULT_ED2KSRV_IMAGE)]
+    pub(crate) server_image: String,
+    /// Build context directory for the real eD2k server image.
+    #[arg(long, default_value = crate::cli::nat::DEFAULT_ED2KSRV_BUILD_CONTEXT)]
+    pub(crate) server_build_context: PathBuf,
+    /// Host TCP port mapped to the real eD2k server container (readiness probe).
+    #[arg(long, default_value_t = 4661)]
+    pub(crate) server_host_port: u16,
+    /// Extra environment variable for a Lugdunum server container. ed2k-server
+    /// reads its config and no environment.
+    #[arg(long = "server-env", value_parser = parse_env_assignment)]
+    pub(crate) server_env: Vec<String>,
+}
+
+/// Port 0 would mean "let docker pick", which the host readiness probe cannot
+/// discover.
+fn reject_zero_server_port(port: u16) -> Result<()> {
+    if port == 0 {
+        bail!("--server-host-port must be non-zero; mapped-port discovery is not implemented");
+    }
+    Ok(())
+}
+
+impl FirstServerArgs {
     pub(crate) fn reject_zero_host_port(&self) -> Result<()> {
-        if self.server_host_port == 0 {
-            bail!("--server-host-port must be non-zero; mapped-port discovery is not implemented");
-        }
-        Ok(())
+        reject_zero_server_port(self.server_host_port)
+    }
+
+    pub(crate) fn build_context(&self) -> (&str, &Path) {
+        ("server", &self.server_build_context)
+    }
+}
+
+impl EserverArgs {
+    pub(crate) fn reject_zero_host_port(&self) -> Result<()> {
+        reject_zero_server_port(self.server_host_port)
     }
 
     pub(crate) fn build_context(&self) -> (&str, &Path) {

@@ -1,0 +1,27 @@
+# The seed list a release carries: the root of trust of a cold start
+# (ADR-0120). Each release refreshes it by hand. A list is never fetched into
+# this file by a build. Kad nodes are people's own machines, so a public file
+# names servers only.
+#
+# One entry per line, a blank line and anything after `#` ignored:
+#
+#   server <address>:<tcp port>
+#   kad <ipv4 address>:<udp port>
+#
+# An IPv6 address is written in brackets. An empty list is a legal build: it has
+# no root of trust, and a cold start says so.
+
+server 85.17.116.222:6082 # ed2k-rust
+server 176.123.5.89:4725 # eMule Sunrise
+server 91.208.162.182:4232 # MO-Server
+server 143.246.192.192:4232 # eMule Nordic
+server 57.131.35.107:4232 # MO-ad-free
+server 212.95.35.240:4232 # eMule Cosmic
+server 213.141.198.207:4232 # Mazinga Server
+server 77.42.68.79:4232 # Nordic Server
+server 193.187.90.12:4661 # Drunken Donkey
+server 91.208.162.55:4235 # Sharing-Devils No.3
+server 85.137.248.210:56612 # aMule Server
+server 146.19.248.158:4325 # Sharing-Devils No.1
+server 91.126.170.253:5687 # Emule Sentinel
+server 186.64.120.70:4242 # ProsusCorp

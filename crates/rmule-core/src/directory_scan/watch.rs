@@ -30,7 +30,7 @@ use super::{
     DirectorySource, EntryKind, Known, Memory, ProgressCell, ScanPhase, ScanReport, Told, hash,
     set_phase,
 };
-use crate::registry::SharedFileEntry;
+use crate::registry::SharedRow;
 #[cfg(test)]
 pub(crate) use rewatch::REWATCH_DELAYS;
 pub(crate) use rewatch::{Rewatch, WatchStarter, pause, rewatch};
@@ -89,7 +89,7 @@ pub(crate) enum WatchEnd {
 
 /// The registry as the actor last wrote it, `None` when it cannot be had:
 /// what the Registry Check's rounds ask for.
-pub(crate) type RowsNow<'a> = &'a mut dyn FnMut() -> Option<Vec<SharedFileEntry>>;
+pub(crate) type RowsNow<'a> = &'a mut dyn FnMut() -> Option<Vec<SharedRow>>;
 
 /// What the loop asks the actor for: what is known as the actor last wrote
 /// it, `None` when it cannot be had.
@@ -243,7 +243,7 @@ struct Round<'a, 'r> {
     /// Where each shared content lives, kept current through the round.
     live: HashMap<FileHash, PathBuf>,
     /// The rows as the round began, by path.
-    at_path: HashMap<PathBuf, &'r SharedFileEntry>,
+    at_path: HashMap<PathBuf, &'r SharedRow>,
     whereabouts: &'a mut Whereabouts,
     told: &'a mut Told,
     report: &'a mut dyn FnMut(ScanReport),
@@ -406,6 +406,8 @@ impl Round<'_, '_> {
                 }
             }
         }
+        let (still, refused) = hash::admit(still);
+        self.told.refused(refused, self.report);
         let total = still.len();
         for (done, file) in still.into_iter().enumerate() {
             set_phase(

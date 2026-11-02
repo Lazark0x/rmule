@@ -10,7 +10,7 @@
 //! unconditionally reads 3 pairs — fewer pairs corrupts the wire.
 
 use rmule_peer::{
-    CompressedPart, PartOffsetWidth, PartRanges, PeerPacket, RequestParts, SendingPart,
+    CompressedPart, PartOffsetWidth, PartRanges, PeerPacket, RequestParts, SendingPart, WireFault,
 };
 use rmule_primitives::{FileHash, Packet, PacketProtocol};
 
@@ -42,8 +42,7 @@ fn requestparts_u32_encode_matches_handwritten_bytes() {
         (100, 200),
         (1_000_000, 2_000_000),
         (u32::MAX as u64, u32::MAX as u64),
-    ])
-    .unwrap();
+    ]);
     let req = RequestParts {
         file_hash: hash(),
         ranges,
@@ -66,7 +65,7 @@ fn requestparts_u32_encode_matches_handwritten_bytes() {
 #[test]
 fn requestparts_u64_encode_matches_handwritten_bytes_for_i64_variant() {
     let big = 5_000_000_000u64;
-    let ranges = PartRanges::new([(big, big + 100), (0, 0), (0, 0)]).unwrap();
+    let ranges = PartRanges::new([(big, big + 100), (0, 0), (0, 0)]);
     let req = RequestParts {
         file_hash: hash(),
         ranges,
@@ -88,7 +87,7 @@ fn requestparts_u64_encode_matches_handwritten_bytes_for_i64_variant() {
 
 #[test]
 fn requestparts_u32_encode_rejects_ranges_overflowing_u32() {
-    let ranges = PartRanges::new([(0, u32::MAX as u64 + 1), (0, 0), (0, 0)]).unwrap();
+    let ranges = PartRanges::new([(0, u32::MAX as u64 + 1), (0, 0), (0, 0)]);
     let req = RequestParts {
         file_hash: hash(),
         ranges,
@@ -98,7 +97,7 @@ fn requestparts_u32_encode_rejects_ranges_overflowing_u32() {
 
 #[test]
 fn requestparts_u64_encode_accepts_ranges_within_u32() {
-    let ranges = PartRanges::new([(100, 200), (0, 0), (0, 0)]).unwrap();
+    let ranges = PartRanges::new([(100, 200), (0, 0), (0, 0)]);
     let req = RequestParts {
         file_hash: hash(),
         ranges,
@@ -178,6 +177,25 @@ fn sendingpart_round_trips_with_decoder_choosing_variant_by_opcode() {
     assert!(sp.encode_packet(PartOffsetWidth::U64).is_ok());
 }
 
+/// These decoders are public: a direct caller's mismatched frame is a typed
+/// refusal, as every other decoder's is, never a panic.
+#[test]
+fn a_part_decoder_refuses_another_packets_frame() {
+    let hello = Packet::new(PacketProtocol::Edonkey, 0x01, vec![0u8; 16]);
+    assert!(matches!(
+        RequestParts::decode_packet(&hello),
+        Err(WireFault::WrongFrame(_))
+    ));
+    assert!(matches!(
+        SendingPart::decode_packet(&hello),
+        Err(WireFault::WrongFrame(_))
+    ));
+    assert!(matches!(
+        CompressedPart::decode_packet(&hello),
+        Err(WireFault::WrongFrame(_))
+    ));
+}
+
 #[test]
 fn sendingpart_u32_encode_rejects_offsets_above_u32_max() {
     let sp = SendingPart {
@@ -224,11 +242,11 @@ fn compressedpart_i64_uses_u64_start_but_keeps_u32_block_len() {
 }
 
 #[test]
-fn partranges_rejects_start_after_end() {
-    // Defensive constructor check — the wire allows it but the meaning
-    // is undefined; aMule treats start > end as malformed.
-    let r = PartRanges::new([(10, 5), (0, 0), (0, 0)]);
-    assert!(r.is_err());
+fn only_a_range_ending_past_its_start_is_live() {
+    let ranges = PartRanges::new([(10, 5), (0, 0), (7, 7)]);
+    assert_eq!(ranges.live().count(), 0);
+    let ranges = PartRanges::new([(10, 5), (20, 30), (0, 0)]);
+    assert_eq!(ranges.live().collect::<Vec<_>>(), [(20, 30)]);
 }
 
 #[test]

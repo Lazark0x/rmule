@@ -134,7 +134,9 @@ pub(crate) fn publish(
     .arg("--publish-file-size")
     .arg(size)
     .arg("--publish-buddy-id")
-    .arg(hex_lower(&plan.buddy_id));
+    // The row is written for the stock requester's reader, the aMule layout:
+    // its walk goes where the row's own reading points.
+    .arg(hex_lower(&rmule_primitives::kad_wire_id(plan.buddy_id)));
     if plan.after_firewalled_row {
         container = container.arg("--user-hash-hex").arg(FIREWALLED_USER_HASH);
     }

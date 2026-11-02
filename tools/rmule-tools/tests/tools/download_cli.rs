@@ -17,18 +17,17 @@ use rmule_primitives::{Ed2kFileLink, Ed2kText, FileHash, ServerEndpoint};
 /// test can open the same file.
 fn seed_one(data_dir: &std::path::Path, name: &str) -> u64 {
     let repo = DurableDownloadRepository::new(open_durable_store(data_dir).unwrap());
-    let file = Ed2kFileLink {
-        name: Ed2kText::from_utf8(name),
-        size: 11,
-        file_hash: FileHash::from_bytes([0x55; 16]),
-        part_hash_set: None,
-        aich_root: None,
-        ipv6_sources: Vec::new(),
-        sources: Default::default(),
-    };
+    let file = Ed2kFileLink::new(
+        Ed2kText::from_utf8(name),
+        11,
+        FileHash::from_bytes([0x55; 16]),
+    )
+    .expect("a size eD2k addresses");
     let server = ServerEndpoint::new("example.invalid", 4661).unwrap();
     let paths = DownloadPaths::from_final_path(data_dir.join(name));
-    let record = repo.create_download(&file, Some(&server), &paths).unwrap();
+    let record = repo
+        .create_download(&file, Some(&server), &paths, None)
+        .unwrap();
     record.id().as_u64()
 }
 

@@ -168,6 +168,11 @@ impl TcpStream {
         self.delivered.first().map_or(0.0, |(_, at)| *at)
     }
 
+    /// The capture time of every segment that added bytes, in offset order.
+    pub(crate) fn segment_times(&self) -> impl Iterator<Item = f64> + '_ {
+        self.delivered.iter().map(|(_, at)| *at)
+    }
+
     /// When the byte just before `end` was delivered.
     fn delivered_at(&self, end: usize) -> f64 {
         self.delivered

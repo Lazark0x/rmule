@@ -94,7 +94,7 @@ pub fn format_candidates(candidates: &[KadSourceCandidate]) -> Vec<String> {
 /// Parse an `--search` ed2k *file* link into a [`SourceLookupTarget`].
 pub fn parse_search_target(link: &str) -> Result<SourceLookupTarget> {
     match Ed2kLink::parse(link).with_context(|| format!("parse ed2k link {link}"))? {
-        Ed2kLink::File(file) => Ok(SourceLookupTarget::new(file.file_hash, file.size)),
+        Ed2kLink::File(file) => Ok(SourceLookupTarget::new(file.file_hash, file.size())),
         _ => bail!("--search must be an ed2k *file* link"),
     }
 }
@@ -141,8 +141,8 @@ pub async fn run_join(
     .await
     .context("spawn the Kad node")?;
 
-    println!(
-        "kad: node up id={} udp={} — the ONLY public-network path; no bytes are written to disk",
+    say!(
+        "kad: node up id={} udp={} — a diagnostic; nothing it hears is saved",
         hex16(id.as_bytes()),
         node.local_addr().port()
     );
@@ -153,7 +153,7 @@ pub async fn run_join(
         })
         .await
         .context("issue bootstrap")?;
-        println!(
+        say!(
             "kad: bootstrapping to {}:{}",
             endpoint.ip(),
             endpoint.udp_port()
@@ -177,7 +177,7 @@ pub async fn run_join(
         };
         match step {
             Step::Deadline => break,
-            Step::Census => println!("{}", format_census(&census, start.elapsed())),
+            Step::Census => say!("{}", format_census(&census, start.elapsed())),
             Step::FireSearch => {
                 if let Some(target) = search {
                     node.command(KadCommand::SearchSources {
@@ -185,7 +185,7 @@ pub async fn run_join(
                     })
                     .await
                     .context("issue source lookup")?;
-                    println!(
+                    say!(
                         "kad: source lookup fired for {}",
                         hex16(target.file_hash().as_bytes())
                     );
@@ -196,9 +196,9 @@ pub async fn run_join(
             Step::Event(Some(event)) => {
                 census.observe(&event);
                 if let KadEvent::SourcesFound { candidates, .. } = &event {
-                    println!("kad: sources found ({} row(s)):", candidates.len());
+                    say!("kad: sources found ({} row(s)):", candidates.len());
                     for line in format_candidates(candidates) {
-                        println!("{line}");
+                        say!("{line}");
                     }
                 }
             }
@@ -206,10 +206,12 @@ pub async fn run_join(
     }
 
     let summary = node.shutdown().await.context("clean node shutdown")?;
-    println!("{}", format_census(&census, start.elapsed()));
-    println!(
+    say!("{}", format_census(&census, start.elapsed()));
+    say!(
         "kad: done datagrams_in={} datagrams_out={} non_ipv4_dropped={}",
-        summary.datagrams_in, summary.datagrams_out, summary.non_ipv4_dropped
+        summary.datagrams_in,
+        summary.datagrams_out,
+        summary.non_ipv4_dropped
     );
     Ok(())
 }

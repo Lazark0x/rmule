@@ -51,7 +51,7 @@ fn asks(session: &mut PeerSession) -> Vec<u8> {
     session.handle_command(PeerCommand::Requester(RequesterCommand::RequestFile {
         file_hash,
         file_size: 700_001,
-        own_status: rmule_peer::PartBitmap::downloader_empty(700_001),
+        own_status: rmule_peer::WireStatus::downloader_empty(700_001),
         want_sources: true,
         want_aich_root: false,
     }));

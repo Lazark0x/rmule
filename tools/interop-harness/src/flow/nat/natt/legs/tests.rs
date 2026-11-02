@@ -110,6 +110,73 @@ fn a_transport_frame_that_arrived_fails_the_symmetric_negative() {
 
 /// `natt-caps-utp`: a CAPS-ACK counted on kno's own attachment contradicts the absence.
 #[test]
+fn a_requiring_target_passes_on_an_obfuscated_burst_and_fails_on_a_plain_one() {
+    let claim = "a-target-that-requires-the-crypt-layer-is-punched-through-it";
+    let run = |plain, obfuscated| {
+        punch_wire_claims(
+            NattFlow::ServerPunchCone,
+            &wire(&[
+                ("holepunch-datagrams-from-a", plain),
+                ("obfuscated-punch-from-a", obfuscated),
+            ]),
+        )
+    };
+    let obfuscated = run(2, 32);
+    assert_eq!(named(&obfuscated, claim).outcome, "held", "{obfuscated:?}");
+    assert_eq!(
+        named(
+            &obfuscated,
+            "both-peers-burst-at-the-endpoint-the-server-named"
+        )
+        .outcome,
+        "held",
+        "an obfuscated burst is a burst: {obfuscated:?}"
+    );
+    let plain = run(32, 0);
+    assert_ne!(named(&plain, claim).outcome, "held", "{plain:?}");
+    let untouched = punch_wire_claims(
+        NattFlow::ServerPunchCone,
+        &wire(&[("holepunch-datagrams-from-a", 19)]),
+    );
+    assert!(
+        !untouched.iter().any(|row| row.name == claim),
+        "{untouched:?}"
+    );
+}
+
+/// Score a retained punch run's wire rows again without driving the flow:
+/// `RMULE_BENCH_VERDICT_DIR=<run dir> cargo test -p rmule-interop-harness --lib
+/// rescore_a_retained_punch_run -- --ignored --nocapture`. The acceptance
+/// wrappers read the verdict file a run wrote; a claim changed since is only
+/// read again here.
+#[test]
+#[ignore = "scores a retained bench run named by RMULE_BENCH_VERDICT_DIR"]
+fn rescore_a_retained_punch_run() {
+    let dir = std::env::var("RMULE_BENCH_VERDICT_DIR").expect("RMULE_BENCH_VERDICT_DIR");
+    let path = std::path::Path::new(&dir).join("natt-server-punch-cone-verdict.toml");
+    let text = std::fs::read_to_string(&path).expect("the run's verdict");
+    let verdict: toml::Value = toml::from_str(&text).expect("verdict TOML");
+    let rows: Vec<WireRow> = verdict["wire"]
+        .as_array()
+        .expect("wire rows")
+        .iter()
+        .map(|row| WireRow {
+            name: row["name"].as_str().expect("row name").to_owned(),
+            bpf: row["bpf"].as_str().expect("row filter").to_owned(),
+            packets: row["packets"]
+                .as_integer()
+                .and_then(|packets| u64::try_from(packets).ok())
+                .expect("row count"),
+        })
+        .collect();
+    let claims = punch_wire_claims(NattFlow::ServerPunchCone, &rows);
+    for claim in &claims {
+        println!("{} {}: {}", claim.outcome, claim.name, claim.note);
+    }
+    assert!(claims.iter().all(|claim| claim.outcome == "held"));
+}
+
+#[test]
 fn a_caps_ack_on_the_wire_fails_its_absence() {
     let name = "no-caps-ack-crossed-the-wire";
     let silent = caps_utp_wire_claims(&wire(&[("caps-ack-in", 0)]));

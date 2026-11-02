@@ -15,6 +15,14 @@
 //! first, then comment, then AntiP2P taken at the *rightmost* colon whose tail
 //! matches the range shape (trailing bytes after the match are swallowed, and
 //! a value-invalid shape match is malformed — it never retries another colon).
+//!
+//! An IPv6 rule ([`ipv6`], ADR-0085) is tried after the comment and before
+//! AntiP2P: no IPv6 line can match the PeerGuardian shape, and an AntiP2P line
+//! whose description holds a colon is not an IPv6 rule, so it falls through.
+
+mod ipv6;
+
+pub(super) use ipv6::Ipv6Rule;
 
 /// What one line of an ipfilter file contributed.
 #[derive(Debug, PartialEq, Eq)]
@@ -23,6 +31,8 @@ pub(super) enum ParsedLine {
     /// (aMule `ScanIP` builds the same), `level` the access level (0 for the
     /// AntiP2P form).
     Range { start: u32, end: u32, level: u8 },
+    /// An IPv6 rule from the same file (ADR-0085).
+    Ipv6(Ipv6Rule),
     /// A comment or blank line — contributes nothing, counted nowhere.
     Ignored,
     /// aMule `yyip_Bad`: counted, discarded, never fails the load.
@@ -144,7 +154,8 @@ fn parse_anti_p2p(bytes: &[u8]) -> Option<ParsedLine> {
 /// mirrors the resolved flex precedence: PeerGuardian (listed first, and its
 /// `.*` tail always spans the whole line, so it wins every tie), then comment
 /// (whose whole-line `.*` outmatches any AntiP2P prefix on a `#` line), then
-/// AntiP2P, then blank; anything left is the `^.` bad-line rule.
+/// AntiP2P, then blank; anything left is the `^.` bad-line rule. An IPv6 rule
+/// is tried just before AntiP2P.
 pub(super) fn parse_line(line: &[u8]) -> ParsedLine {
     if let Some(parsed) = parse_peer_guardian(line) {
         return parsed;
@@ -155,6 +166,9 @@ pub(super) fn parse_line(line: &[u8]) -> ParsedLine {
     }
     if line[after_ws] == b'#' {
         return ParsedLine::Ignored;
+    }
+    if let Some(rule) = ipv6::parse_ipv6_rule(line) {
+        return ParsedLine::Ipv6(rule);
     }
     if let Some(parsed) = parse_anti_p2p(line) {
         return parsed;

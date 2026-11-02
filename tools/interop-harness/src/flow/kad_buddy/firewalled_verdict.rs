@@ -6,14 +6,13 @@
 //! opcodes the recipe targets. Present opcodes are noted; absent ones are
 //! documented as timer- or wiring-blocked, never fabricated.
 
-use std::fs;
-
-use anyhow::{Context, Result, bail};
+use anyhow::{Result, bail};
 
 use crate::artifacts::RunLayout;
 use crate::flow::evidence::{TapRow, read_tap_rows, read_verdict_log};
 use crate::flow::identity::ipv4_string;
 use crate::flow::kad_buddy::firewalled::{KAD_BUDDY_CALLBACK_OPCODES, KadFirewalledBuddyOptions};
+use crate::verdict::Verdict;
 
 /// The tap rows to or from the aMule at `amule_ip:hub_udp_port`.
 fn amule_rows(layout: &RunLayout, amule_ip: [u8; 4], hub_udp_port: u16) -> Result<Vec<TapRow>> {
@@ -54,13 +53,13 @@ pub(crate) fn assert_kad_firewalled_buddy(
         .collect();
 
     let verdict = if !buddy_hits.is_empty() {
-        "PASS"
+        Verdict::Pass
     } else if tcp_fw && inbound_from_amule > 0 {
         // Harness stands up + firewalled aMule reached rmule, but no buddy/
         // callback opcode inside the window: the documented timer/wiring block.
-        "OBSERVED"
+        Verdict::Observed
     } else {
-        "FAIL"
+        Verdict::Fail
     };
 
     let opcodes_hex: Vec<String> = {
@@ -86,11 +85,10 @@ pub(crate) fn assert_kad_firewalled_buddy(
         options.block_tcp, options.block_udp,
     );
     let verdict_path = layout.kad_dir().join("kad-firewalled-buddy-verdict.toml");
-    fs::write(&verdict_path, &verdict_toml)
-        .with_context(|| format!("write {}", verdict_path.display()))?;
+    crate::verdict::write(&verdict_path, &verdict_toml)?;
     println!("kad-firewalled-buddy verdict={verdict} buddy_hits={buddy_hits:?}");
 
-    if verdict == "FAIL" {
+    if verdict == Verdict::Fail {
         bail!(
             "flow K did not stand up: tcp_firewall_installed={tcp_fw}, \
              amule_datagrams_toward_rmule={inbound_from_amule} (expected firewall + ≥1 inbound)"
@@ -124,14 +122,14 @@ pub(crate) fn assert_kad_firewall_selfcheck(
     let responses_in = rows.iter().filter(|row| row.is("in", 0x58)).count();
 
     let verdict = if checks_out > 0 && responses_in > 0 {
-        "PASS"
+        Verdict::Pass
     } else if checks_out > 0 {
         // rmule fired its check but the open aMule's `0x58` did not land in the
         // window (lossy UDP / short window): the emission is proven, the reply
         // is not — documented, not fabricated (ADR-0045).
-        "OBSERVED"
+        Verdict::Observed
     } else {
-        "FAIL"
+        Verdict::Fail
     };
 
     let verdict_toml = format!(
@@ -145,14 +143,13 @@ pub(crate) fn assert_kad_firewall_selfcheck(
          # fixture). OBSERVED = the check emitted but no 0x58 landed in-window.\n",
     );
     let verdict_path = layout.kad_dir().join("kad-firewall-selfcheck-verdict.toml");
-    fs::write(&verdict_path, &verdict_toml)
-        .with_context(|| format!("write {}", verdict_path.display()))?;
+    crate::verdict::write(&verdict_path, &verdict_toml)?;
     println!(
         "kad-firewall-selfcheck verdict={verdict} armed={armed} \
          checks_out={checks_out} responses_in={responses_in}"
     );
 
-    if verdict == "FAIL" {
+    if verdict == Verdict::Fail {
         bail!(
             "requester leg did not fire: self_check_armed={armed}, \
              firewall_checks_out={checks_out} (expected rmule to emit ≥1 0x53/0x50 toward the aMule)"
@@ -185,11 +182,11 @@ pub(crate) fn assert_kad_buddy_recruit(
     let answers_in = rows.iter().filter(|row| row.is("in", 0x5A)).count();
 
     let verdict = if recruits_out > 0 && answers_in > 0 {
-        "PASS"
+        Verdict::Pass
     } else if recruits_out > 0 {
-        "OBSERVED"
+        Verdict::Observed
     } else {
-        "FAIL"
+        Verdict::Fail
     };
 
     let verdict_toml = format!(
@@ -205,14 +202,13 @@ pub(crate) fn assert_kad_buddy_recruit(
          # serve as a buddy (ADR-0061 refusal matrix); documented, not fabricated.\n",
     );
     let verdict_path = layout.kad_dir().join("kad-buddy-recruit-verdict.toml");
-    fs::write(&verdict_path, &verdict_toml)
-        .with_context(|| format!("write {}", verdict_path.display()))?;
+    crate::verdict::write(&verdict_path, &verdict_toml)?;
     println!(
         "kad-buddy-recruit verdict={verdict} armed={armed} \
          recruits_out={recruits_out} answers_in={answers_in} buddy_found={buddy_found}"
     );
 
-    if verdict == "FAIL" {
+    if verdict == Verdict::Fail {
         bail!(
             "recruit leg did not fire: recruit_armed={armed}, \
              findbuddy_req_out={recruits_out} (expected rmule to emit ≥1 0x51 toward the aMule)"

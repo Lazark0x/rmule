@@ -1,8 +1,7 @@
 //! The **Prediction Fan** over real loopback sockets (ADR-0091's
 //! port-prediction amendment): a Fan's burst leaves from as many ports as it
-//! has sockets, a reply to one of them is a hit that routes the peer there and
-//! is answered once, and the hit datagram reaches the ordinary `recv` as the
-//! peer's.
+//! has sockets, a reply to one of them is a hit that routes the peer there,
+//! and the hit datagram reaches the ordinary `recv` as the peer's.
 
 use std::collections::HashSet;
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
@@ -10,12 +9,11 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
-use rmule_net::ed2k::ClientUdpSocket;
+use rmule_net::ed2k::{ClientUdpSocket, PredictionFanId};
 use rmule_net::family::FamilySelection;
 use rmule_primitives::{Ipv4Endpoint, PeerEndpoint};
 use tokio::net::UdpSocket;
 
-const ANSWER: &[u8] = &[0xC5, 0xA1];
 const WAIT: Duration = Duration::from_secs(5);
 
 async fn recv_from(socket: &UdpSocket) -> (Vec<u8>, SocketAddrV4) {
@@ -32,6 +30,15 @@ async fn recv_from(socket: &UdpSocket) -> (Vec<u8>, SocketAddrV4) {
 
 fn v4(addr: SocketAddrV4) -> PeerEndpoint {
     PeerEndpoint::V4(Ipv4Endpoint::new(*addr.ip(), addr.port()))
+}
+
+/// One punch to `to` by every leg of `fan`.
+async fn punch(node: &ClientUdpSocket, fan: PredictionFanId, to: SocketAddrV4) {
+    for leg in node.prediction_fan_legs(fan) {
+        node.send_prediction_leg(leg, v4(to), b"punch")
+            .await
+            .expect("a leg");
+    }
 }
 
 #[tokio::test]
@@ -52,7 +59,6 @@ async fn a_hit_routes_the_peer_through_its_fan_socket_and_joins_recv() {
         .open_prediction_fan(
             peer_addr,
             4,
-            ANSWER.to_vec(),
             Arc::new(move |_| {
                 counted.fetch_add(1, Ordering::Relaxed);
             }),
@@ -62,10 +68,7 @@ async fn a_hit_routes_the_peer_through_its_fan_socket_and_joins_recv() {
 
     // Four sockets, four mappings: the burst leaves from four distinct ports,
     // none of them the advertised bind.
-    let sent = node
-        .prediction_fan_burst(fan, peer_addr, b"punch", Duration::ZERO)
-        .await;
-    assert_eq!(sent, 4);
+    punch(&node, fan, peer_addr).await;
     let mut sources = HashSet::new();
     for _ in 0..4 {
         let (bytes, from) = recv_from(&peer).await;
@@ -78,9 +81,6 @@ async fn a_hit_routes_the_peer_through_its_fan_socket_and_joins_recv() {
     // The peer reaches one of them: that is the hit.
     let hit = SocketAddrV4::new(Ipv4Addr::LOCALHOST, *sources.iter().next().unwrap());
     peer.send_to(b"probe", hit).await.expect("probe");
-    let (answer, answered_from) = recv_from(&peer).await;
-    assert_eq!(answer, ANSWER, "the hit socket answers once");
-    assert_eq!(answered_from, hit);
     let (bytes, from) = tokio::time::timeout(WAIT, node.recv())
         .await
         .expect("the hit reaches recv")
@@ -126,15 +126,13 @@ async fn a_fan_closed_without_keeping_routes_leaves_the_advertised_bind() {
         unreachable!()
     };
     let fan = node
-        .open_prediction_fan(peer_addr, 2, ANSWER.to_vec(), Arc::new(|_| {}))
+        .open_prediction_fan(peer_addr, 2, Arc::new(|_| {}))
         .await
         .expect("open the fan");
-    node.prediction_fan_burst(fan, peer_addr, b"punch", Duration::ZERO)
-        .await;
+    punch(&node, fan, peer_addr).await;
     let (_, first) = recv_from(&peer).await;
     let _ = recv_from(&peer).await;
     peer.send_to(b"probe", first).await.expect("probe");
-    let _ = recv_from(&peer).await; // the answer
     let _ = tokio::time::timeout(WAIT, node.recv()).await.expect("hit");
 
     node.close_prediction_fan(fan, false);

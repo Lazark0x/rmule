@@ -16,7 +16,7 @@ use rmule_core::port_mapping::MappingStatus;
 use rmule_core::{Core, CoreCommand, CoreConfig, CoreEvent, ServeCommand, ServeEvent, SocketRole};
 use rmule_net::portmap::{
     Gateway, MappedTransport, MappingBackend, MappingError, MappingFuture, MappingGrant,
-    MappingProtocol, MappingRequest, ProbeReport,
+    MappingProtocol, MappingRequest, ProbeReport, ReleaseOutcome,
 };
 use rmule_primitives::AddressFamily;
 use rmule_testkit::{FakeEd2kServer, FakeGateways, ScriptedBackend};
@@ -68,7 +68,7 @@ impl MappingBackend for GatedBackend {
         gateway: Gateway,
         request: MappingRequest,
         external_port: u16,
-    ) -> MappingFuture<'static, ()> {
+    ) -> MappingFuture<'static, ReleaseOutcome> {
         Arc::clone(&self.inner).release(gateway, request, external_port)
     }
 }

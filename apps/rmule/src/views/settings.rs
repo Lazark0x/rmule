@@ -34,79 +34,104 @@
 //!
 //! # Two gestures, because the fields are two kinds
 //!
-//! A selector has nothing to type into, so `←`/`→` step it and it commits on
-//! the spot. A text field needs an editing mode — `Enter` opens it, `Enter`
+//! A selector has nothing to type into, so `←`/`→` and `h`/`l` step it and it
+//! commits on the spot. A text field needs an editing mode — `Enter` opens it, `Enter`
 //! commits it, `Esc` restores what was stored — because a tab is not a modal
-//! and `q` must stay `q` while nobody is typing.
+//! and `q` must stay `q` while nobody is typing. Only those two leave an open
+//! field: one field commits at a time, so `Tab`, the arrows and the wheel stay
+//! on it, and it stays open with its typing until the store has the value.
 
 use std::time::Instant;
 
 use ratatui::Frame;
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
-use ratatui::layout::{Constraint, Layout, Rect};
+use ratatui::layout::{Constraint, Layout, Position, Rect};
 use ratatui::style::Style;
 use ratatui::text::Line;
-use ratatui::widgets::{Block, Paragraph};
+use ratatui::widgets::Paragraph;
 
 use crate::action::Action;
 use crate::config::{
-    ObfuscationChoice, PrefEdit, Preferences, ThemeChoice, validate_download_dir, validate_nickname,
+    AppFlag, ObfuscationChoice, PrefEdit, Preferences, ThemeChoice, validate_download_dir,
+    validate_nickname, validate_temp_dir,
 };
-use crate::form::{self, Field, Form, FormKey, validate_port, validate_url};
+use crate::form::{Field, Form, FormKey, validate_port, validate_url};
+use crate::row_filter::RowFilter;
+use crate::row_selection::viewport::{self, Viewport};
 use crate::state::UiState;
+use crate::table_sort::RowMove;
 use crate::theme::Theme;
-use crate::views::ViewOutcome;
+use crate::views::{View, ViewOutcome};
+use crate::words::Sentence;
+use crate::words::app as words;
 use crate::words::front_door;
+use crate::words::server as server_words;
+use crate::words::settings as words_s;
+use crate::words::{absent, hints};
 use crate::wrap::clamp_u16;
+use rmule_core::port_mapping::PortMappingMode;
+use rmule_core::{Flag, Setting};
 use shared_dirs::Slot;
 
 mod shared_dirs;
 
 /// The rows, in render order. The enum *is* the field list: it indexes the
 /// form, names the section breaks, and carries what a commit means, so a row
-/// cannot exist in one of those three places and be missing from another.
+/// cannot exist in one of those three places and be missing from another. A
+/// flag's row is its table row and its words; only its place is said here.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Row {
     DownloadDir,
+    TempDir,
     DataDir,
     Nickname,
     TcpPort,
     UdpPort,
     Obfuscation,
     PortMapping,
-    ConnectAtStart,
     ServerMetUrl,
-    AutoFetchServerMet,
+    ServerMetAutoUpdateUrls,
     DeadServerRetries,
     WithholdShares,
     RememberPeers,
+    PlayerCommand,
     NodesDatUrl,
-    AutoFetchNodesDat,
     Theme,
-    RunLogFull,
     UserHash,
     KadNodeId,
+    /// A core **Flag**.
+    Flag(Flag),
+    /// An [`AppFlag`].
+    AppFlag(AppFlag),
 }
 
 impl Row {
-    const ALL: [Row; 19] = [
+    const ALL: [Row; 27] = [
         Row::DownloadDir,
+        Row::TempDir,
         Row::DataDir,
         Row::Nickname,
         Row::TcpPort,
         Row::UdpPort,
         Row::Obfuscation,
         Row::PortMapping,
-        Row::ConnectAtStart,
+        Row::AppFlag(AppFlag::ConnectAtStart),
         Row::ServerMetUrl,
-        Row::AutoFetchServerMet,
+        Row::Flag(Flag::AutoFetchServerMet),
+        Row::Flag(Flag::AutoUpdateServerMet),
+        Row::ServerMetAutoUpdateUrls,
         Row::DeadServerRetries,
         Row::WithholdShares,
         Row::RememberPeers,
+        Row::PlayerCommand,
         Row::NodesDatUrl,
-        Row::AutoFetchNodesDat,
+        Row::Flag(Flag::AutoFetchNodesDat),
         Row::Theme,
-        Row::RunLogFull,
+        Row::AppFlag(AppFlag::TerminalTitle),
+        Row::AppFlag(AppFlag::ReaderMode),
+        Row::AppFlag(AppFlag::CompletionBell),
+        Row::AppFlag(AppFlag::Mouse),
+        Row::AppFlag(AppFlag::RunLogFull),
         Row::UserHash,
         Row::KadNodeId,
     ];
@@ -114,16 +139,16 @@ impl Row {
     /// The heading this row opens, if it is the first of a group.
     const fn section(self) -> Option<&'static str> {
         match self {
-            Row::DownloadDir => Some("Paths"),
-            Row::Nickname => Some("Network"),
-            Row::DeadServerRetries => Some("Servers"),
-            Row::RememberPeers => Some("Downloads"),
+            Row::DownloadDir => Some(words_s::PATHS),
+            Row::Nickname => Some(words_s::NETWORK),
+            Row::DeadServerRetries => Some(words_s::SERVERS),
+            Row::RememberPeers => Some(words_s::DOWNLOADS),
             // Not a Kad row any more: reask, NAT-T and Kad share this one
             // socket (ADR-0057), so it belongs beside the eD2k listen port.
-            Row::NodesDatUrl => Some("Kad"),
-            Row::Theme => Some("Appearance"),
-            Row::RunLogFull => Some("Diagnostics"),
-            Row::UserHash => Some("Identity — minted once, never edited"),
+            Row::NodesDatUrl => Some(words_s::KAD),
+            Row::Theme => Some(words_s::APPEARANCE),
+            Row::AppFlag(AppFlag::RunLogFull) => Some(words_s::DIAGNOSTICS),
+            Row::UserHash => Some(words_s::IDENTITY),
             _ => None,
         }
     }
@@ -131,69 +156,69 @@ impl Row {
 
 /// The **Dead Server Limit** as an operator types it: a whole number from 1
 /// to 10, aMule's own spin box's range (`muuli_wdr.cpp:1659`).
-fn validate_dead_after(text: &str) -> Result<u32, String> {
+fn validate_dead_after(text: &str) -> Result<u32, Sentence> {
     text.trim()
         .parse::<u32>()
         .ok()
         .filter(|limit| (1..=10).contains(limit))
-        .ok_or_else(|| "dead after: a whole number of tries from 1 to 10".to_string())
+        .ok_or(words::DEAD_AFTER_REFUSED)
 }
 
 /// `Remember peers` as an operator types it: a whole number from 1 to 255
 /// (ADR-0109, "Source Seeds").
-fn validate_remember_peers(text: &str) -> Result<rmule_core::RememberPeers, String> {
+fn validate_remember_peers(text: &str) -> Result<rmule_core::RememberPeers, Sentence> {
     text.trim()
         .parse::<std::num::NonZeroU8>()
         .map(rmule_core::RememberPeers::new)
-        .map_err(|_| crate::words::download::REMEMBER_PEERS_REFUSED.to_string())
+        .map_err(|_| words::REMEMBER_PEERS_REFUSED)
 }
 
-/// Where a restart-shaped row says so.
-const ON_RESTART: &str = "(on restart)";
-
-/// The on/off selector's two options, in index order.
-const ON_OFF: [&str; 2] = ["off", "on"];
-
-/// The connect-at-start row's note: which server a start would dial, or that
-/// none has been connected to yet.
-fn connect_at_start_note(last: Option<&rmule_primitives::ServerEndpoint>) -> String {
-    match last {
-        Some(server) => format!(
-            "at start, to {}:{}  (on restart)",
-            server.host(),
-            server.port()
-        ),
-        None => "at start, to the last server — none yet  (on restart)".to_string(),
+/// The **Player Command** as an operator types it (ADR-0114): empty clears
+/// it; any other text must split into a player's words.
+fn player_command(text: &str) -> Result<Option<String>, Sentence> {
+    let text = text.trim();
+    if text.is_empty() {
+        return Ok(None);
     }
+    crate::player::split(text)
+        .map(|_| Some(text.to_string()))
+        .map_err(crate::words::player::field_refusal)
 }
-
-/// What an unknown display-only fact reads.
-const DASH: &str = "—";
 
 /// The Settings view. Holds view state only (ADR-0069): the form's cursor and
-/// typing, whether a text field is open for editing, and the scroll offset.
+/// typing, whether a text field is open for editing, and its Viewport.
 /// Every *value* comes from [`UiState::preferences`].
 pub struct SettingsView {
     form: Form,
     /// `true` while a text field is open: the form owns every key, so a
     /// binding letter is a character and not a command.
     editing: bool,
-    /// First rendered display line, so a long form scrolls under a short pane.
-    offset: usize,
+    /// What part of the form is on screen, in display lines, so a long form
+    /// scrolls under a short pane.
+    viewport: Viewport,
     /// Field index behind each rendered display line, from the last draw — the
     /// map a click needs once a row can wrap to more than one line.
     line_rows: Vec<Option<usize>>,
     /// The form's inner rect from the last draw, for click hit-testing.
     body: Rect,
-    /// A download directory whose commit has shown the disclosure warning
-    /// (ADR-0101) and waits for the second `Enter` that confirms it.
+    /// A directory whose commit has shown its warning — the disclosure of a
+    /// download directory (ADR-0101), a Temp dir that does not exist yet — and
+    /// waits for the second `Enter` that confirms it.
     warned_dir: Option<std::path::PathBuf>,
+    /// `/`: the rows it keeps.
+    filter: RowFilter,
+    /// A directory sent to be shared and the count of refusals when it went:
+    /// a refusal of it after that brings the add row back with its text.
+    sent_dir: Option<(std::path::PathBuf, u64)>,
     /// What each form row stands for, in form order.
     slots: Vec<Slot>,
     /// A shared directory whose remove confirm is open.
     removing: Option<std::path::PathBuf>,
     /// The disclosure questions this view answered (`ScanConsent::asked`).
     answered: std::collections::BTreeSet<u64>,
+    /// What part of the remove confirm or a disclosure question is on
+    /// screen, in a frame too short for it.
+    modal_viewport: std::cell::Cell<Viewport>,
 }
 
 impl Default for SettingsView {
@@ -202,15 +227,23 @@ impl Default for SettingsView {
         Self {
             form,
             editing: false,
-            offset: 0,
+            viewport: Viewport::default(),
             line_rows: Vec::new(),
             body: Rect::default(),
             warned_dir: None,
+            filter: RowFilter::default(),
+            sent_dir: None,
             slots,
             removing: None,
             answered: std::collections::BTreeSet::new(),
+            modal_viewport: std::cell::Cell::default(),
         }
     }
+}
+
+/// An on/off row.
+fn on_off(label: &'static str, on: bool) -> Field {
+    Field::choice(label, words_s::ON_OFF.to_vec(), usize::from(on))
 }
 
 /// Build the whole form from a preference snapshot and the shared
@@ -227,99 +260,110 @@ fn build(prefs: &Preferences, state: &UiState) -> (Form, Vec<Slot>) {
         .position(|choice| *choice == prefs.theme)
         .unwrap_or(0);
 
+    let core = &prefs.core;
     let fields = Row::ALL.map(|row| {
         let field = match row {
-            Row::DownloadDir => Field::text("Download dir", path(&prefs.download_dir))
-                .with_placeholder("unset — downloads have nowhere to land"),
+            Row::DownloadDir => Field::directory(words_s::DOWNLOAD_DIR, path(&core.download_dir))
+                .with_placeholder(words_s::DOWNLOAD_DIR_UNSET),
+            // Unset, the row names the directory core reads by default.
+            Row::TempDir => Field::directory(words_s::TEMP_DIR, path(&core.temp_dir))
+                .with_placeholder(crate::words::app::temp_dir_default(
+                    prefs
+                        .data_dir
+                        .as_ref()
+                        .map(|dir| rmule_core::CoreSettings::default_temp_dir(&dir.path))
+                        .as_deref(),
+                )),
             Row::DataDir => match &prefs.data_dir {
-                Some(dir) => Field::display("Data dir", dir.path.display().to_string())
-                    .with_note(format!("({})", front_door::source_words(dir.source))),
-                None => Field::display("Data dir", DASH.to_string())
-                    .with_note(format!("({})", front_door::NO_DATA_DIR)),
+                Some(dir) => Field::display(words_s::DATA_DIR, dir.path.display().to_string())
+                    .with_note(words_s::bracketed(front_door::source_words(dir.source))),
+                None => Field::display(words_s::DATA_DIR, absent::NONE.to_string())
+                    .with_note(words_s::bracketed(front_door::NO_DATA_DIR)),
             },
-            Row::Nickname => Field::text("Nickname", prefs.nickname.clone()).with_note(ON_RESTART),
-            Row::TcpPort => {
-                Field::text("eD2k port", prefs.tcp_port.to_string()).with_note(ON_RESTART)
+            Row::Nickname => {
+                Field::text(words_s::NICKNAME, core.nickname.clone()).with_note(words_s::ON_RESTART)
             }
-            Row::ServerMetUrl => {
-                Field::text("server.met", prefs.server_met_url.clone()).with_note("(Networks: U)")
-            }
-            Row::AutoFetchServerMet => Field::choice(
-                "Fetch list",
-                ON_OFF.to_vec(),
-                usize::from(prefs.auto_fetch_server_met),
+            Row::TcpPort => Field::text(words_s::ED2K_PORT, core.tcp_port.to_string())
+                .with_note(words_s::ON_RESTART),
+            Row::ServerMetUrl => Field::text(words_s::SERVER_MET, core.server_met_url.clone())
+                .with_note(words_s::SERVER_MET_NOTE),
+            Row::ServerMetAutoUpdateUrls => Field::text(
+                server_words::AUTO_UPDATE_URLS_LABEL,
+                core.server_met_auto_update_urls.join(" "),
             )
-            .with_note("server.met at start when the list is empty  (on restart)"),
-            Row::UdpPort => {
-                Field::text("UDP port", prefs.udp_port.to_string()).with_note(ON_RESTART)
-            }
+            .with_placeholder(server_words::AUTO_UPDATE_URLS_NONE)
+            .with_note(server_words::AUTO_UPDATE_URLS_NOTE),
+            Row::UdpPort => Field::text(words_s::UDP_PORT, core.udp_port.to_string())
+                .with_note(words_s::ON_RESTART),
             Row::Obfuscation => Field::choice(
-                "Obfuscation",
-                ObfuscationChoice::ALL.map(ObfuscationChoice::name).to_vec(),
+                words_s::OBFUSCATION,
+                ObfuscationChoice::ALL
+                    .map(words_s::obfuscation_word)
+                    .to_vec(),
                 ObfuscationChoice::ALL
                     .iter()
-                    .position(|choice| *choice == prefs.obfuscation)
+                    .position(|choice| *choice == ObfuscationChoice::of(core.obfuscation))
                     .unwrap_or(0),
             )
-            .with_note("peer TCP/UDP + Kad + server UDP"),
-            Row::PortMapping => Field::choice(
-                "Port mapping",
-                ON_OFF.to_vec(),
-                usize::from(prefs.port_mapping),
+            .with_note(words_s::OBFUSCATION_NOTE),
+            Row::PortMapping => on_off(
+                words_s::PORT_MAPPING,
+                core.port_mapping == PortMappingMode::Auto,
             )
-            .with_note("opens router ports: UPnP, PCP, NAT-PMP  (on restart)"),
-            Row::ConnectAtStart => Field::choice(
-                "Autoconnect",
-                ON_OFF.to_vec(),
-                usize::from(prefs.connect_at_start),
+            .with_note(words_s::PORT_MAPPING_NOTE),
+            Row::DeadServerRetries => Field::text(
+                words_s::DEAD_AFTER,
+                core.server_policy.dead_after.to_string(),
             )
-            .with_note(connect_at_start_note(prefs.last_server.as_ref())),
-            Row::DeadServerRetries => {
-                Field::text("Dead after", prefs.dead_server_retries.to_string())
-                    .with_note("failed tries in a row; a dead server stays listed")
-            }
-            Row::WithholdShares => Field::choice(
-                "Hide shares",
-                ON_OFF.to_vec(),
-                usize::from(prefs.withhold_shares),
+            .with_note(words_s::DEAD_AFTER_NOTE),
+            Row::WithholdShares => on_off(
+                words_s::HIDE_SHARES,
+                core.server_policy.withhold_from_related_search,
             )
-            .with_note("from servers that answer related searches"),
-            Row::RememberPeers => {
-                Field::text("Remember peers", prefs.remember_peers.get().to_string())
-                    .with_note(crate::words::download::REMEMBER_PEERS_NOTE)
-            }
-            Row::NodesDatUrl => {
-                Field::text("nodes.dat", prefs.nodes_dat_url.clone()).with_note(ON_RESTART)
-            }
-            Row::AutoFetchNodesDat => Field::choice(
-                "Fetch seeds",
-                ON_OFF.to_vec(),
-                usize::from(prefs.auto_fetch_nodes_dat),
+            .with_note(words_s::HIDE_SHARES_NOTE),
+            Row::RememberPeers => Field::text(
+                words_s::REMEMBER_PEERS,
+                core.remember_peers.get().to_string(),
             )
-            .with_note("nodes.dat on first Kad start  (on restart)"),
+            .with_note(crate::words::download::REMEMBER_PEERS_NOTE),
+            Row::PlayerCommand => Field::text(
+                words_s::PLAYER,
+                prefs.player_command.clone().unwrap_or_default(),
+            )
+            .with_placeholder(crate::words::player::UNSET),
+            Row::NodesDatUrl => Field::text(words_s::NODES_DAT, core.nodes_dat_url.clone())
+                .with_note(words_s::ON_RESTART),
             Row::Theme => Field::choice(
-                "Theme",
-                ThemeChoice::ALL.map(ThemeChoice::name).to_vec(),
+                words_s::THEME,
+                ThemeChoice::ALL.map(words_s::theme_word).to_vec(),
                 theme_index,
             )
-            .with_note("auto = RMULE_THEME / COLORTERM"),
-            Row::RunLogFull => Field::choice(
-                "Full run log",
-                ON_OFF.to_vec(),
-                usize::from(prefs.run_log_full),
-            )
-            .with_note("adds peers, files and paths to rmule.log"),
+            .with_note(words_s::THEME_NOTE),
+            Row::Flag(flag) => {
+                let words = words_s::flag_words(flag);
+                on_off(words.label, core.flags.is_on(flag)).with_note(words.note)
+            }
+            Row::AppFlag(flag) => {
+                let words = words_s::app_flag_words(flag);
+                let field = on_off(words.label, prefs.flags.is_on(flag));
+                if flag == AppFlag::ConnectAtStart {
+                    field.with_note(words_s::connect_at_start_note(prefs.last_server.as_ref()))
+                } else {
+                    field.with_note(words.note)
+                }
+            }
             Row::UserHash => Field::display(
-                "User hash",
+                words_s::USER_HASH,
                 prefs
                     .user_hash
-                    .map_or_else(|| DASH.to_string(), |hash| hex(hash.as_bytes())),
+                    .map_or_else(|| absent::UNKNOWN.to_string(), |hash| hex(hash.as_bytes())),
             ),
             Row::KadNodeId => Field::display(
-                "Kad node ID",
-                prefs
-                    .kad_node_id
-                    .map_or_else(|| DASH.to_string(), |id| hex(id.as_bytes().as_slice())),
+                words_s::KAD_NODE_ID,
+                prefs.kad_node_id.map_or_else(
+                    || absent::UNKNOWN.to_string(),
+                    |id| hex(id.as_bytes().as_slice()),
+                ),
             ),
         };
         match row.section() {
@@ -359,55 +403,97 @@ impl SettingsView {
         fresh.error = self.form.error.take();
         self.form = fresh;
         self.slots = slots;
+        self.reopen_refused_add(state);
+        self.narrow();
+    }
+
+    /// Show the rows the Row Filter keeps: by label, value and section.
+    fn narrow(&mut self) {
+        if self.filter.is_empty() {
+            self.form.hidden.clear();
+            return;
+        }
+        let filter = &self.filter;
+        self.form.narrow(|field| {
+            filter.keeps(
+                [field.label, field.searched_value()]
+                    .into_iter()
+                    .chain(field.section),
+            )
+        });
+    }
+
+    /// Whether the keys a Row Filter leaves are open: nothing being edited,
+    /// no question up.
+    fn offer_filter(&mut self, key: &KeyEvent, state: &UiState) -> Option<ViewOutcome> {
+        let outcome = self.filter.key(key, true)?;
+        self.sync(state);
+        self.narrow();
+        Some(outcome)
     }
 
     /// Validate the focused field into the edit it names, or the reason it is
     /// not one. Cross-field checks live here because this is the only place
     /// that can see the other fields.
-    fn commit(&self, prefs: &Preferences) -> Result<Option<PrefEdit>, String> {
+    fn commit(&self, prefs: &Preferences) -> Result<Option<PrefEdit>, Sentence> {
         let index = self.form.focus;
         let text = self.form.text(index);
         let row = match self.slots.get(index) {
             Some(Slot::Row(row)) => Some(*row),
             _ => None,
         };
+        let on = self.form.choice(index) == 1;
         let edit = match row.as_ref() {
-            Some(Row::DownloadDir) => PrefEdit::DownloadDir(validate_download_dir(text)?),
-            Some(Row::Nickname) => PrefEdit::Nickname(validate_nickname(text)?),
+            Some(Row::DownloadDir) => PrefEdit::download_dir(validate_download_dir(text)?),
+            Some(Row::TempDir) => PrefEdit::Core(Setting::TempDir(validate_temp_dir(text)?)),
+            Some(Row::Nickname) => PrefEdit::Core(Setting::Nickname(validate_nickname(text)?)),
             Some(Row::TcpPort) => {
                 let port = validate_port(text)?;
-                if port == prefs.udp_port {
-                    return Err("the eD2k port must differ from the UDP port".to_string());
+                if port == prefs.core.udp_port {
+                    return Err(words::port_clash(words::PortClash::TcpAgainstUdp));
                 }
-                PrefEdit::TcpPort(port)
+                PrefEdit::Core(Setting::TcpPort(port))
             }
             Some(Row::UdpPort) => {
                 let port = validate_port(text)?;
-                if port == prefs.tcp_port {
-                    return Err("the UDP port must differ from the eD2k port".to_string());
+                if port == prefs.core.tcp_port {
+                    return Err(words::port_clash(words::PortClash::UdpAgainstTcp));
                 }
-                PrefEdit::UdpPort(port)
+                PrefEdit::Core(Setting::UdpPort(port))
             }
-            Some(Row::ServerMetUrl) => PrefEdit::ServerMetUrl(validate_url(text)?.to_string()),
-            Some(Row::DeadServerRetries) => PrefEdit::DeadServerRetries(validate_dead_after(text)?),
-            Some(Row::RememberPeers) => PrefEdit::RememberPeers(validate_remember_peers(text)?),
-            Some(Row::NodesDatUrl) => PrefEdit::NodesDatUrl(validate_url(text)?.to_string()),
-            Some(Row::ConnectAtStart) => PrefEdit::ConnectAtStart(self.form.choice(index) == 1),
-            Some(Row::PortMapping) => PrefEdit::PortMapping(self.form.choice(index) == 1),
-            Some(Row::RunLogFull) => PrefEdit::RunLogFull(self.form.choice(index) == 1),
-            Some(Row::WithholdShares) => PrefEdit::WithholdShares(self.form.choice(index) == 1),
-            Some(Row::AutoFetchServerMet) => {
-                PrefEdit::AutoFetchServerMet(self.form.choice(index) == 1)
+            Some(Row::ServerMetUrl) => {
+                PrefEdit::Core(Setting::ServerMetUrl(validate_url(text)?.to_string()))
             }
-            Some(Row::AutoFetchNodesDat) => {
-                PrefEdit::AutoFetchNodesDat(self.form.choice(index) == 1)
+            Some(Row::ServerMetAutoUpdateUrls) => PrefEdit::Core(Setting::ServerMetAutoUpdateUrls(
+                text.split_whitespace()
+                    .map(|url| validate_url(url).map(str::to_owned))
+                    .collect::<Result<_, _>>()?,
+            )),
+            Some(Row::DeadServerRetries) => {
+                PrefEdit::Core(Setting::DeadServerRetries(validate_dead_after(text)?))
             }
-            Some(Row::Obfuscation) => PrefEdit::Obfuscation(
+            Some(Row::RememberPeers) => {
+                PrefEdit::Core(Setting::RememberPeers(validate_remember_peers(text)?))
+            }
+            Some(Row::PlayerCommand) => PrefEdit::PlayerCommand(player_command(text)?),
+            Some(Row::NodesDatUrl) => {
+                PrefEdit::Core(Setting::NodesDatUrl(validate_url(text)?.to_string()))
+            }
+            Some(Row::Flag(flag)) => PrefEdit::Core(Setting::Flag(*flag, on)),
+            Some(Row::AppFlag(flag)) => PrefEdit::Flag(*flag, on),
+            Some(Row::PortMapping) => PrefEdit::Core(Setting::PortMapping(if on {
+                PortMappingMode::Auto
+            } else {
+                PortMappingMode::Off
+            })),
+            Some(Row::WithholdShares) => PrefEdit::Core(Setting::WithholdShares(on)),
+            Some(Row::Obfuscation) => PrefEdit::Core(Setting::Obfuscation(
                 ObfuscationChoice::ALL
                     .get(self.form.choice(index))
                     .copied()
-                    .unwrap_or_default(),
-            ),
+                    .unwrap_or_default()
+                    .policy(),
+            )),
             Some(Row::Theme) => PrefEdit::Theme(
                 ThemeChoice::ALL
                     .get(self.form.choice(index))
@@ -421,32 +507,143 @@ impl SettingsView {
         Ok(Some(edit))
     }
 
+    /// Validate the focused field and hand the app the edit — or keep the form
+    /// up with the reason under it and the typing intact.
+    fn emit(&mut self, prefs: &Preferences) -> ViewOutcome {
+        match self.commit(prefs) {
+            // Everything under a download directory is offered to the network
+            // (ADR-0101): the first `Enter` has the app ask the share guards,
+            // which warn through [`Self::warn_share`] when they pass; the
+            // second commits.
+            Ok(Some(PrefEdit::Core(Setting::DownloadDir { dir, .. })))
+                if self.warned_dir.as_ref() != Some(&dir) =>
+            {
+                ViewOutcome::Emit(Action::ConfirmDownloadDir(dir))
+            }
+            // A Temp dir that does not exist is made at the set: said first,
+            // since the path may be a typo.
+            Ok(Some(PrefEdit::Core(Setting::TempDir(Some(dir)))))
+                if !dir.exists() && self.warned_dir.as_ref() != Some(&dir) =>
+            {
+                self.form.error = Some(words::temp_dir_missing(&dir));
+                self.warned_dir = Some(dir);
+                ViewOutcome::Redraw
+            }
+            Ok(Some(edit)) => ViewOutcome::Emit(Action::SettingsEdit(edit)),
+            Ok(None) => ViewOutcome::Redraw,
+            Err(reason) => {
+                self.form.error = Some(reason);
+                ViewOutcome::Redraw
+            }
+        }
+    }
+
+    /// The store took the value: the field closes.
+    pub(crate) fn saved(&mut self) {
+        self.editing = false;
+        self.warned_dir = None;
+        self.form.error = None;
+    }
+
+    /// The value was not taken: `why` under the field, the typing kept.
+    pub(crate) fn refused(&mut self, why: Sentence) {
+        self.warned_dir = None;
+        self.form.error = Some(why);
+    }
+
+    /// The share guards pass `dir`: say that everything under it will be
+    /// offered, and that it will be made if it is not there, and let the next
+    /// `Enter` commit it.
+    pub fn warn_share(&mut self, dir: std::path::PathBuf) {
+        self.form.error = Some(if dir.exists() {
+            words::share_warning(&dir)
+        } else {
+            words::share_warning_missing(&dir)
+        });
+        self.warned_dir = Some(dir);
+    }
+
+    /// The download directory whose share warning waits for its confirm.
+    #[cfg(test)]
+    pub(crate) fn warned_dir(&self) -> Option<&std::path::Path> {
+        self.warned_dir.as_deref()
+    }
+
+    /// What stands under the open field.
+    #[cfg(test)]
+    pub(crate) fn refusal(&self) -> Option<&str> {
+        self.form.error.as_deref()
+    }
+}
+
+impl View for SettingsView {
+    /// Whether an open field holds the keyboard. A question over it reads
+    /// key codes alone, so no chord may reach it as its letter.
+    fn text_open(&self, state: &UiState) -> bool {
+        (self.editing || self.filter.typing())
+            && self.removing.is_none()
+            && crate::views::shared_files::scan::open_consent(state, &self.answered, true).is_none()
+    }
+
+    /// A paste into the field open for editing, whole.
+    fn handle_paste(&mut self, text: &str, _state: &UiState) -> ViewOutcome {
+        if let Some(outcome) = self.filter.paste(text) {
+            self.narrow();
+            return outcome;
+        }
+        if self.editing && self.form.paste(text) {
+            ViewOutcome::Redraw
+        } else {
+            ViewOutcome::Ignored
+        }
+    }
+
     /// Offer one key the globals did not claim. While a field is
     /// open every printable is text; otherwise the row cursor moves and
     /// unclaimed keys bubble out as [`ViewOutcome::Ignored`].
-    pub fn handle_key(&mut self, key: KeyEvent, state: &UiState) -> ViewOutcome {
+    fn handle_key(&mut self, key: KeyEvent, state: &UiState) -> ViewOutcome {
         self.sync(state);
         if let Some(consent) =
             crate::views::shared_files::scan::open_consent(state, &self.answered, true)
         {
-            return crate::views::shared_files::scan::consent_key(key, consent, &mut self.answered);
+            return crate::views::shared_files::scan::consent_key(
+                key,
+                consent,
+                (&mut self.answered, &mut self.modal_viewport),
+            );
         }
         if self.removing.is_some() {
             return self.remove_key(key);
         }
 
+        if !self.editing
+            && let Some(outcome) = self.offer_filter(&key, state)
+        {
+            return outcome;
+        }
+        if !self.editing && self.form.focus_left_out() {
+            return ViewOutcome::Ignored;
+        }
+
         // A selector commits where it is stepped: there is nothing to type, so
         // an editing mode for one would be ceremony with no purpose.
-        if self.form.focus_is_choice()
-            && matches!(key.code, KeyCode::Left | KeyCode::Right | KeyCode::Enter)
+        if !self.editing
+            && self.form.focus_is_choice()
+            && matches!(
+                key.code,
+                KeyCode::Left | KeyCode::Right | KeyCode::Enter | KeyCode::Char('h' | 'l')
+            )
         {
-            self.form.step_choice(key.code != KeyCode::Left);
+            let back = matches!(key.code, KeyCode::Left | KeyCode::Char('h'));
+            self.form.step_choice(!back);
             return self.emit(&state.preferences);
         }
 
         if self.editing {
-            return match self.form.handle_key(key) {
-                FormKey::Commit if self.focused_slot() == Some(&Slot::AddDir) => self.send_add(),
+            return match self.form.field_key(key) {
+                FormKey::Commit if self.focused_slot() == Some(&Slot::AddDir) => {
+                    self.send_add(state)
+                }
                 FormKey::Commit => self.emit(&state.preferences),
                 FormKey::Cancel => {
                     // Restore: the next sync rebuilds from what is stored.
@@ -462,23 +659,12 @@ impl SettingsView {
             };
         }
 
+        if let Some(movement) = RowMove::of(key.code) {
+            let page = usize::try_from(self.viewport.page()).unwrap_or(1);
+            self.form.walk(movement, page);
+            return ViewOutcome::Redraw;
+        }
         match key.code {
-            KeyCode::Char('j') | KeyCode::Down => {
-                self.form.step_focus(true);
-                ViewOutcome::Redraw
-            }
-            KeyCode::Char('k') | KeyCode::Up => {
-                self.form.step_focus(false);
-                ViewOutcome::Redraw
-            }
-            KeyCode::Char('g') => {
-                self.form.focus_first();
-                ViewOutcome::Redraw
-            }
-            KeyCode::Char('G') => {
-                self.form.focus_last();
-                ViewOutcome::Redraw
-            }
             // A listed directory is not typed into.
             KeyCode::Enter if self.form.focus_is_item() => ViewOutcome::Redraw,
             KeyCode::Enter => {
@@ -492,54 +678,13 @@ impl SettingsView {
         }
     }
 
-    /// Validate the focused field and hand the app the edit — or keep the form
-    /// up with the reason under it and the typing intact.
-    fn emit(&mut self, prefs: &Preferences) -> ViewOutcome {
-        match self.commit(prefs) {
-            // Everything under a download directory is offered to the network
-            // (ADR-0101): the first `Enter` has the app ask the share guards,
-            // which warn through [`Self::warn_share`] when they pass; the
-            // second commits.
-            Ok(Some(PrefEdit::DownloadDir(dir))) if self.warned_dir.as_ref() != Some(&dir) => {
-                ViewOutcome::Emit(Action::ConfirmDownloadDir(dir))
-            }
-            Ok(Some(edit)) => {
-                self.warned_dir = None;
-                self.editing = false;
-                self.form.error = None;
-                ViewOutcome::Emit(Action::Preference(edit))
-            }
-            Ok(None) => ViewOutcome::Redraw,
-            Err(reason) => {
-                self.form.error = Some(reason);
-                ViewOutcome::Redraw
-            }
-        }
-    }
-
-    /// The share guards pass `dir`: say that everything under it will be
-    /// offered, and let the next `Enter` commit it.
-    pub fn warn_share(&mut self, dir: std::path::PathBuf) {
-        self.form.error = Some(format!(
-            "everything under {} will be offered to the network — Enter to confirm, Esc to cancel",
-            dir.display()
-        ));
-        self.warned_dir = Some(dir);
-    }
-
-    /// The download directory whose share warning waits for its confirm.
-    #[cfg(test)]
-    pub(crate) fn warned_dir(&self) -> Option<&std::path::Path> {
-        self.warned_dir.as_deref()
-    }
-
     /// A click selects the field it landed on. Editing stays keyboard-only,
     /// like every other form in this crate.
-    pub fn handle_click(&mut self, column: u16, row: u16, _state: &UiState) -> ViewOutcome {
+    fn handle_click(&mut self, column: u16, row: u16, _state: &UiState) -> ViewOutcome {
         if self.editing || !crate::views::pane_hit(self.body, column, row) {
             return ViewOutcome::Ignored;
         }
-        let line = usize::from(row - self.body.y) + self.offset;
+        let line = usize::from(row - self.body.y) + self.viewport.first();
         if let Some(Some(index)) = self.line_rows.get(line)
             && self.form.fields[*index].focusable()
         {
@@ -550,95 +695,130 @@ impl SettingsView {
 
     /// Render one frame into `area` (spec §6 return). Re-reads the
     /// stored preferences first, except while a field is open — an edit in
-    /// progress outranks the snapshot underneath it.
-    pub fn draw(
+    /// progress outranks the snapshot underneath it. Returns where the caret
+    /// of an open field is.
+    fn draw(
         &mut self,
         frame: &mut Frame,
         area: Rect,
         state: &UiState,
         theme: &Theme,
         _now: Instant,
-    ) {
+    ) -> Option<Position> {
+        self.form.asking = self.warned_dir.is_some();
         self.sync(state);
-        let hint = if self.editing {
-            " Enter save  Esc cancel "
+        let hint = hints::line(if self.editing && self.form.focus_is_directory() {
+            &[hints::COMPLETE, hints::SAVE, hints::ESC_CANCEL]
+        } else if self.editing {
+            &[hints::SAVE, hints::ESC_CANCEL]
         } else if self.form.focus_is_item() {
-            " j/k row  x stop sharing "
+            &[hints::STOP_SHARING, hints::FILTER, hints::ROWS]
         } else {
-            " j/k row  ←→ step  Enter edit "
-        };
+            &[hints::EDIT, hints::STEP, hints::FILTER, hints::ROWS]
+        });
         let block = crate::views::title::titled(
-            Block::bordered().border_style(Style::new().fg(if self.editing {
-                theme.accent
-            } else {
-                theme.dim
-            })),
+            theme.pane(self.editing),
             area.width,
-            (" Settings ", Style::new().fg(theme.fg)),
-            (hint, theme.dim_text()),
+            (words_s::TITLE, Style::new().fg(theme.fg)),
+            (&hint, theme.dim_text()),
         );
         let inner = block.inner(area);
         frame.render_widget(block, area);
+        let (inner, filter_line) = self.filter.carve(inner);
+        let kept =
+            self.form.fields.len() - self.form.hidden.iter().filter(|hidden| **hidden).count();
+        let filter_caret =
+            self.filter
+                .draw(frame, filter_line, (kept, self.form.fields.len()), theme);
         self.body = inner;
         // Below the form's own floor the *labels* are what would have to be
         // cut, so the pane shows its frame and nothing else rather than a
-        // garbled column (`form::MIN_WIDTH`; far under the 80 columns this UI
+        // garbled column (`Form::min_width`; far under the 80 columns this UI
         // supports).
-        if inner.height == 0 || usize::from(inner.width) < form::MIN_WIDTH {
-            return;
+        if inner.height == 0 || usize::from(inner.width) < self.form.min_width() {
+            return None;
         }
-
-        let mut rendered = self
-            .form
-            .render(usize::from(inner.width), theme, self.editing);
-        self.line_rows = rendered.rows;
 
         // A rejection is pinned to the foot of the pane rather than left in
         // the scrolling flow: the form is taller than the pane it lives in, so
         // an inline error would routinely land below the fold — and a reason
         // the operator cannot see is the same as no reason at all.
-        let error: Vec<Line<'static>> = match rendered.error_at {
-            Some(at) => rendered.lines.split_off(at.saturating_add(1)),
-            None => Vec::new(),
+        let render = |width: u16| {
+            let mut rendered = self.form.render(usize::from(width), theme, self.editing);
+            let error: Vec<Line<'static>> = match rendered.error_at {
+                Some(at) => rendered.lines.split_off(at.saturating_add(1)),
+                None => Vec::new(),
+            };
+            if rendered.error_at.is_some() {
+                rendered.lines.pop(); // the blank line that separated it
+            }
+            (rendered, error)
         };
-        if rendered.error_at.is_some() {
-            rendered.lines.pop(); // the blank line that separated it
+        let room = |error: &[Line<'static>]| {
+            inner
+                .height
+                .saturating_sub(clamp_u16(error.len()).min(inner.height))
+        };
+        let (mut rendered, mut error) = render(inner.width);
+        let bar = rendered.lines.len() > usize::from(room(&error))
+            && usize::from(inner.width - viewport::BAR_W) >= self.form.min_width();
+        if bar {
+            (rendered, error) = render(inner.width - viewport::BAR_W);
         }
-        let error_h = error.len().min(usize::from(inner.height));
-        let height = usize::from(inner.height).saturating_sub(error_h);
+        self.line_rows = rendered.rows;
+        let caret_at = rendered.caret;
+        let error_h = clamp_u16(error.len()).min(inner.height);
+        let height = room(&error);
 
         // Keep the focused field on screen; a form taller than its pane
-        // scrolls rather than hiding the row the cursor is on.
-        if rendered.focus.start < self.offset {
-            self.offset = rendered.focus.start;
-        } else if rendered.focus.end > self.offset + height {
-            self.offset = rendered.focus.end.saturating_sub(height);
-        }
-        self.offset = self.offset.min(rendered.lines.len().saturating_sub(height));
+        // scrolls rather than hiding the row the cursor is on. The count
+        // says which row it is, of the rows the cursor can rest on.
+        let rows = self.form.fields.iter().filter(|field| field.focusable());
+        let row = self.form.fields[..self.form.focus.min(self.form.fields.len())]
+            .iter()
+            .filter(|field| field.focusable())
+            .count();
+        let first = self.viewport.follow_span(
+            rendered.focus,
+            rendered.lines.len(),
+            height,
+            (row, rows.count()),
+        );
 
+        let shown = first..first + usize::from(height);
         let visible: Vec<Line<'static>> = rendered
             .lines
             .into_iter()
-            .skip(self.offset)
-            .take(height)
+            .skip(first)
+            .take(usize::from(height))
             .collect();
-        let [body, foot] = Layout::vertical([
-            Constraint::Length(clamp_u16(height)),
-            Constraint::Length(clamp_u16(error_h)),
-        ])
-        .areas(inner);
-        frame.render_widget(Paragraph::new(visible), body);
+        let [body, foot] =
+            Layout::vertical([Constraint::Length(height), Constraint::Length(error_h)])
+                .areas(inner);
+        let (list, bar) = viewport::split(body, bar);
+        frame.render_widget(Paragraph::new(visible), list);
         if error_h > 0 {
             frame.render_widget(Paragraph::new(error), foot);
         }
+        self.viewport.draw(frame, area, bar, theme);
         if let Some(dir) = &self.removing {
-            shared_dirs::draw_remove(frame, area, dir, state, theme);
+            shared_dirs::draw_remove(frame, area, (dir, &self.modal_viewport), state, theme);
         }
         if let Some(consent) =
             crate::views::shared_files::scan::open_consent(state, &self.answered, true)
         {
-            crate::views::shared_files::scan::draw_consent(frame, area, consent, theme);
+            crate::views::shared_files::scan::draw_consent(
+                frame,
+                area,
+                consent,
+                theme,
+                &self.modal_viewport,
+            );
+            return None;
         }
+        (self.removing.is_none())
+            .then(|| filter_caret.or_else(|| crate::views::caret_in(list, shown, caret_at)))
+            .flatten()
     }
 }
 

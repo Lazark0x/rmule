@@ -8,7 +8,7 @@ use crate::directory_scan::whereabouts::MOVE_HOLD;
 
 /// A registry row for `bytes` at `path`, with its real hash, so a copy the
 /// watch hashes is recognised as the same content.
-fn real_row(world: &World, path: &str, bytes: &'static [u8]) -> SharedFileEntry {
+fn real_row(world: &World, path: &str, bytes: &'static [u8]) -> SharedRow {
     let stamp = world.with(|dir| dir.file(path, bytes, 1));
     let mut entry = row(path, stamp, 0);
     entry.file_hash = hash_of(bytes);

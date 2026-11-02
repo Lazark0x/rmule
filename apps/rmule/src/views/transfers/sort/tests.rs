@@ -57,13 +57,24 @@ fn selected(view: &mut TransfersView, state: &UiState) -> Option<DownloadId> {
     view.cursor.place(&ids).map(|at| ids[at])
 }
 
+/// Transfers is watched, so it opens on what is moving: Progress, in its
+/// activity groups, largest share first within a group.
+#[test]
+fn transfers_open_on_what_is_moving() {
+    let state = three_downloads();
+    let view = TransfersView::new();
+    assert_eq!(view.sort.column(), DownloadColumn::Progress);
+    assert_eq!(view.sort.direction(), Direction::Descending);
+    assert_eq!(order(&view, &state), [1, 3, 2]);
+}
+
 /// 1 is `bunny.mp4`, named, 42 % done, 6 of 10 parts lit, metered; 2 has
 /// no name, no exact size and no part map; 3 has an exact size but no
 /// name, and is complete.
 #[test]
 fn every_column_orders_by_its_value_and_a_dash_sorts_last_both_ways() {
     let state = three_downloads();
-    let mut view = TransfersView::new();
+    let mut view = TransfersView::by_name();
     assert_eq!(
         order(&view, &state),
         [1, 2, 3],
@@ -105,7 +116,7 @@ fn every_column_orders_by_its_value_and_a_dash_sorts_last_both_ways() {
 /// any language this build ships: the labels, sorted as text, disagree.
 #[test]
 fn status_sorts_by_rank_not_by_its_label() {
-    use super::super::downloads::status_label;
+    use crate::words::labels::status as status_label;
     let statuses = [
         DownloadStatus::Failed,
         DownloadStatus::Paused,
@@ -120,7 +131,7 @@ fn status_sorts_by_rank_not_by_its_label() {
             .downloads
             .insert(id, download_row(*status, at as u8 + 1, 1));
     }
-    let mut view = TransfersView::new();
+    let mut view = TransfersView::by_name();
     sort_to(&mut view, &state, DownloadColumn::Status);
     let shown: Vec<DownloadStatus> = view
         .download_ids(&state)
@@ -175,7 +186,7 @@ fn progress_and_done_rank_the_activity_before_the_share_in_both_directions() {
             .downloads
             .insert(id, diag(id, n as u8, parts, 0, Vec::new()));
     }
-    let mut view = TransfersView::new();
+    let mut view = TransfersView::by_name();
     for column in [DownloadColumn::Progress, DownloadColumn::Done] {
         sort_to(&mut view, &state, column);
         assert_eq!(view.sort.direction(), Direction::Descending);
@@ -224,7 +235,7 @@ fn eta_sorts_by_seconds_and_no_estimate_sits_last_both_ways() {
             state.rates.download_avg_bps.insert(id, avg);
         }
     }
-    let mut view = TransfersView::new();
+    let mut view = TransfersView::by_name();
     sort_to(&mut view, &state, DownloadColumn::Eta);
     assert_eq!(view.sort.direction(), Direction::Descending);
     assert_eq!(order(&view, &state), [1, 3, 2, 4], "longest first");
@@ -235,7 +246,7 @@ fn eta_sorts_by_seconds_and_no_estimate_sits_last_both_ways() {
 #[test]
 fn the_cursor_follows_its_download_as_rows_arrive_leave_and_reorder() {
     let mut state = three_downloads();
-    let mut view = TransfersView::new();
+    let mut view = TransfersView::by_name();
     view.handle_key(press(KeyCode::Char('j')), &state); // onto 2
     assert_eq!(selected(&mut view, &state), Some(download_id(2)));
 
@@ -248,7 +259,7 @@ fn the_cursor_follows_its_download_as_rows_arrive_leave_and_reorder() {
     ));
     state.downloads.insert(download_id(4), early);
     draw(&mut view, &state, GOLDEN_W, GOLDEN_H);
-    assert_eq!(view.table_state.selected(), Some(2));
+    assert_eq!(view.selected, Some(2));
     assert_eq!(selected(&mut view, &state), Some(download_id(2)));
 
     // The row above it leaves.
@@ -260,7 +271,7 @@ fn the_cursor_follows_its_download_as_rows_arrive_leave_and_reorder() {
     // has a share, so the Tie Chain puts the named 4 first.
     sort_to(&mut view, &state, DownloadColumn::Done);
     draw(&mut view, &state, GOLDEN_W, GOLDEN_H);
-    assert_eq!(view.table_state.selected(), Some(2));
+    assert_eq!(view.selected, Some(2));
     assert_eq!(selected(&mut view, &state), Some(download_id(2)));
 
     // Its own departure leaves the cursor as low as the table now goes.
@@ -272,8 +283,8 @@ fn the_cursor_follows_its_download_as_rows_arrive_leave_and_reorder() {
 #[test]
 fn a_header_click_sorts_by_its_column_and_again_reverses_at_two_widths() {
     let state = three_downloads();
-    for (width, height) in [(GOLDEN_W, GOLDEN_H), (62, 18)] {
-        let mut view = TransfersView::new();
+    for (width, height) in [(GOLDEN_W, GOLDEN_H), (120, 18)] {
+        let mut view = TransfersView::by_name();
         let lines = draw(&mut view, &state, width, height);
         let (x, y) = cell_of(&lines, "Size");
         assert!(matches!(
@@ -300,37 +311,60 @@ fn a_header_click_sorts_by_its_column_and_again_reverses_at_two_widths() {
 #[test]
 fn the_header_is_one_line_whichever_column_holds_the_sort() {
     let state = three_downloads();
-    let mut view = TransfersView::new();
+    let mut view = TransfersView::by_name();
     for column in DownloadsTable::COLUMNS {
         sort_to(&mut view, &state, column.column);
         for _ in 0..2 {
             draw(&mut view, &state, 80, GOLDEN_H);
-            assert_eq!(view.header_area.height, 1, "{column:?}");
+            assert_eq!(view.drawn.header_height(), 1, "{column:?}");
             view.handle_key(press(KeyCode::Char('S')), &state);
         }
     }
 }
 
 #[test]
-fn a_click_on_any_line_of_a_wrapped_row_selects_that_row() {
-    let state = three_downloads();
-    let mut view = TransfersView::new();
-    // At 62 columns every row wraps onto a second line.
-    let lines = draw(&mut view, &state, 62, 18);
-    let (x, y) = cell_of(&lines, "5C5C5C5C");
-    view.handle_click(x, y, &state);
-    assert_eq!(selected(&mut view, &state), Some(download_id(3)));
-    let (x, y) = cell_of(&lines, "ABABABAB");
-    view.handle_click(x, y + 1, &state);
-    assert_eq!(selected(&mut view, &state), Some(download_id(2)));
-}
-
-#[test]
 fn golden_transfers_sorted_by_size() {
     let state = three_downloads();
-    let mut view = TransfersView::new();
+    let mut view = TransfersView::by_name();
     sort_to(&mut view, &state, DownloadColumn::Size);
     assert_golden("transfers_sorted_size", GOLDEN_W, GOLDEN_H, |frame| {
         view.draw(frame, frame.area(), &state, &Theme::default_dark(), now());
     });
+}
+
+/// A completing download ranks between paused and completed in aMule's
+/// status order, and between moving bytes and completed by activity —
+/// by its rank, never by its words.
+#[test]
+fn a_completing_download_ranks_between_downloading_and_completed() {
+    use super::{activity_rank, status_rank};
+    use crate::state::DownloadStatus as S;
+
+    assert!(status_rank(S::Paused) < status_rank(S::Completing));
+    assert!(status_rank(S::Completing) < status_rank(S::Completed));
+    assert!(activity_rank(S::Downloading, false) < activity_rank(S::Completing, false));
+    assert!(activity_rank(S::Completing, false) < activity_rank(S::Completed, false));
+    assert!(activity_rank(S::Completed, false) < activity_rank(S::Downloading, true));
+}
+
+#[test]
+fn a_tick_moves_a_rows_speed_at_once() {
+    let mut state = three_downloads();
+    let view = TransfersView::default();
+    let id = view.download_ids(&state)[0];
+
+    let mut rates = state.rates.clone();
+    rates.download_bps.insert(id, 4_242.0);
+    state.apply_snapshot(
+        crate::bridge::BridgeSnapshot {
+            diagnostics: state.diagnostics.clone(),
+            rates,
+            taken_at: now(),
+        },
+        now(),
+    );
+
+    let lines = view.sorted_lines(&state);
+    let line = lines.iter().find(|line| line.id == id).expect("listed");
+    assert_eq!(line.speed(), Some(4_242));
 }

@@ -8,6 +8,7 @@
 
 use rmule_primitives::{Ed2kText, Packet, PacketProtocol, Tag, TagValue};
 
+use super::datagram_body;
 use crate::{Ed2kError, Opcode, Result};
 
 /// `ST_SERVERNAME` (aMule `ServerTags.h`): the server's display name.
@@ -126,24 +127,7 @@ impl ServerDescRes {
     /// store mutation.
     pub fn decode_udp(bytes: &[u8]) -> Result<Self> {
         let opcode = Opcode::ServerDescRes.as_u8();
-        let [protocol, op, body @ ..] = bytes else {
-            return Err(Ed2kError::InvalidPayload {
-                opcode,
-                reason: "OP_SERVER_DESC_RES datagram missing header",
-            });
-        };
-        if *protocol != PacketProtocol::Edonkey.as_byte() {
-            return Err(Ed2kError::InvalidPayload {
-                opcode,
-                reason: "unsupported packet protocol",
-            });
-        }
-        if *op != opcode {
-            return Err(Ed2kError::InvalidPayload {
-                opcode,
-                reason: "wrong opcode for OP_SERVER_DESC_RES",
-            });
-        }
+        let body = datagram_body(bytes, opcode)?;
         // aMule peeks the first u16 and requires `size >= 8` before treating
         // the body as tagged; a 0xF0FF prefix on a shorter body falls through
         // to the legacy parse (and fails there, as aMule's read would throw).

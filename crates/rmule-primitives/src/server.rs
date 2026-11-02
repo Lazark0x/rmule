@@ -24,17 +24,6 @@ use crate::{
 pub(crate) const SERVER_TAG_NAME: u8 = 0x01;
 pub(crate) const SERVER_TAG_DESCRIPTION: u8 = 0x0B;
 
-/// Source of an `OP_SERVERIDENT`-shaped projection. Implemented by the eD2k
-/// `ServerIdent` packet so the primitives crate can build a `ServerIdentity`
-/// without depending on the protocol crate (ADR layering).
-pub trait ServerIdentSource {
-    /// The server's own hash — its identity across sessions and address
-    /// changes.
-    fn server_hash(&self) -> ServerHash;
-    /// The identity tags as they arrived, typed and untyped alike.
-    fn identity_tags(&self) -> &[Tag];
-}
-
 /// What is known about a server, accumulated from whichever sources have
 /// spoken so far.
 ///
@@ -88,15 +77,17 @@ pub struct ServerIdentity {
 }
 
 impl ServerIdentity {
-    /// Project an `OP_SERVERIDENT`-shaped source into a typed `ServerIdentity`.
+    /// Project what an `OP_SERVERIDENT` states into a typed `ServerIdentity`:
+    /// the server's own hash, its identity across sessions and address
+    /// changes, and its identity tags as they arrived, typed and untyped alike.
     ///
     /// Per the welcome-packet notes only `ST_SERVERNAME` (`0x01`) and
     /// `ST_DESCRIPTION` (`0x0B`) are promoted to typed fields. Every other
     /// well-formed tag is preserved in `extra_tags` per ADR-0018.
     #[must_use]
-    pub fn from_serverident_source(source: &impl ServerIdentSource) -> Self {
+    pub fn from_parts(server_hash: ServerHash, identity_tags: &[Tag]) -> Self {
         let mut identity = Self {
-            server_hash: Some(source.server_hash()),
+            server_hash: Some(server_hash),
             ..Self::default()
         };
         // `0xAF` is the spec's id for the server's own address and `0xAE` is
@@ -104,7 +95,7 @@ impl ServerIdentity {
         // *which* id filled the slot: a later `0xAF` must be able to correct an
         // `0xAE`-sourced address regardless of wire order, while a second
         // `0xAF` must not overwrite the first.
-        for tag in source.identity_tags() {
+        for tag in identity_tags {
             match (tag.name().id(), tag.value()) {
                 (Some(SERVER_TAG_NAME), TagValue::String(text)) => {
                     identity.name = Some(text.clone());
@@ -149,7 +140,7 @@ impl ServerIdentity {
     /// Merge `other` into `self`, with `other`'s values winning on every
     /// typed field that's `Some` — except that a tolerated `0xAE` server
     /// address never replaces one the spec's `0xAF` id stated, the same
-    /// precedence [`Self::from_serverident_source`] keeps inside one ident. `extra_tags` is unioned with dedup by
+    /// precedence [`Self::from_parts`] keeps inside one ident. `extra_tags` is unioned with dedup by
     /// `(name, value)` — re-merging the same source twice (or merging a
     /// source whose `extra_tags` already includes a tag we've now typed)
     /// does not double the unknown-tag list.

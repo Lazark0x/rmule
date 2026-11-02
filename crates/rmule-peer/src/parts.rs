@@ -19,10 +19,14 @@
 //! — all starts first, then all ends — per the TCP.h schema and
 //! confirmed by aMule's two separate for-loops in the sender.
 
-use rmule_primitives::{FileHash, Packet, WireReader, WireTruncated};
+use rmule_primitives::{FileHash, Packet, WireReader, WrongFrame};
 use thiserror::Error;
 
+use crate::error::WireFault;
+
 use crate::opcode::PeerOpcode;
+
+mod served_block;
 
 const RANGE_COUNT: usize = 3;
 
@@ -35,8 +39,19 @@ const RANGE_COUNT: usize = 3;
 /// block request streamed immediately.
 pub const EMBLOCKSIZE: u64 = 184_320;
 
-/// Selector for the part-transfer wire variant. `for_file_size` picks
-/// `U64` once the file size requires a 64-bit offset; otherwise `U32`.
+/// The longest range one block request may name: three blocks. aMule's uploader
+/// takes a client asking a longer one out of its upload queue
+/// (`UploadClient.cpp:221-224`), so no stock downloader asks one; core ends
+/// the slot of a peer that does and reads no range longer (ADR-0031).
+pub const MAX_REQUESTED_RANGE: u64 = 3 * EMBLOCKSIZE;
+
+/// Selector for the part-transfer wire variant. aMule picks it on the
+/// offsets a packet names: the `_I64` opcodes once one passes `0xFFFFFFFF`
+/// — a request's block (`DownloadClient.cpp:745`), a plain packet's own range
+/// (`UploadClient.cpp:307`), a compressed packet's whole block (`:361`) —
+/// never on `IsLargeFile`, so the blocks of a large file below 4 GiB still
+/// ride the 32-bit opcodes. [`Self::for_file_size`] fed the highest such
+/// offset is that rule.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum PartOffsetWidth {
     /// The original opcodes, offsets as `u32`.
@@ -46,13 +61,22 @@ pub enum PartOffsetWidth {
 }
 
 impl PartOffsetWidth {
-    /// The narrowest width that can address every byte of a file this size.
+    /// The narrowest width that can address every byte up to `file_size` —
+    /// a block's highest offset, for aMule's per-block choice.
     #[must_use]
     pub const fn for_file_size(file_size: u64) -> Self {
         if file_size <= u32::MAX as u64 {
             Self::U32
         } else {
             Self::U64
+        }
+    }
+
+    /// The bytes one offset takes at this width.
+    const fn offset_len(self) -> usize {
+        match self {
+            Self::U32 => 4,
+            Self::U64 => 8,
         }
     }
 }
@@ -65,22 +89,37 @@ pub struct PartRanges {
 }
 
 impl PartRanges {
-    /// Build the triple, rejecting any pair whose start is past its end.
-    /// The `(0, 0)` padding sentinel passes, not being inverted.
-    pub fn new(ranges: [(u64, u64); RANGE_COUNT]) -> Result<Self, PartRangesError> {
-        for (start, end) in ranges {
-            if start > end {
-                return Err(PartRangesError::StartAfterEnd { start, end });
-            }
-        }
-        Ok(Self { ranges })
+    /// Hold the triple as asked. A pair need not be live: `(0, 0)` is the
+    /// padding, and a pair running backwards is one a stock uploader skips
+    /// alone (`UploadClient.cpp:871-882`).
+    #[must_use]
+    pub const fn new(ranges: [(u64, u64); RANGE_COUNT]) -> Self {
+        Self { ranges }
     }
 
-    /// The three pairs as stored, padding included — a caller wanting only
-    /// the live ones filters the sentinel itself.
+    /// The width a request for these ranges rides (`DownloadClient.cpp:745`):
+    /// the `_I64` form once one offset passes `0xFFFFFFFF`, whatever the
+    /// file's size.
+    #[must_use]
+    pub fn width(&self) -> PartOffsetWidth {
+        let highest = self.ranges.iter().flat_map(|(start, end)| [*start, *end]);
+        PartOffsetWidth::for_file_size(highest.max().unwrap_or(0))
+    }
+
+    /// The three pairs as stored, padding included — the wire's view; what a
+    /// server acts on is [`live`](Self::live).
     #[must_use]
     pub fn as_array(&self) -> &[(u64, u64); RANGE_COUNT] {
         &self.ranges
+    }
+
+    /// The ranges that ask for something: those whose end is past their start
+    /// (ADR-0031).
+    pub fn live(&self) -> impl Iterator<Item = (u64, u64)> + '_ {
+        self.ranges
+            .iter()
+            .copied()
+            .filter(|(start, end)| end > start)
     }
 }
 
@@ -111,24 +150,18 @@ pub struct SendingPart {
 
 impl RequestParts {
     /// Read a request at whichever width its opcode names.
-    pub fn decode_packet(packet: &Packet) -> Result<Self, PartsDecodeError> {
-        let width = match PeerOpcode::try_from_u8(packet.opcode()) {
-            Some(op @ PeerOpcode::RequestParts) if op.protocol() == packet.protocol() => {
-                PartOffsetWidth::U32
-            }
-            Some(op @ PeerOpcode::RequestPartsI64) if op.protocol() == packet.protocol() => {
-                PartOffsetWidth::U64
-            }
-            _ => unreachable!("dispatch routes only matching (protocol, opcode) here"),
-        };
-        let payload = packet.payload();
-        let offset_size = match width {
-            PartOffsetWidth::U32 => 4,
-            PartOffsetWidth::U64 => 8,
-        };
+    pub fn decode_packet(packet: &Packet) -> Result<Self, WireFault> {
+        let (width, payload) = width_and_body(
+            packet,
+            PeerOpcode::RequestParts,
+            PeerOpcode::RequestPartsI64,
+        )?;
+        let offset_size = width.offset_len();
         let expected = FileHash::BYTE_LEN + RANGE_COUNT * 2 * offset_size;
-        if payload.len() != expected {
-            return Err(PartsDecodeError::WrongPayloadLen {
+        // aMule reads the hash and six offsets and looks no further
+        // (`UploadClient.cpp:839-861`).
+        if payload.len() < expected {
+            return Err(WireFault::WrongSize {
                 expected,
                 actual: payload.len(),
             });
@@ -146,7 +179,7 @@ impl RequestParts {
         }
         Ok(Self {
             file_hash,
-            ranges: PartRanges::new(ranges).map_err(PartsDecodeError::Ranges)?,
+            ranges: PartRanges::new(ranges),
         })
     }
 
@@ -185,24 +218,13 @@ impl RequestParts {
 
 impl SendingPart {
     /// Read a block at whichever width its opcode names.
-    pub fn decode_packet(packet: &Packet) -> Result<Self, PartsDecodeError> {
-        let width = match PeerOpcode::try_from_u8(packet.opcode()) {
-            Some(op @ PeerOpcode::SendingPart) if op.protocol() == packet.protocol() => {
-                PartOffsetWidth::U32
-            }
-            Some(op @ PeerOpcode::SendingPartI64) if op.protocol() == packet.protocol() => {
-                PartOffsetWidth::U64
-            }
-            _ => unreachable!("dispatch routes only matching (protocol, opcode) here"),
-        };
-        let offset_size = match width {
-            PartOffsetWidth::U32 => 4,
-            PartOffsetWidth::U64 => 8,
-        };
+    pub fn decode_packet(packet: &Packet) -> Result<Self, WireFault> {
+        let (width, payload) =
+            width_and_body(packet, PeerOpcode::SendingPart, PeerOpcode::SendingPartI64)?;
+        let offset_size = width.offset_len();
         let header = FileHash::BYTE_LEN + 2 * offset_size;
-        let payload = packet.payload();
         if payload.len() < header {
-            return Err(PartsDecodeError::Truncated {
+            return Err(WireFault::Truncated {
                 needed: header,
                 actual: payload.len(),
             });
@@ -212,12 +234,12 @@ impl SendingPart {
         let start = read_offset(&mut reader, width, "block start")?;
         let end = read_offset(&mut reader, width, "block end")?;
         if end < start {
-            return Err(PartsDecodeError::EndBeforeStart { start, end });
+            return Err(WireFault::EndBeforeStart { start, end });
         }
         let declared_data_len = (end - start) as usize;
         let actual_data_len = payload.len() - header;
         if declared_data_len != actual_data_len {
-            return Err(PartsDecodeError::DataLenMismatch {
+            return Err(WireFault::LengthMismatch {
                 declared: declared_data_len,
                 actual: actual_data_len,
             });
@@ -286,25 +308,17 @@ pub struct CompressedPart {
 
 impl CompressedPart {
     /// Read a compressed slice at whichever width its opcode names.
-    pub fn decode_packet(packet: &Packet) -> Result<Self, PartsDecodeError> {
-        let width = match PeerOpcode::try_from_u8(packet.opcode()) {
-            Some(op @ PeerOpcode::CompressedPart) if op.protocol() == packet.protocol() => {
-                PartOffsetWidth::U32
-            }
-            Some(op @ PeerOpcode::CompressedPartI64) if op.protocol() == packet.protocol() => {
-                PartOffsetWidth::U64
-            }
-            _ => unreachable!("dispatch routes only matching (protocol, opcode) here"),
-        };
-        let offset_size = match width {
-            PartOffsetWidth::U32 => 4,
-            PartOffsetWidth::U64 => 8,
-        };
+    pub fn decode_packet(packet: &Packet) -> Result<Self, WireFault> {
+        let (width, payload) = width_and_body(
+            packet,
+            PeerOpcode::CompressedPart,
+            PeerOpcode::CompressedPartI64,
+        )?;
+        let offset_size = width.offset_len();
         // nBlockSize is u32 regardless of the start-offset width.
         let header = FileHash::BYTE_LEN + offset_size + 4;
-        let payload = packet.payload();
         if payload.len() < header {
-            return Err(PartsDecodeError::Truncated {
+            return Err(WireFault::Truncated {
                 needed: header,
                 actual: payload.len(),
             });
@@ -356,7 +370,7 @@ fn read_offset(
     reader: &mut WireReader<'_>,
     width: PartOffsetWidth,
     field: &'static str,
-) -> Result<u64, PartsDecodeError> {
+) -> Result<u64, WireFault> {
     Ok(match width {
         PartOffsetWidth::U32 => u64::from(reader.read_u32_le(field)?),
         PartOffsetWidth::U64 => reader.read_u64_le(field)?,
@@ -370,70 +384,21 @@ fn write_offset(payload: &mut Vec<u8>, value: u64, width: PartOffsetWidth) {
     }
 }
 
-/// Why a range triple was refused.
-#[derive(Clone, Debug, Error, PartialEq, Eq)]
-pub enum PartRangesError {
-    /// A pair runs backwards.
-    #[error("part range start {start} > end {end}")]
-    StartAfterEnd {
-        /// The start offered.
-        start: u64,
-        /// The end offered.
-        end: u64,
-    },
-}
-
-/// Why a part-transfer frame could not be read.
-#[derive(Clone, Debug, Error, PartialEq, Eq)]
-pub enum PartsDecodeError {
-    /// A request's payload was not the exact fixed size its width requires.
-    #[error("part packet payload wrong size: expected {expected} bytes, had {actual}")]
-    WrongPayloadLen {
-        /// The size that width requires.
-        expected: usize,
-        /// The size that arrived.
-        actual: usize,
-    },
-
-    /// The payload ended inside the header.
-    #[error("part packet payload truncated: needed {needed} bytes, had {actual}")]
-    Truncated {
-        /// Bytes the header requires.
-        needed: usize,
-        /// Bytes present.
-        actual: usize,
-    },
-
-    /// A block's range runs backwards, so it names no bytes.
-    #[error("part packet end {end} before start {start}")]
-    EndBeforeStart {
-        /// The declared start.
-        start: u64,
-        /// The declared end.
-        end: u64,
-    },
-
-    /// The block's range and its payload disagree about its length.
-    #[error("part packet declared {declared} data bytes but payload has {actual}")]
-    DataLenMismatch {
-        /// What the range implies.
-        declared: usize,
-        /// What followed it.
-        actual: usize,
-    },
-
-    /// A request's three ranges did not hold up.
-    #[error("part packet ranges invalid: {0}")]
-    Ranges(#[from] PartRangesError),
-}
-
-impl From<WireTruncated> for PartsDecodeError {
-    fn from(truncated: WireTruncated) -> Self {
-        Self::Truncated {
-            needed: truncated.needed,
-            actual: truncated.available,
-        }
-    }
+/// A frame's body and the offset width its opcode names: `narrow` for `u32`
+/// offsets, `wide` for `u64`.
+fn width_and_body(
+    packet: &Packet,
+    narrow: PeerOpcode,
+    wide: PeerOpcode,
+) -> Result<(PartOffsetWidth, &[u8]), WrongFrame> {
+    packet
+        .body_of(narrow.protocol(), narrow.as_u8())
+        .map(|body| (PartOffsetWidth::U32, body))
+        .or_else(|_| {
+            packet
+                .body_of(wide.protocol(), wide.as_u8())
+                .map(|body| (PartOffsetWidth::U64, body))
+        })
 }
 
 /// Why a part-transfer frame could not be written.

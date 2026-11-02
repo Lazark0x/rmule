@@ -30,12 +30,14 @@
 //! adds, and what nothing else can, is that the adopted worker's bytes really
 //! crossed a punched UDP path.
 
+use rmule_peer::PartIndex;
+
 use std::net::{Ipv4Addr, SocketAddr};
 use std::time::Duration;
 
 use rmule_peer::natt::{EndpointHint, NattConnectOptions};
 use rmule_peer::{
-    ConnectionEvent, EMBLOCKSIZE, PartBitmap, PartRanges, ServerCommand, ServerEvent,
+    ConnectionEvent, EMBLOCKSIZE, PartRanges, ServerCommand, ServerEvent, WireStatus,
 };
 use rmule_primitives::{
     ClientId, Ed2kFileLink, Ed2kText, FileHash, FileHashSummary, Ipv4Endpoint, PeerEndpoint,
@@ -61,22 +63,20 @@ fn served_bytes() -> Vec<u8> {
 
 fn link(bytes: &[u8]) -> Ed2kFileLink {
     let summary = FileHashSummary::digest_bytes(bytes);
-    Ed2kFileLink {
-        name: Ed2kText::from_utf8("adopted-over-a-tunnel.bin"),
-        size: summary.file_size(),
-        file_hash: summary.file_hash(),
-        part_hash_set: summary.part_hash_set().cloned(),
-        aich_root: None,
-        ipv6_sources: Vec::new(),
-        sources: Default::default(),
-    }
+    Ed2kFileLink::new(
+        Ed2kText::from_utf8("adopted-over-a-tunnel.bin"),
+        summary.file_size(),
+        summary.file_hash(),
+    )
+    .expect("a size eD2k addresses")
+    .with_part_hash_set(summary.part_hash_set().cloned())
 }
 
 /// The callback the claim runs beside — what the adopted worker comes back
 /// under, because NAT traversal is an additional attempt on one pending
 /// callback and not a second one.
 fn callback_key() -> CallbackKey {
-    CallbackKey {
+    CallbackKey::Server {
         server: None,
         low_id: ClientId::from_u32(7),
     }
@@ -97,11 +97,13 @@ fn deps() -> InboundPeerDeps {
         file_known: crate::known_files::SharedFileKnown::default(),
         tunnel_admit: crate::adapters::SharedTunnelAdmit::default(),
         hello_refusals: crate::hello_refusals::SharedHelloRefusals::default(),
+        peer_links: crate::adapters::SharedPeerLinks::default(),
+        secured_identities: crate::secured_identity::SharedSecuredIdentities::default(),
     }
 }
 
 /// Hand one admitted path to the production inbound router against `awaited`.
-/// This is what the serve adapter's `accept()` loop does per connection; an
+/// This is what the serve adapter's `accept()` does per connection; an
 /// adoption leaves down the claim's own `adopt_tx`, so nothing comes back
 /// here.
 fn triage_admitted(admitted: AdmittedPeer, awaited: AwaitedInbound) {
@@ -112,7 +114,7 @@ fn triage_admitted(admitted: AdmittedPeer, awaited: AwaitedInbound) {
     tokio::spawn(async move { while evt_rx.recv().await.is_some() {} });
     tokio::spawn(triage_inbound_connection(
         admitted.conn,
-        admitted.dialed_toward,
+        admitted.origin,
         cmd_rx,
         evt_tx,
         awaited,
@@ -128,7 +130,7 @@ async fn serve_one_file(admitted: AdmittedPeer, file: Ed2kFileLink, bytes: Vec<u
     let (evt_tx, mut evt_rx) = mpsc::channel(32);
     tokio::spawn(triage_inbound_connection(
         admitted.conn,
-        admitted.dialed_toward,
+        admitted.origin,
         cmd_rx,
         evt_tx,
         AwaitedInbound::default(),
@@ -162,7 +164,7 @@ async fn serve_one_file(admitted: AdmittedPeer, file: Ed2kFileLink, bytes: Vec<u
                         rmule_peer::BundledAsk::SetReqId => {
                             ServeOutput::Server(ServerCommand::AnswerFileStatus {
                                 file_hash,
-                                bitmap: complete_bitmap(file.size),
+                                bitmap: WireStatus::whole(file.size()),
                             })
                         }
                         _ => continue,
@@ -176,7 +178,7 @@ async fn serve_one_file(admitted: AdmittedPeer, file: Ed2kFileLink, bytes: Vec<u
             ServeInput::Server(ServerEvent::FileIdSet { file_hash }) => {
                 ServeOutput::Server(ServerCommand::AnswerFileStatus {
                     file_hash,
-                    bitmap: complete_bitmap(file.size),
+                    bitmap: WireStatus::whole(file.size()),
                 })
             }
             ServeInput::Server(ServerEvent::PartsRequested { file_hash, ranges }) => {
@@ -190,14 +192,6 @@ async fn serve_one_file(admitted: AdmittedPeer, file: Ed2kFileLink, bytes: Vec<u
             return;
         }
     }
-}
-
-/// Every part of a file of `size` bytes, held: the bitmap a complete
-/// uploader answers `OP_SETREQFILEID` with.
-fn complete_bitmap(size: u64) -> PartBitmap {
-    let parts = rmule_primitives::part_count(size);
-    let bytes = vec![0xFFu8; (parts as usize).div_ceil(8)];
-    PartBitmap::decode(parts, &bytes).expect("a full bitmap for the part count it was sized by")
 }
 
 /// Cut each live range out of the file and send it in `EMBLOCKSIZE` blocks —
@@ -234,21 +228,22 @@ async fn send_ranges(
     }
 }
 
-/// Stream one part off `worker` and return what core would have assembled:
-/// every block it forwarded, written at the offset it named.
+/// Hand `worker` the file as blocks and return what core would have
+/// assembled: every block it forwarded, written at the offset it named, up to
+/// its pipeline's drain.
 async fn take_part(worker: &mut PeerWorker, file: &Ed2kFileLink) -> Vec<u8> {
     worker
-        .send(PeerWorkerCommand::RequestPart {
-            plan: crate::PartPlan {
-                part_index: 0,
-                offset: 0,
-                len: file.size,
-            },
-            resume_offset: 0,
+        .send(PeerWorkerCommand::RequestBlocks {
+            blocks: vec![crate::BlockPlan {
+                part_index: PartIndex::new(0),
+                start: 0,
+                end: file.size(),
+            }],
+            handout: 1,
         })
         .await
         .expect("the adopted worker takes commands");
-    let mut assembled = vec![0u8; usize::try_from(file.size).expect("a test-sized file")];
+    let mut assembled = vec![0u8; usize::try_from(file.size()).expect("a test-sized file")];
     let mut delivered = 0u64;
     loop {
         let event = tokio::time::timeout(Duration::from_secs(20), worker.next_event())
@@ -261,8 +256,12 @@ async fn take_part(worker: &mut PeerWorker, file: &Ed2kFileLink) -> Vec<u8> {
                 assembled[at..at + bytes.len()].copy_from_slice(&bytes);
                 delivered += bytes.len() as u64;
             }
-            PeerWorkerEvent::PartStreamed { .. } => {
-                assert_eq!(delivered, file.size, "the worker delivered its whole range");
+            PeerWorkerEvent::BlocksWanted { drained: true, .. } => {
+                assert_eq!(
+                    delivered,
+                    file.size(),
+                    "the worker delivered its whole range"
+                );
                 return assembled;
             }
             PeerWorkerEvent::Disconnected | PeerWorkerEvent::SlotTimeout => {
@@ -301,7 +300,7 @@ async fn a_download_takes_a_part_over_the_tunnel_it_adopted() {
     claim.claim_tunnel(
         target_hash,
         AdoptionBrief {
-            own_status: rmule_peer::PartBitmap::downloader_empty(0),
+            own_status: rmule_peer::WireStatus::downloader_empty(0),
             want_sources: true,
             file: file.clone(),
         },
@@ -325,7 +324,7 @@ async fn a_download_takes_a_part_over_the_tunnel_it_adopted() {
         )
         .await;
     // Each node's front raises exactly one Tunnel and admits it; the serve
-    // adapter's `accept()` loop is what takes them in production.
+    // adapter's `accept()` is what takes them in production.
     let mut requester = requester;
     let mut target = target;
     let dialed = tokio::time::timeout(Duration::from_secs(20), requester.accepted.recv())
@@ -337,12 +336,13 @@ async fn a_download_takes_a_part_over_the_tunnel_it_adopted() {
         .expect("the target's accepted tunnel was admitted within 20s")
         .expect("the admit channel is open");
     assert_eq!(
-        dialed.dialed_toward,
-        Some(target_hash),
+        dialed.origin,
+        crate::adapters::InboundOrigin::DialedTunnel(target_hash),
         "the dialed path names the target its punch was aimed at"
     );
     assert_eq!(
-        accepted.dialed_toward, None,
+        accepted.origin,
+        crate::adapters::InboundOrigin::AcceptedTunnel,
         "the accepted path was aimed at us, so no download of ours may claim it"
     );
     triage_admitted(dialed, claims.clone());
@@ -441,7 +441,7 @@ async fn triage_reports_a_confirmed_hello_and_ends_only_that_peers_hold() {
     alice_claim.claim_tunnel(
         alice_hash,
         AdoptionBrief {
-            own_status: rmule_peer::PartBitmap::downloader_empty(0),
+            own_status: rmule_peer::WireStatus::downloader_empty(0),
             want_sources: true,
             file: file.clone(),
         },
@@ -455,7 +455,7 @@ async fn triage_reports_a_confirmed_hello_and_ends_only_that_peers_hold() {
     bob_claim.claim_tunnel(
         bob_hash,
         AdoptionBrief {
-            own_status: rmule_peer::PartBitmap::downloader_empty(0),
+            own_status: rmule_peer::WireStatus::downloader_empty(0),
             want_sources: true,
             file,
         },
@@ -475,7 +475,8 @@ async fn triage_reports_a_confirmed_hello_and_ends_only_that_peers_hold() {
         .expect("alice's real Tunnel was admitted within 20s")
         .expect("the admit channel is open");
     assert_eq!(
-        accepted.dialed_toward, None,
+        accepted.origin,
+        crate::adapters::InboundOrigin::AcceptedTunnel,
         "target never dialed; nothing here named a target for this accepted path"
     );
 

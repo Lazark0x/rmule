@@ -5,7 +5,7 @@
 
 use std::time::Duration;
 
-use crate::driver::{DrivenSession, DriverOutput, run_driver};
+use crate::driver::{DrivenSession, SendSide, run_driver};
 use rmule_ed2k::{CloseReason, Ed2kCommand, Ed2kEvent, Ed2kSession, Output};
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::mpsc;
@@ -24,6 +24,7 @@ impl Ed2kDriven {
 }
 
 impl DrivenSession for Ed2kDriven {
+    const LINK: &'static str = "ed2k";
     type Command = Ed2kCommand;
     type Event = Ed2kEvent;
     type CloseReason = CloseReason;
@@ -37,22 +38,8 @@ impl DrivenSession for Ed2kDriven {
     fn handle_bytes(&mut self, bytes: &[u8]) {
         self.0.handle_bytes(bytes);
     }
-    fn poll_output(&mut self) -> Option<DriverOutput<Ed2kEvent, CloseReason>> {
-        self.0.poll_output().map(|output| match output {
-            Output::Write(bytes) => {
-                // Server-session frame hex, the twin of the peer driver's
-                // serve-side trace. At TRACE this surfaces every
-                // outbound connected-server frame — the byte-level evidence for
-                // the Low-ID callback emit (`OP_CALLBACKREQUEST 0x1C`).
-                if tracing::enabled!(tracing::Level::TRACE) {
-                    let hex: String = bytes.iter().map(|byte| format!("{byte:02x}")).collect();
-                    tracing::trace!(len = bytes.len(), frame = %hex, "ed2k driver write");
-                }
-                DriverOutput::Write(bytes)
-            }
-            Output::Event(event) => DriverOutput::Event(event),
-            Output::Close(reason) => DriverOutput::Close(reason),
-        })
+    fn poll_output(&mut self) -> Option<Output> {
+        self.0.poll_output()
     }
     fn disconnect_command() -> Ed2kCommand {
         Ed2kCommand::Disconnect
@@ -111,7 +98,7 @@ pub async fn drive<S>(
     evt_tx: mpsc::Sender<Ed2kEvent>,
 ) -> Result<(), Ed2kNetError>
 where
-    S: AsyncRead + AsyncWrite + Unpin + Send,
+    S: AsyncRead + AsyncWrite + SendSide + Unpin + Send,
 {
     drive_with_login_timeout(session, io, cmd_rx, evt_tx, None).await
 }
@@ -129,7 +116,7 @@ pub async fn drive_with_login_timeout<S>(
     login_timeout: Option<Duration>,
 ) -> Result<(), Ed2kNetError>
 where
-    S: AsyncRead + AsyncWrite + Unpin + Send,
+    S: AsyncRead + AsyncWrite + SendSide + Unpin + Send,
 {
     run_driver(
         Ed2kDriven::new(session),

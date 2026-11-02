@@ -67,7 +67,7 @@ fn the_direct_callback_bit_flips_with_every_family_it_reads() {
 
 /// The generation wakes on each family's write: a Kad verdict, a session
 /// write, the NAT-T front's end — and the front's end only once.
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn the_reach_generation_wakes_on_every_family() {
     let kad = SharedKadVerdicts::default();
     let own = SharedOwnIdentity::default();
@@ -115,7 +115,7 @@ fn the_diagnostics_rows_read_a_stopped_node_as_unproven() {
 /// A listener bind and clear are Reach Generation wakes, so a
 /// subscriber re-derives Callback Capability at the move rather than on the
 /// download runner's 1 s tick — and the owner's answer carries the conjunct.
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn a_listener_bind_and_clear_wake_the_reach_generation() {
     let (reach, kad, _own) = owner();
     let _lease = kad.lease();
@@ -149,7 +149,7 @@ async fn a_listener_bind_and_clear_wake_the_reach_generation() {
 /// and one that ended — and each move wakes the generation. A session whose
 /// task ended without clearing the cell reads dark at the next read all the
 /// same: the cell holds that session's request half weakly.
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn the_route_position_follows_the_client_udp_bind_and_the_server_coordinator() {
     let bound = crate::reachability::ClientUdpBound::default();
     let punch = crate::natt::server_punch::SharedServerPunch::default();

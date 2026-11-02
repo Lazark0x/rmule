@@ -1,0 +1,37 @@
+# Peer-UDP source reask through the source's buddy, downloader side — rmule is
+# the waiter. A firewalled stock aMule 2.3.3 queued rmule at rank 1 while rmule
+# stood on a server High ID; the server then went away, so rmule was
+# unreachable when its reask fell due, and it reasked the Low-ID source through
+# the buddy its Kad row named: `OP_REASKCALLBACKUDP` (0x94) to the buddy, which
+# relayed it as `OP_REASKCALLBACKTCP` (0x9A) over the held link, and the aMule
+# answered `OP_REASKACK` (0x91) straight to rmule's client-UDP port. The buddy
+# was the Core-pumped rmule stimulus, so the stock aMule is the body that read
+# rmule's relayed reask and wrote the answer.
+#
+# Only on-the-wire bytes are here (ADR-0045), lifted whole from the run's own
+# taps, never retyped: the 0x94 off the buddy's netns, the 0x91 off the
+# aMule's.
+
+[provenance]
+counterparty      = "aMule 2.3.3, release build of the pinned Debian source package 1:2.3.3-3build5, image rmule/interop-amule:local (sha256:ddcd70dc49cc8e4464c5f55c16185f15c348e4823d43811074df9a2ade5bbf01)"
+scenario          = "rmule-interop-harness kad-core-buddy --publish-source --mesh-members 3 --buddy-reask --file-size 31457280 --file-content incompressible --window 1200 (flow M, buddy reask leg)"
+run               = "1792369133"
+harness_commit    = "2b17c9e2"
+date              = "2026-10-19"
+file_hash         = "47AAA3AA0E7E071FFFF6CC9AF5EB1ECA"   # incompressible 30 MiB shared.bin, 4 parts
+downloader        = "203.0.113.7 — client UDP 4672; ed2ksrv High ID 124846283 until the server stopped"
+buddy             = "203.0.113.3 — Kad UDP 4679; the Core-pumped rmule stimulus, Kad ID ffeeddccbbaa99887766554433221100"
+source            = "203.0.113.2 — the firewalled aMule, client UDP 4674"
+verdict           = "PASS, 10 of 10 (kad/kad-buddy-reask-verdict.toml)"
+
+# rmule's own egress (the waiter's bytes): never evidence.
+[frames.reask_callback_udp_0x94]
+opcode    = "0x94 OP_REASKCALLBACKUDP (proto 0xC5), plain"
+direction = "rmule (203.0.113.7:4672) -> the buddy (203.0.113.3:4679), at 1792370825.023"
+layout    = "proto+opcode + buddy ID(16) + file hash(16) + part status (count 4, one empty byte) + complete-source count 0"
+
+# The counterparty's answer: the evidence.
+[frames.reask_ack_0x91]
+opcode    = "0x91 OP_REASKACK (proto 0xC5), plain"
+direction = "aMule (203.0.113.2:4674) -> rmule (203.0.113.7:4672), 72 ms after the 0x94"
+layout    = "proto+opcode + part status (count 0: a complete file) + rank 1"

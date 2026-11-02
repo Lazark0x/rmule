@@ -1,0 +1,6 @@
+┌┌ Download again? ──────────────────────────────────────┐ ┐
+││clip_low.avi                                          ▲│ │
+││You have this file, at                                █│ │
+││/home/me/Downloads/clip_low.avi                       ▃│ │
+└│                                                      ▼│─┘
+[└──────────────────────────────────────────────── 4 / 5 ┘

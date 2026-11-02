@@ -1,0 +1,21 @@
+┌ Downloads (3) ─── p pause  m menu  / filter  L add  Tab sources  Space tag ┐
+│  File ▲                              Size Progress        Speed Status     │
+│▸ bunny.mp4                        87.7 MB ██░█▓░█▓░░ 123.4 KB/s Downloading│
+│  ABABABABAB┌ File details ────────────────────────────────────┐ Paused     │
+│  5C5C5C5C5C│ name    bunny.mp4                                │ Completed  │
+│            │ hash    07070707070707070707070707070707         │            │
+│            │ size    87.7 MB                                  │            │
+│            │ origin  link                                     │            │
+│            │ done    42%  (4/10 parts)                        │            │
+│            │ speed   123.4 KB/s                               │            │
+│            │ sources 8 known: 1 asking, 3 queued, 1           │            │
+│Off-screen: │         transferring                             │            │
+└ too narrow │ on disk 37.1 MB allocated; this disk holds holes,│───── 1 / 3 ┘
+┌ Sources · b│         so the part file takes only the parts    │rse  z zoom ┐
+│  Source ▲  │         written                                  │       Speed│
+│▸ 10.0.0.1:4│                                                  │   98.7 KB/s│
+│  10.0.0.2:4│██████████░░░░░█████▓▓▓▓▓░░░░░█████▓▓▓▓▓░░░░░░░░░░│not measured│
+│            └─────────────────────────────────────── Esc close ┘            │
+│                                                                            │
+│                                                                            │
+└───────────────────────────────────────────────────────────────────── 1 / 2 ┘

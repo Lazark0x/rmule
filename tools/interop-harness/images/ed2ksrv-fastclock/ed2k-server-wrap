@@ -1,0 +1,6 @@
+#!/bin/bash
+# The pinned ed2k-server on a sped-up clock. The binary is untouched; AMULE_CLOCK_SCALE=1 runs it as is.
+scale=${AMULE_CLOCK_SCALE:-1}
+[ "$scale" = 1 ] && exec /usr/local/bin/ed2k-server.stock "$@"
+export LD_PRELOAD=$(ls /usr/lib/*/faketime/libfaketimeMT.so.1) FAKETIME="+0 x$scale" FAKETIME_NO_CACHE=1 DONT_FAKE_MONOTONIC=0
+exec /usr/local/bin/ed2k-server.stock "$@"

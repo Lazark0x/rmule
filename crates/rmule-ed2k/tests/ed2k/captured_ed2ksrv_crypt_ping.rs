@@ -3,16 +3,11 @@
 //! `[challenge u32 LE][padding]` crypt-ping on the server's TCP+12 listener
 //! (ed2ksrv capture, 2026-08-02).
 //!
-//! This is what retires the `[pending]` marker on
-//! `rmule_core::server_udp::encode_crypt_ping`. The eNode verdict stated the
-//! gap exactly — "no independent server in the bench implements a
-//! challenge-keyed server-UDP path" — so rmule's pre-key-learned crypt-ping
-//! variant (aMule's `CryptPingReplyPending` form) had a decoder and an emitter
-//! but no counterparty. This server has that path, and the bytes below are its
-//! reply. Note the contrast with `captured_enode_crypt.rs`: eNode's crypt-pong
-//! is keyed on a **serverKey learned from a prior plain advert**, whereas this
-//! one is keyed on the **challenge rmule itself minted**, which is the whole
-//! distinction the `[pending]` marker was about.
+//! This is the counterparty evidence for
+//! `rmule_core::server_udp::encode_crypt_ping`, rmule's pre-key-learned
+//! crypt-ping variant (aMule's `CryptPingReplyPending` form). The reply is
+//! keyed on the **challenge rmule itself minted**; a reply keyed on a
+//! serverKey learned from an earlier answer has no frozen counterparty bytes.
 //!
 //! Provenance, topology and the 20/20 answer rate live in `meta.toml`.
 

@@ -8,6 +8,7 @@ use std::task::{Context, Poll};
 
 use crate::fixture::test_session;
 use rmule_ed2k::{CloseReason, Ed2kEvent};
+use rmule_net::driver::SendSide;
 use rmule_net::ed2k::drive;
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::sync::mpsc;
@@ -15,6 +16,8 @@ use tokio::sync::mpsc;
 /// Reads block forever; the first write fails — so the handshake write
 /// (LoginRequest) fails in the initial drain.
 struct FailWriter;
+
+impl SendSide for FailWriter {}
 
 impl AsyncRead for FailWriter {
     fn poll_read(

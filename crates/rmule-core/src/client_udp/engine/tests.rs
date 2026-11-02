@@ -94,6 +94,7 @@ fn front_without_kad<T: ClientUdpTransport>(
         diagnostics,
         send_tx,
         SharedKadInlet::default(),
+        crate::ban_store::SharedBanStore::default(),
     )
 }
 
@@ -119,8 +120,87 @@ fn front_with_kad<T: ClientUdpTransport>(
         diagnostics,
         mpsc::channel(4).0,
         inlet,
+        crate::ban_store::SharedBanStore::default(),
     );
     (engine, inboxes, kad_rx)
+}
+
+/// Stock's gate is at the socket every UDP protocol shares
+/// (`MuleUDPSocket.cpp:166`): a banned address's reask and Kad datagram stop at
+/// the front and are counted, and another address's go through.
+#[tokio::test]
+async fn a_banned_address_is_dropped_before_any_protocol_reads_it() {
+    let (banned_ip, open_ip) = (Ipv4Addr::new(203, 0, 113, 1), Ipv4Addr::new(203, 0, 113, 2));
+    let banned = PeerEndpoint::V4(Ipv4Endpoint::new(banned_ip, 5000));
+    let open = PeerEndpoint::V4(Ipv4Endpoint::new(open_ip, 5000));
+    let ping = ReaskFilePing {
+        file_hash: FileHash::from_bytes([0x11; FileHash::BYTE_LEN]),
+        part_status: None,
+        complete_sources: None,
+    }
+    .encode_udp();
+    let kad = vec![0xE4, 0x00];
+    let script = vec![
+        (banned, ping.clone()),
+        (banned, kad.clone()),
+        (open, ping.clone()),
+        (open, kad),
+    ];
+    let diagnostics = DiagnosticsState::default();
+    let (mut engine, mut inboxes, mut kad_rx) =
+        front_with_kad(scripted(script), None, diagnostics.clone(), 4);
+    let bans = crate::ban_store::SharedBanStore::default();
+    bans.lock().await.ban(banned.ip(), Instant::now());
+    engine.bans = bans;
+
+    engine.run().await;
+
+    assert_eq!(
+        inboxes.reask_ping.recv().await.map(|(from, _)| from),
+        Some(open)
+    );
+    assert_eq!(inboxes.reask_ping.recv().await, None);
+    assert_eq!(
+        kad_rx.try_recv().ok().map(|datagram| datagram.from.ip),
+        Some(open_ip)
+    );
+    assert!(kad_rx.try_recv().is_err());
+    assert_eq!(diagnostics.snapshot().session.banned_datagrams_total, 2);
+}
+
+/// ADR-0064: a peer-UDP datagram has nothing to prove with, so the Hush stops
+/// it at the front. A Kad one goes on, marked, for the node to read its key.
+#[tokio::test]
+async fn a_hushed_address_loses_its_reask_and_its_kad_datagram_goes_on_marked() {
+    let hushed_ip = Ipv4Addr::new(203, 0, 113, 1);
+    let hushed = PeerEndpoint::V4(Ipv4Endpoint::new(hushed_ip, 5000));
+    let ping = ReaskFilePing {
+        file_hash: FileHash::from_bytes([0x11; FileHash::BYTE_LEN]),
+        part_status: None,
+        complete_sources: None,
+    }
+    .encode_udp();
+    let script = vec![(hushed, ping), (hushed, vec![0xE4, 0x00])];
+    let diagnostics = DiagnosticsState::default();
+    let (mut engine, mut inboxes, mut kad_rx) =
+        front_with_kad(scripted(script), None, diagnostics.clone(), 4);
+    let bans = crate::ban_store::SharedBanStore::default();
+    bans.lock().await.hush(hushed.ip(), Instant::now());
+    engine.bans = bans;
+
+    engine.run().await;
+
+    assert_eq!(inboxes.reask_ping.recv().await, None);
+    let kad = kad_rx.try_recv().expect("the Kad datagram goes on");
+    assert!(kad.hushed);
+    let session = diagnostics.snapshot().session;
+    assert_eq!(
+        (
+            session.hushed_datagrams_total,
+            session.banned_datagrams_total
+        ),
+        (1, 0)
+    );
 }
 
 #[tokio::test]
@@ -207,6 +287,51 @@ async fn the_front_routes_pings_to_serve_replies_to_the_downloader_and_drops_the
 /// endpoint — while a spoofed buddy-ID's `0x94` is dropped (the ADR-0061
 /// tightening). This is the front's own relay (aMule
 /// `CClientUDPSocket::OnPacketReceived`), not the Kad pump's.
+/// A flood ban stops every protocol on the socket (`MuleUDPSocket.cpp:176-177`),
+/// and only that IP.
+#[tokio::test]
+async fn a_banned_ip_reaches_neither_kad_nor_the_reask_surface() {
+    let banned = PeerEndpoint::V4(Ipv4Endpoint::new(Ipv4Addr::new(203, 0, 113, 9), 5000));
+    let other = PeerEndpoint::V4(Ipv4Endpoint::new(Ipv4Addr::new(203, 0, 113, 10), 5000));
+    let bans = crate::ban_store::SharedBanStore::default();
+    bans.lock()
+        .await
+        .ban(banned.ip(), std::time::Instant::now());
+    let ping = ReaskFilePing {
+        file_hash: FileHash::from_bytes([0x11; FileHash::BYTE_LEN]),
+        part_status: None,
+        complete_sources: None,
+    }
+    .encode_udp();
+    let kad_ping = vec![0xE4, 0x60];
+    let (kad_tx, mut kad_rx) = mpsc::channel(4);
+    let inlet = SharedKadInlet::default();
+    inlet.install_for_good(kad_tx);
+    let (engine, mut inboxes) = ClientUdpEngine::new(
+        scripted(vec![
+            (banned, ping.clone()),
+            (banned, kad_ping.clone()),
+            (other, ping),
+            (other, kad_ping),
+        ]),
+        PeerUdpCrypt::disarmed(),
+        SharedBuddySlot::default(),
+        SharedFirewalledFront::default(),
+        DiagnosticsState::default(),
+        mpsc::channel(4).0,
+        inlet,
+        bans,
+    );
+    engine.run().await;
+
+    let (from, _) = inboxes.reask_ping.recv().await.expect("the other's ping");
+    assert_eq!(from, other);
+    let KadDatagram { from, .. } = kad_rx.recv().await.expect("the other's Kad datagram");
+    assert_eq!(from, other.as_v4().expect("an IPv4 endpoint"));
+    assert!(inboxes.reask_ping.try_recv().is_err());
+    assert!(kad_rx.try_recv().is_err());
+}
+
 #[tokio::test]
 async fn an_inbound_0x94_relays_as_0x9a_over_the_held_buddy_link() {
     use std::sync::Arc;
@@ -250,6 +375,7 @@ async fn an_inbound_0x94_relays_as_0x9a_over_the_held_buddy_link() {
         PeerEndpoint::V4(Ipv4Endpoint::new(Ipv4Addr::new(198, 51, 100, 1), 61234)),
         buddy_hash,
         link_tx,
+        Instant::now()
     ));
 
     // A spoofed 0x94 (wrong buddy-ID) then the genuine relay, both arriving
@@ -345,6 +471,7 @@ async fn an_embedded_rendezvous_is_relayed_admitted_and_answered_with_a_hint() {
         PeerEndpoint::V4(Ipv4Endpoint::new(Ipv4Addr::new(45, 55, 200, 1), 61234)),
         target_hash,
         link_tx,
+        Instant::now()
     ));
 
     let requester = Ipv4Endpoint::new(Ipv4Addr::new(45, 55, 200, 9), 5099);

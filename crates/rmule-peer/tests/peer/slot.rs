@@ -69,15 +69,21 @@ fn op_outofpartreqs_round_trips_empty_payload() {
 }
 
 #[test]
-fn op_acceptuploadreq_rejects_nonempty_payload() {
+fn op_acceptuploadreq_never_reads_a_payload() {
     let packet = Packet::new(PacketProtocol::Edonkey, 0x55, vec![0xFF]);
-    assert!(PeerPacket::decode(&packet).is_err());
+    assert!(matches!(
+        PeerPacket::decode(&packet),
+        Ok(PeerPacket::AcceptUploadReq(_))
+    ));
 }
 
 #[test]
-fn op_outofpartreqs_rejects_nonempty_payload() {
+fn op_outofpartreqs_never_reads_a_payload() {
     let packet = Packet::new(PacketProtocol::Edonkey, 0x57, vec![0xFF]);
-    assert!(PeerPacket::decode(&packet).is_err());
+    assert!(matches!(
+        PeerPacket::decode(&packet),
+        Ok(PeerPacket::OutOfPartReqs(_))
+    ));
 }
 
 fn build_ranking_payload(rank: u16) -> Vec<u8> {
@@ -142,8 +148,9 @@ fn opcode_0x60_dispatches_by_protocol_byte() {
     let payload = build_ranking_payload(42);
     // Same opcode, eDonkey protocol: not QueueRanking — `OP_ASKSHAREDFILESDIRANS`
     // (ADR-0068 human-layer catalog), an unsolicited browse answer rmule
-    // parses, counts, and drops; its payload is not inspected.
-    let edonkey = Packet::new(PacketProtocol::Edonkey, 0x60, payload);
+    // parses, counts, and drops once its directory name reads.
+    let edonkey = Packet::new(PacketProtocol::Edonkey, 0x60, vec![0, 0]);
+    drop(payload);
     assert_eq!(
         PeerPacket::decode(&edonkey).expect("edonkey 0x60"),
         PeerPacket::AskSharedFilesDirAns

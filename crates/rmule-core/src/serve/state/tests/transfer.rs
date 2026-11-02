@@ -1,78 +1,73 @@
 //! Serving data out: part asks reading only unserved ranges, credit accruing on
-//! every served block, a failed read ending the file's offer with an honest
-//! answer, and the AICH hash tree built once then answered from the cache.
+//! every served block, and a failed read ending the file's offer with an
+//! honest answer.
 
 use super::*;
 use rmule_peer::{ServerCommand, ServerEvent};
 
 #[test]
-fn parts_requests_read_only_unserved_ranges_and_serve_blocks_with_credit() {
+fn parts_requests_read_only_unserved_ranges() {
     let file_hash = hash(0x44);
     let mut state = serving_state(1, vec![entry(file_hash, 512, "served.bin")]);
     let t = Instant::now();
     let p = peer(1);
     identify(&mut state, p, user(0x0A), t);
 
-    let read = |offset: u64, end: u64| ServeDecision::ReadRange {
+    let block = |start: u64, end: u64| BlockRead {
+        file_hash,
+        start,
+        end,
+    };
+    let read = |flow: u64, start: u64, end: u64| ServeDecision::ReadRange {
         peer: p,
-        path: "/shared/served.bin".into(),
-        offset,
-        len: end - offset,
-        purpose: ReadPurpose::Block {
-            file_hash,
-            start: offset,
-            end,
-        },
+        flow,
+        from: ReadFrom::Row("/shared/served.bin".into()),
+        block: block(start, end),
     };
     let parts_requested =
         |ranges| ServeInput::Server(ServerEvent::PartsRequested { file_hash, ranges });
     let slot = ServeInput::Server(ServerEvent::SlotRequested { file_hash });
     let _ = state.on_conn_event(t, p, slot.clone(), &no_modifiers());
 
-    let first = PartRanges::new([(0, 100), (100, 200), (200, 300)]).unwrap();
+    let first = PartRanges::new([(0, 100), (100, 200), (200, 300)]);
     assert_eq!(
         state.on_conn_event(t, p, parts_requested(first), &no_modifiers()),
-        vec![read(0, 100), read(100, 200), read(200, 300)],
+        vec![read(1, 0, 100)],
     );
 
-    // The read result closes the round trip: credit first, then the block.
+    // The read result closes the round trip: the block goes down the link
+    // and the flow's next read starts.
     let bytes = vec![0xEE_u8; 100];
     assert_eq!(
-        state.on_read_result(
-            p,
-            ReadPurpose::Block {
-                file_hash,
-                start: 0,
-                end: 100,
-            },
-            bytes.clone(),
-        ),
+        state.on_read_result(p, 1, block(0, 100), bytes.clone()),
         vec![
-            ServeDecision::RecordCredit {
-                user_hash: user(0x0A),
-                bytes: 100,
+            ServeDecision::SendBlock {
+                peer: p,
+                flow: 1,
+                block: block(0, 100),
+                bytes,
+                deflate: false,
             },
-            send(
-                p,
-                ServerCommand::SendBlock {
-                    file_hash,
-                    start: 0,
-                    end: 100,
-                    bytes,
-                }
-            ),
+            read(1, 100, 200),
         ],
     );
 
-    // A re-request overlapping already-served ranges reads only the tail.
-    let overlapping = PartRanges::new([(100, 200), (200, 300), (300, 400)]).unwrap();
+    // A re-request overlapping already-served ranges adds only the tail.
+    let overlapping = PartRanges::new([(100, 200), (200, 300), (300, 400)]);
     assert_eq!(
         state.on_conn_event(t, p, parts_requested(overlapping), &no_modifiers()),
-        vec![read(300, 400)],
+        Vec::new(),
+    );
+    let _ = state.on_read_result(p, 1, block(100, 200), vec![0; 100]);
+    assert_eq!(
+        state
+            .on_read_result(p, 1, block(200, 300), vec![0; 100])
+            .last(),
+        Some(&read(1, 300, 400)),
     );
 
     // A request for a file we do not share is dropped.
-    let unshared = PartRanges::new([(0, 100), (0, 0), (0, 0)]).unwrap();
+    let unshared = PartRanges::new([(0, 100), (0, 0), (0, 0)]);
     assert_eq!(
         state.on_conn_event(
             t,
@@ -86,34 +81,14 @@ fn parts_requests_read_only_unserved_ranges_and_serve_blocks_with_credit() {
         Vec::new(),
     );
 
-    // Disconnecting wipes the flow: on a new slot the same range reads again,
-    // and the forgotten identity earns no credit.
+    // Disconnecting wipes the flow: on a new slot the same range reads again.
     let _ = state.on_conn_event(t, p, disconnected(), &no_modifiers());
+    let _ = state.end_slotless_flows();
     let _ = state.on_conn_event(t, p, slot, &no_modifiers());
-    let again = PartRanges::new([(0, 100), (0, 0), (0, 0)]).unwrap();
+    let again = PartRanges::new([(0, 100), (0, 0), (0, 0)]);
     assert_eq!(
         state.on_conn_event(t, p, parts_requested(again), &no_modifiers()),
-        vec![read(0, 100)],
-    );
-    assert_eq!(
-        state.on_read_result(
-            p,
-            ReadPurpose::Block {
-                file_hash,
-                start: 0,
-                end: 100,
-            },
-            vec![0xEE_u8; 100],
-        ),
-        vec![send(
-            p,
-            ServerCommand::SendBlock {
-                file_hash,
-                start: 0,
-                end: 100,
-                bytes: vec![0xEE_u8; 100],
-            }
-        )],
+        vec![read(2, 0, 100)],
     );
 }
 
@@ -133,16 +108,7 @@ fn a_failed_block_read_stops_serving_the_file_and_tells_its_peers() {
     let _ = state.on_conn_event(t, peer(2), slot(file_hash), &no_modifiers());
     let _ = state.on_conn_event(t, peer(3), slot(other), &no_modifiers());
 
-    let decisions = state.on_read_failed(
-        t,
-        peer(1),
-        ReadPurpose::Block {
-            file_hash,
-            start: 0,
-            end: 100,
-        },
-        &no_modifiers(),
-    );
+    let decisions = state.on_read_failed(t, peer(1), 1, file_hash, &no_modifiers());
     let not_found = |port| send(peer(port), ServerCommand::AnswerFileNotFound { file_hash });
     assert_eq!(
         decisions,
@@ -159,6 +125,7 @@ fn a_failed_block_read_stops_serving_the_file_and_tells_its_peers() {
                 peer: peer(3),
                 file_hash: other,
                 software: None,
+                road: crate::GrantRoad::Linked,
             }),
             ServeDecision::ReadFailed(file_hash),
         ],
@@ -174,25 +141,6 @@ fn a_failed_block_read_stops_serving_the_file_and_tells_its_peers() {
             &no_modifiers(),
         ),
         vec![not_found(4)],
-    );
-}
-
-#[test]
-fn a_failed_aich_build_stops_serving_the_file_for_a_peer_holding_no_slot() {
-    let file_hash = hash(0x57);
-    let mut state = serving_state(1, vec![entry(file_hash, 2 * EMBLOCKSIZE, "a.bin")]);
-    let decisions = state.on_read_failed(
-        Instant::now(),
-        peer(7),
-        ReadPurpose::AichMasterRoot { file_hash },
-        &no_modifiers(),
-    );
-    assert_eq!(
-        decisions,
-        vec![
-            send(peer(7), ServerCommand::AnswerFileNotFound { file_hash }),
-            ServeDecision::ReadFailed(file_hash),
-        ],
     );
 }
 
@@ -224,175 +172,9 @@ fn a_file_that_leaves_the_offer_releases_the_slot_holding_it() {
     assert!(matches!(decisions.last(), Some(ServeDecision::Announce(files)) if files.len() == 1));
 }
 
-/// Converted from the inline serve-task AICH test (ADR-0038 serve side):
-/// an `OP_AICHREQUEST` for a shared file round-trips one whole-file read,
-/// builds the tree, and answers recovery data that verifies against our
-/// master root — and the second request answers from the cache with no
-/// second `ReadRange`.
-#[test]
-fn aich_recovery_builds_the_tree_once_and_answers_from_the_cache() {
-    let file_size = 3 * EMBLOCKSIZE; // 3 AICH blocks, one part
-    let bytes: Vec<u8> = (0..file_size).map(|i| (i % 251) as u8).collect();
-    let true_root = AichHashSet::from_bytes(&bytes).master_root();
-    let file_hash = hash(0x66);
-    let mut state = serving_state(1, vec![entry(file_hash, file_size, "shared.bin")]);
-    let t = Instant::now();
-    let p = peer(1);
-    let request = ServeInput::Server(ServerEvent::AichRequested {
-        file_hash,
-        part: 0,
-        root: true_root,
-    });
-
-    // Not shared: silent, the requester falls back.
-    assert_eq!(
-        state.on_conn_event(
-            t,
-            p,
-            ServeInput::Server(ServerEvent::AichRequested {
-                file_hash: hash(0x99),
-                part: 0,
-                root: true_root,
-            }),
-            &no_modifiers(),
-        ),
-        Vec::new(),
-    );
-
-    assert_eq!(
-        state.on_conn_event(t, p, request.clone(), &no_modifiers()),
-        vec![ServeDecision::ReadRange {
-            peer: p,
-            path: "/shared/shared.bin".into(),
-            offset: 0,
-            len: file_size,
-            purpose: ReadPurpose::AichRecovery { file_hash, part: 0 },
-        }],
-    );
-
-    let answered = state.on_read_result(
-        p,
-        ReadPurpose::AichRecovery { file_hash, part: 0 },
-        bytes.clone(),
-    );
-    let [
-        ServeDecision::Send {
-            command:
-                ServerCommand::AnswerAich {
-                    file_hash: answered_hash,
-                    part,
-                    root,
-                    recovery_data,
-                },
-            ..
-        },
-    ] = answered.as_slice()
-    else {
-        panic!("expected one AnswerAich, got {answered:?}");
-    };
-    assert_eq!(*answered_hash, file_hash);
-    assert_eq!(*part, 0);
-    assert_eq!(*root, true_root);
-    // Our served recovery data verifies against the true root and reports
-    // the on-disk part as intact.
-    let bad = AichHashSet::verify_part(file_size, 0, &bytes, recovery_data, true_root).unwrap();
-    assert!(
-        bad.is_empty(),
-        "served recovery data verifies the intact part"
-    );
-
-    // Cache hit: the same request answers directly, no second read.
-    let cached = state.on_conn_event(t, p, request, &no_modifiers());
-    assert!(
-        cached
-            .iter()
-            .all(|d| !matches!(d, ServeDecision::ReadRange { .. })),
-        "a cache hit must not re-read the file: {cached:?}"
-    );
-    assert!(matches!(
-        cached.as_slice(),
-        [ServeDecision::Send {
-            command: ServerCommand::AnswerAich { .. },
-            ..
-        }]
-    ));
-
-    // The master-root path shares the same cache.
-    assert_eq!(
-        state.on_conn_event(
-            t,
-            p,
-            ServeInput::Server(ServerEvent::AichFileHashRequested { file_hash }),
-            &no_modifiers(),
-        ),
-        vec![send(
-            p,
-            ServerCommand::AnswerAichFileHash { root: true_root }
-        )],
-    );
-}
-
-#[test]
-fn aich_master_root_answers_share_the_cache() {
-    // Above one block: a single-block file has no AICH recovery data
-    // (aMule `create_part_recovery_data` returns `None`), so the shared
-    // cache could not answer the recovery request below.
-    let file_size = 2 * EMBLOCKSIZE;
-    let bytes: Vec<u8> = (0..file_size).map(|i| (i % 251) as u8).collect();
-    let true_root = AichHashSet::from_bytes(&bytes).master_root();
-    let file_hash = hash(0x77);
-    let mut state = serving_state(1, vec![entry(file_hash, file_size, "shared.bin")]);
-    let t = Instant::now();
-    let p = peer(1);
-    let request = ServeInput::Server(ServerEvent::AichFileHashRequested { file_hash });
-    let expected_read = ServeDecision::ReadRange {
-        peer: p,
-        path: "/shared/shared.bin".into(),
-        offset: 0,
-        len: file_size,
-        purpose: ReadPurpose::AichMasterRoot { file_hash },
-    };
-
-    assert_eq!(
-        state.on_conn_event(t, p, request.clone(), &no_modifiers()),
-        vec![expected_read.clone()],
-    );
-    // A second ask before the tree is built reads again.
-    assert_eq!(
-        state.on_conn_event(t, p, request.clone(), &no_modifiers()),
-        vec![expected_read],
-    );
-    assert_eq!(
-        state.on_read_result(p, ReadPurpose::AichMasterRoot { file_hash }, bytes),
-        vec![send(
-            p,
-            ServerCommand::AnswerAichFileHash { root: true_root }
-        )],
-    );
-    // The recovery path shares the tree built for the master root.
-    let cached = state.on_conn_event(
-        t,
-        p,
-        ServeInput::Server(ServerEvent::AichRequested {
-            file_hash,
-            part: 0,
-            root: true_root,
-        }),
-        &no_modifiers(),
-    );
-    assert!(matches!(
-        cached.as_slice(),
-        [ServeDecision::Send {
-            command: ServerCommand::AnswerAich { .. },
-            ..
-        }]
-    ));
-}
-
 /// One ask queues three reads; the first fails and ends the offer. The reads
 /// still in flight land on a file rmule has just said it does not have, for a
-/// peer whose slot is gone: nothing is sent, no credit accrues, and a late
-/// AICH tree does not come back into the cache.
+/// peer whose slot is gone: nothing is sent and no credit accrues.
 #[test]
 fn a_read_that_lands_after_the_offer_ended_sends_nothing() {
     let file_hash = hash(0x5A);
@@ -406,35 +188,27 @@ fn a_read_that_lands_after_the_offer_ended_sends_nothing() {
         ServeInput::Server(ServerEvent::SlotRequested { file_hash }),
         &no_modifiers(),
     );
-    let ranges = PartRanges::new([(0, 100), (100, 250), (250, 300)]).unwrap();
+    let ranges = PartRanges::new([(0, 100), (100, 250), (250, 300)]);
     let reads = state.on_conn_event(
         t,
         p,
         ServeInput::Server(ServerEvent::PartsRequested { file_hash, ranges }),
         &no_modifiers(),
     );
-    assert_eq!(reads.len(), 3);
-    let block = |start, end| ReadPurpose::Block {
+    assert_eq!(reads.len(), 1);
+    let block = |start, end| BlockRead {
         file_hash,
         start,
         end,
     };
 
-    let _ = state.on_read_failed(t, p, block(0, 100), &no_modifiers());
+    let _ = state.on_read_failed(t, p, 1, file_hash, &no_modifiers());
+    let _ = state.end_slotless_flows();
 
     assert_eq!(
-        state.on_read_result(p, block(100, 250), vec![0x5E; 150]),
+        state.on_read_result(p, 1, block(100, 250), vec![0x5E; 150]),
         Vec::new()
     );
-    assert_eq!(
-        state.on_read_result(
-            p,
-            ReadPurpose::AichMasterRoot { file_hash },
-            (0..2 * EMBLOCKSIZE).map(|i| (i % 253) as u8).collect(),
-        ),
-        Vec::new(),
-    );
-    assert!(!state.aich_cache.contains_key(&file_hash));
 }
 
 /// A slot that ends for any reason ends the blocks queued under it, as aMule
@@ -452,7 +226,7 @@ fn a_read_that_lands_after_the_slot_ended_sends_nothing() {
         ServeInput::Server(ServerEvent::SlotRequested { file_hash }),
         &no_modifiers(),
     );
-    let ranges = PartRanges::new([(0, 100), (0, 0), (0, 0)]).unwrap();
+    let ranges = PartRanges::new([(0, 100), (0, 0), (0, 0)]);
     let _ = state.on_conn_event(
         t,
         p,
@@ -460,13 +234,17 @@ fn a_read_that_lands_after_the_slot_ended_sends_nothing() {
         &no_modifiers(),
     );
     let _ = state.on_conn_event(t, p, disconnected(), &no_modifiers());
+    let _ = state.end_slotless_flows();
 
-    let block = ReadPurpose::Block {
+    let block = BlockRead {
         file_hash,
         start: 0,
         end: 100,
     };
-    assert_eq!(state.on_read_result(p, block, vec![0x4D; 100]), Vec::new());
+    assert_eq!(
+        state.on_read_result(p, 1, block, vec![0x4D; 100]),
+        Vec::new()
+    );
 }
 
 /// A waiter for a withdrawn file leaves the queue, and the waiter behind it
@@ -499,4 +277,49 @@ fn a_withdrawn_files_waiters_leaving_move_the_rest_up_at_once() {
         ServeDecision::Emit(ServeEvent::PeerQueued { peer: queued, rank: 1, .. })
             if *queued == peer(3)
     )));
+}
+
+/// aMule never compresses an archive's block (`UploadClient.cpp:252`): core
+/// marks it plain by the name the file is offered under, and any other
+/// block may cross compressed (ADR-0031).
+/// A block goes to its deflate only when the file may be compressed and the
+/// peer inflates; no pass is spent otherwise (ADR-0031).
+#[test]
+fn only_a_block_a_peer_can_inflate_of_a_non_archive_goes_to_its_deflate() {
+    for (name, inflates, deflated) in [
+        ("backup.rar", 1, false),
+        ("sources.tar.gz", 1, false),
+        ("ubuntu.iso", 1, true),
+        ("film.mkv", 1, true),
+        ("README", 1, true),
+        ("README", 0, false),
+    ] {
+        let file_hash = hash(0x5E);
+        let mut state = serving_state(1, vec![entry(file_hash, 512, name)]);
+        let p = peer(5);
+        let t = Instant::now();
+        let hello = HelloFacts {
+            data_compression_version: inflates,
+            ..HelloFacts::of(user(0x05))
+        };
+        let _ = state.on_conn_event(t, p, hello.identified(), &no_modifiers());
+        let _ = slot_request(&mut state, p, file_hash, t);
+        let ranges = PartRanges::new([(0, 100), (0, 0), (0, 0)]);
+        let ask = ServeInput::Server(ServerEvent::PartsRequested { file_hash, ranges });
+        let _ = state.on_conn_event(t, p, ask, &no_modifiers());
+        let block = BlockRead {
+            file_hash,
+            start: 0,
+            end: 100,
+        };
+
+        let decisions = state.on_read_result(p, 1, block, vec![0; 100]);
+        assert!(
+            matches!(
+                decisions.as_slice(),
+                [ServeDecision::SendBlock { deflate, .. }] if *deflate == deflated
+            ),
+            "{name}, {inflates}: {decisions:?}"
+        );
+    }
 }

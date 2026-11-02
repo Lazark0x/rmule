@@ -5,6 +5,7 @@
 
 use rmule_core::open_durable_store;
 use std::path::Path;
+use std::sync::Arc;
 
 use crate::fixture::stub_server;
 use rmule_core::{
@@ -59,15 +60,12 @@ async fn persist(
 /// The happy sequence: parts persisted out of order (assembly is the
 /// repository's business), revalidation restores the full progress, and
 /// finalize verifies the assembled content and promotes to `Completed`.
-async fn persists_revalidates_and_finalizes(
-    repo: DurableDownloadRepository,
-    paths: &DownloadPaths,
-) {
+async fn persists_and_revalidates(repo: DurableDownloadRepository, paths: &DownloadPaths) {
     let bytes = fixture_bytes();
     let link = file_link("contract.bin", &bytes);
     let hashes = link.part_hash_set.as_ref().unwrap().hashes().to_vec();
     let id = repo
-        .create_download(&link, Some(&stub_server("127.0.0.1")), paths)
+        .create_download(&link, Some(&stub_server("127.0.0.1")), paths, None)
         .unwrap()
         .id();
     repo.set_lifecycle(id, DownloadLifecycle::Active).unwrap();
@@ -90,32 +88,37 @@ async fn persists_revalidates_and_finalizes(
     )
     .await;
 
-    let Revalidation::Restored { progress, damaged } = repo.revalidate(id).await.unwrap() else {
+    let Revalidation::Restored { progress, damaged } = repo
+        .revalidate(id, Arc::default(), |_| {})
+        .await
+        .unwrap()
+        .unwrap()
+    else {
         panic!("an intact part file is not condemned");
     };
     assert!(damaged.is_empty());
     assert_eq!(progress.verified_parts(), 2);
     assert_eq!(progress.verified_bytes(), bytes.len() as u64);
 
-    repo.finalize(id, link.file_hash, link.size).await.unwrap();
-    assert_eq!(
-        repo.load_download(id).unwrap().lifecycle(),
-        DownloadLifecycle::Completed
-    );
+    let heard = Arc::new(parking_lot::Mutex::new(Vec::new()));
+    let hearing = Arc::clone(&heard);
+    repo.revalidate(id, Arc::default(), move |behind| {
+        hearing.lock().push(behind)
+    })
+    .await
+    .unwrap();
+    assert_eq!(*heard.lock(), [0, 1], "the walk says how far it has read");
 }
 
-/// Corrupted bytes behind a genuine-looking record: finalize refuses to
-/// promote with the typed integrity error, revalidation drops the damaged part
-/// and keeps the other, and re-persisting the genuine part repairs the download.
-async fn corrupted_bytes_fail_finalize_and_revalidate(
-    repo: DurableDownloadRepository,
-    paths: &DownloadPaths,
-) {
+/// Corrupted bytes behind a genuine-looking record: revalidation drops the
+/// damaged part and keeps the other, and re-persisting the genuine part
+/// repairs the download.
+async fn corrupted_bytes_fail_revalidation(repo: DurableDownloadRepository, paths: &DownloadPaths) {
     let bytes = fixture_bytes();
     let link = file_link("contract.bin", &bytes);
     let hashes = link.part_hash_set.as_ref().unwrap().hashes().to_vec();
     let id = repo
-        .create_download(&link, Some(&stub_server("127.0.0.1")), paths)
+        .create_download(&link, Some(&stub_server("127.0.0.1")), paths, None)
         .unwrap()
         .id();
     repo.set_lifecycle(id, DownloadLifecycle::Active).unwrap();
@@ -141,19 +144,14 @@ async fn corrupted_bytes_fail_finalize_and_revalidate(
     )
     .await;
 
-    let err = repo
-        .finalize(id, link.file_hash, link.size)
+    // Resume-time revalidation drops the damaged part alone: its record
+    // goes, the other part's stays, so a resume fetches only part 0.
+    let Revalidation::Restored { progress, damaged } = repo
+        .revalidate(id, Arc::default(), |_| {})
         .await
-        .unwrap_err();
-    assert_eq!(err, rmule_core::FinalizeError::Mismatch);
-    // Nothing promoted: the download stays where it was...
-    assert_eq!(
-        repo.load_download(id).unwrap().lifecycle(),
-        DownloadLifecycle::Active
-    );
-    // ...and resume-time revalidation drops the damaged part alone: its
-    // record goes, the other part's stays, so a resume fetches only part 0.
-    let Revalidation::Restored { progress, damaged } = repo.revalidate(id).await.unwrap() else {
+        .unwrap()
+        .unwrap()
+    else {
         panic!("one intact part keeps the part file");
     };
     assert!(
@@ -173,7 +171,7 @@ async fn corrupted_bytes_fail_finalize_and_revalidate(
         .collect();
     assert_eq!(held, vec![1]);
 
-    // Re-persisting the genuine part repairs the download; finalize promotes.
+    // Re-persisting the genuine part repairs the download: both hold again.
     persist(
         &repo,
         paths,
@@ -182,11 +180,16 @@ async fn corrupted_bytes_fail_finalize_and_revalidate(
         first,
     )
     .await;
-    repo.finalize(id, link.file_hash, link.size).await.unwrap();
-    assert_eq!(
-        repo.load_download(id).unwrap().lifecycle(),
-        DownloadLifecycle::Completed
-    );
+    let Revalidation::Restored { progress, damaged } = repo
+        .revalidate(id, Arc::default(), |_| {})
+        .await
+        .unwrap()
+        .unwrap()
+    else {
+        panic!("a repaired part file is not condemned");
+    };
+    assert!(damaged.is_empty(), "{damaged:?}");
+    assert_eq!(progress.verified_parts(), 2);
 }
 
 /// The three verification-authority outcomes resolve identically behind the
@@ -205,7 +208,7 @@ async fn hash_authority_resolves_link_provisional_and_none<R: DownloadRepository
     let link_hashes = link.part_hash_set.as_ref().unwrap().hashes().to_vec();
     let link_paths = DownloadPaths::from_final_path(dir.join("link.bin"));
     let link_id = repo
-        .create_download(&link, Some(&stub_server("127.0.0.1")), &link_paths)
+        .create_download(&link, Some(&stub_server("127.0.0.1")), &link_paths, None)
         .unwrap()
         .id();
     assert!(repo.provisional_part_hashes(link_id).unwrap().is_empty());
@@ -220,18 +223,20 @@ async fn hash_authority_resolves_link_provisional_and_none<R: DownloadRepository
         PartHash::from_bytes([0x11; PartHash::BYTE_LEN]),
         PartHash::from_bytes([0x22; PartHash::BYTE_LEN]),
     ];
-    let hashless = Ed2kFileLink {
-        name: Ed2kText::from_utf8("provisional.bin"),
-        size: ED2K_PART_SIZE + 4,
-        file_hash: FileHash::from_bytes([0x33; FileHash::BYTE_LEN]),
-        part_hash_set: None,
-        aich_root: None,
-        ipv6_sources: Vec::new(),
-        sources: Default::default(),
-    };
+    let hashless = Ed2kFileLink::new(
+        Ed2kText::from_utf8("provisional.bin"),
+        ED2K_PART_SIZE + 4,
+        FileHash::from_bytes([0x33; FileHash::BYTE_LEN]),
+    )
+    .expect("a size eD2k addresses");
     let prov_paths = DownloadPaths::from_final_path(dir.join("provisional.bin"));
     let prov_id = repo
-        .create_download(&hashless, Some(&stub_server("127.0.0.1")), &prov_paths)
+        .create_download(
+            &hashless,
+            Some(&stub_server("127.0.0.1")),
+            &prov_paths,
+            None,
+        )
         .unwrap()
         .id();
     repo.record_provisional_part_hashes(prov_id, &peer_hashes)
@@ -242,21 +247,19 @@ async fn hash_authority_resolves_link_provisional_and_none<R: DownloadRepository
     );
 
     // No authority: neither a link `p=` set nor recorded peer hashes.
-    let hashless_small = Ed2kFileLink {
-        name: Ed2kText::from_utf8("none.bin"),
-        size: 128,
-        file_hash: FileHash::from_bytes([0x44; FileHash::BYTE_LEN]),
-        part_hash_set: None,
-        aich_root: None,
-        ipv6_sources: Vec::new(),
-        sources: Default::default(),
-    };
+    let hashless_small = Ed2kFileLink::new(
+        Ed2kText::from_utf8("none.bin"),
+        128,
+        FileHash::from_bytes([0x44; FileHash::BYTE_LEN]),
+    )
+    .expect("a size eD2k addresses");
     let none_paths = DownloadPaths::from_final_path(dir.join("none.bin"));
     let none_id = repo
         .create_download(
             &hashless_small,
             Some(&stub_server("127.0.0.1")),
             &none_paths,
+            None,
         )
         .unwrap()
         .id();
@@ -267,35 +270,31 @@ async fn hash_authority_resolves_link_provisional_and_none<R: DownloadRepository
 }
 
 #[tokio::test]
-async fn store_in_memory_persists_revalidates_and_finalizes() {
+async fn store_in_memory_persists_and_revalidates() {
     let dir = tempfile::tempdir().unwrap();
     let paths = DownloadPaths::from_final_path(dir.path().join("contract.bin"));
-    persists_revalidates_and_finalizes(store_in_memory(), &paths).await;
+    persists_and_revalidates(store_in_memory(), &paths).await;
 }
 
 #[tokio::test]
-async fn store_on_file_persists_revalidates_and_finalizes() {
+async fn store_on_file_persists_and_revalidates() {
     let dir = tempfile::tempdir().unwrap();
     let paths = DownloadPaths::from_final_path(dir.path().join("contract.bin"));
-    persists_revalidates_and_finalizes(store_on_file(dir.path()), &paths).await;
-    // The content-file promotion is additionally observable on disk: the
-    // whole file at `final_path`, no leftover `.part`.
-    assert_eq!(std::fs::read(paths.final_path()).unwrap(), fixture_bytes());
-    assert!(!paths.part_path().exists());
+    persists_and_revalidates(store_on_file(dir.path()), &paths).await;
 }
 
 #[tokio::test]
-async fn store_in_memory_corrupted_bytes_fail_finalize_and_revalidate() {
+async fn store_in_memory_corrupted_bytes_fail_revalidation() {
     let dir = tempfile::tempdir().unwrap();
     let paths = DownloadPaths::from_final_path(dir.path().join("contract.bin"));
-    corrupted_bytes_fail_finalize_and_revalidate(store_in_memory(), &paths).await;
+    corrupted_bytes_fail_revalidation(store_in_memory(), &paths).await;
 }
 
 #[tokio::test]
-async fn store_on_file_corrupted_bytes_fail_finalize_and_revalidate() {
+async fn store_on_file_corrupted_bytes_fail_revalidation() {
     let dir = tempfile::tempdir().unwrap();
     let paths = DownloadPaths::from_final_path(dir.path().join("contract.bin"));
-    corrupted_bytes_fail_finalize_and_revalidate(store_on_file(dir.path()), &paths).await;
+    corrupted_bytes_fail_revalidation(store_on_file(dir.path()), &paths).await;
 }
 
 #[tokio::test]
@@ -321,7 +320,7 @@ fn a_distrusted_peer_survives_a_reopen() {
 
     let repo = store_on_file(dir.path());
     let id = repo
-        .create_download(&link, Some(&stub_server("127.0.0.1")), &paths)
+        .create_download(&link, Some(&stub_server("127.0.0.1")), &paths, None)
         .unwrap()
         .id();
     repo.distrust_peer(id, peer).unwrap();
@@ -331,5 +330,37 @@ fn a_distrusted_peer_survives_a_reopen() {
     assert_eq!(
         store_on_file(dir.path()).distrusted_peers(id).unwrap(),
         vec![peer]
+    );
+}
+
+/// A download keeps the Kad AICH root it was started from, and the contest
+/// that ends it, across a restart (ADR-0038).
+#[test]
+fn a_kad_aich_root_and_its_contest_survive_a_reopen() {
+    let dir = tempfile::tempdir().unwrap();
+    let paths = DownloadPaths::from_final_path(dir.path().join("rooted.bin"));
+    let link = file_link("rooted.bin", &fixture_bytes());
+    let root = rmule_primitives::AichRootHash::from_bytes([0xA1; 20]);
+
+    let repo = store_on_file(dir.path());
+    let id = repo
+        .create_download(&link, None, &paths, Some(root))
+        .unwrap()
+        .id();
+    drop(repo);
+    let repo = store_on_file(dir.path());
+    assert_eq!(
+        repo.load_download(id).unwrap().kad_aich_root(),
+        Some(rmule_core::KadAichRoot::Trusted(root))
+    );
+
+    repo.contest_kad_aich_root(id).unwrap();
+    drop(repo);
+    assert_eq!(
+        store_on_file(dir.path())
+            .load_download(id)
+            .unwrap()
+            .kad_aich_root(),
+        Some(rmule_core::KadAichRoot::Contested)
     );
 }

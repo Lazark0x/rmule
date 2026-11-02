@@ -83,6 +83,15 @@ impl ServerUdpCrypt {
         let advertised = udp_flags.is_some_and(ServerUdpFlags::supports_udp_obfuscation);
         (self.udp_key != 0 && advertised && learned_here).then_some(self.udp_key)
     }
+
+    /// Whether the key was learned under an address other than `own`, the one
+    /// we hold now: aMule's `CheckForExpiredUDPKeys` test (stock 2.3.3
+    /// `ServerList.cpp:1017`).
+    #[must_use]
+    pub(crate) fn expired_under(&self, udp_flags: Option<ServerUdpFlags>, own: Ipv4Addr) -> bool {
+        let advertised = udp_flags.is_some_and(ServerUdpFlags::supports_udp_obfuscation);
+        self.udp_key != 0 && advertised && self.key_ip != Some(own)
+    }
 }
 
 #[cfg(test)]

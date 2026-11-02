@@ -18,28 +18,28 @@
 //! most one live download (the store refuses a duplicate), so a plain set of
 //! hashes balances: each start inserts its hash, its retire removes that hash.
 
-use std::collections::HashSet;
-use std::sync::{Arc, Mutex};
+use parking_lot::Mutex;
+use std::sync::Arc;
 
-use rmule_primitives::FileHash;
+use rmule_primitives::{FileHash, OwnFileSet};
 
 /// The mirrored state: the Shared File Registry's key set, and the Download
 /// Set's file hashes.
 #[derive(Default)]
 struct Known {
-    shared: HashSet<FileHash>,
-    downloading: HashSet<FileHash>,
+    shared: OwnFileSet,
+    downloading: OwnFileSet,
 }
 
 /// The cell itself — cloned into `FirewalledWiring` (the one reader) and the
-/// actor's `CoreWiring` (the writers). A plain `std::sync::Mutex`: every
+/// actor's `CoreWiring` (the writers). A plain `parking_lot::Mutex`: every
 /// section below is a map update that never crosses an `.await`.
 #[derive(Clone, Default)]
 pub(crate) struct SharedFileKnown(Arc<Mutex<Known>>);
 
 impl SharedFileKnown {
-    fn lock(&self) -> std::sync::MutexGuard<'_, Known> {
-        self.0.lock().expect("file-known mutex")
+    fn lock(&self) -> parking_lot::MutexGuard<'_, Known> {
+        self.0.lock()
     }
 
     /// A file joined the share set — a shared directory's scan, or a

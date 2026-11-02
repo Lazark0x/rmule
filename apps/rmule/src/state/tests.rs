@@ -16,11 +16,11 @@ fn snapshot_frames_replace_levels_and_stamp_injected_time() {
         ..TransferRates::default()
     };
     let dirty = state.apply(
-        Action::Snapshot(BridgeSnapshot {
+        Action::Snapshot(Box::new(BridgeSnapshot {
             diagnostics: DiagnosticsSnapshot::default(),
             rates: rates.clone(),
             taken_at: now,
-        }),
+        })),
         now,
     );
     assert!(dirty);
@@ -35,7 +35,40 @@ fn core_closed_flips_liveness_and_says_so() {
     let dirty = state.apply(Action::CoreClosed, Instant::now());
     assert!(dirty);
     assert!(!state.core_alive);
-    assert_eq!(state.notable.as_deref(), Some("core stopped"));
+    assert_eq!(
+        state.notable.as_deref(),
+        Some("the engine stopped; press q and start rmule again")
+    );
+}
+
+/// Every level the chrome reads is folded away with the core, so nothing is
+/// claimed for a node that is gone and no snapshot will correct.
+#[test]
+fn a_stopped_core_claims_no_connection_rate_or_running_row() {
+    let mut state = UiState::default();
+    let id = download_id(7);
+    state.ed2k = Ed2kConnection::Connected {
+        client_id: rmule_primitives::ClientId::from_u32(0x0100_007F),
+    };
+    state.rates.down_total_bps = 4096.0;
+    state.rates.download_bps.insert(id, 4096.0);
+    state.apply(
+        Action::Core(download_event(DownloadEvent::DownloadQueued {
+            download_id: id,
+            file_hash: file_hash(7),
+            metadata: unnamed_metadata(),
+            file_path: crate::fixture::part_file(),
+        })),
+        Instant::now(),
+    );
+    state.downloads.get_mut(&id).expect("row").status = DownloadStatus::Downloading;
+    assert_eq!(state.download_speed(id), 4096.0);
+
+    state.apply(Action::CoreClosed, Instant::now());
+
+    assert!(matches!(state.ed2k, Ed2kConnection::Disconnected));
+    assert_eq!(state.rates.down_total_bps, 0.0);
+    assert_eq!(state.download_speed(id), 0.0);
 }
 
 #[test]
@@ -44,7 +77,7 @@ fn core_closed_appends_a_stopped_log_line() {
     state.apply(Action::CoreClosed, Instant::now());
     assert_eq!(
         state.log.back().map(|line| line.text.as_str()),
-        Some("core stopped")
+        Some("the engine stopped; press q and start rmule again")
     );
 }
 
@@ -56,6 +89,7 @@ fn a_core_event_is_logged_before_it_folds() {
             download_id: download_id(1),
             file_hash: file_hash(7),
             metadata: unnamed_metadata(),
+            file_path: crate::fixture::part_file(),
         })),
         Instant::now(),
     );

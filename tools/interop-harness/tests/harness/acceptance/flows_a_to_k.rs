@@ -210,7 +210,7 @@ fn flow_f_kad_publish_search() {
             &repo_root,
         ],
     );
-    let verdict = read_string(&run_dir, "kad/kad-source-capture-verdict.txt");
+    let verdict = read_string(&run_dir, "kad/kad-source-capture-verdict.toml");
     assert!(
         verdict.contains("verdict = \"PASS\""),
         "flow F: the published source must be searched back (0x4B ack + 0x3B answer):\n{verdict}",
@@ -375,7 +375,7 @@ fn flow_j_inverted_keyword_store() {
             &repo_root,
         ],
     );
-    let verdict = read_string(&run_dir, "kad/kad-inverted-keyword-verdict.txt");
+    let verdict = read_string(&run_dir, "kad/kad-inverted-keyword-verdict.toml");
     assert!(
         verdict.contains("verdict = \"PASS\""),
         "flow J: aMule's genuine 0x33 keyword search must reach rmule's store and be served \

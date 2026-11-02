@@ -4,9 +4,12 @@
 use rmule_core::open_durable_store;
 
 use rmule_core::{
-    CreditStore, CreditTotals, DurableCreditStore, KeyBinding, PeerCredit, credit_modifier,
+    CreditProof, CreditStore, CreditTotals, DurableCreditStore, KeyBinding, PeerCredit,
+    credit_modifier,
 };
 use rmule_primitives::UserHash;
+use std::net::IpAddr;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 /// Everything the ledger owes a caller in one pass: both directions accrue,
 /// an unknown peer is zeroed rather than an error, the first SUI key is
@@ -52,15 +55,19 @@ fn accrues_both_directions_and_guards_the_bound_key(store: &mut DurableCreditSto
     assert_eq!(store.totals(stranger).unwrap(), CreditTotals::default());
     assert_eq!(store.public_key(stranger).unwrap(), None);
 
+    let snapshot = store.snapshot().unwrap();
+    let seen = snapshot[0].last_seen;
+    assert_ne!(seen, 0, "a row written is a row seen");
     assert_eq!(
-        store.snapshot().unwrap(),
+        snapshot,
         vec![PeerCredit {
             key: peer,
             totals: CreditTotals {
-                uploaded: 1_000_000,
-                downloaded: 9_999_360,
+                uploaded: 1,
+                downloaded: 1,
             },
             public_key: Some(key_a),
+            last_seen: seen,
         }]
     );
 }
@@ -90,12 +97,11 @@ fn store_totals_and_the_secured_key_survive_a_reopen() {
 
     {
         let ledger = DurableCreditStore::new(open_durable_store(path).unwrap());
-        // Adopt on an existing *unsecured* row (the peer already has totals).
-        ledger.record_download(peer, 5_000_000).unwrap();
         assert_eq!(
             ledger.bind_public_key(peer, &key_a).unwrap(),
             KeyBinding::Adopted
         );
+        ledger.record_download(peer, 5_000_000).unwrap();
     }
 
     let ledger = DurableCreditStore::new(open_durable_store(path).unwrap());
@@ -109,9 +115,195 @@ fn store_totals_and_the_secured_key_survive_a_reopen() {
     assert_eq!(ledger.public_key(peer).unwrap(), Some(key_a));
 }
 
-/// Accrual commits without a device flush (ADR-0083), so the ring reaches the
-/// disk at [`CreditStore::checkpoint`] — the call the core actor makes on
-/// shutdown. Bytes accrued and then checkpointed survive the reopen with
+/// aMule deletes what a row held when its first key is proved: the prover has
+/// not shown it earned them (`ClientCredits.cpp:235-241`). The wipe reaches the
+/// memory the queue ranks by and what the store holds, and a pending accrual is
+/// not added back on top of it.
+#[test]
+fn a_first_key_over_received_bytes_wipes_them_durably() {
+    let dir = tempfile::tempdir().unwrap();
+    let peer = UserHash::from_bytes([0x0A; UserHash::BYTE_LEN]);
+    let wiped = CreditTotals {
+        uploaded: 1,
+        downloaded: 1,
+    };
+    {
+        let ledger = DurableCreditStore::new(open_durable_store(dir.path()).unwrap());
+        ledger.record_download(peer, 5_000_000).unwrap();
+        ledger.checkpoint().unwrap();
+        ledger.record_download(peer, 7_000_000).unwrap();
+        ledger.bind_public_key(peer, b"first key").unwrap();
+        assert_eq!(ledger.totals(peer).unwrap(), wiped);
+        assert_eq!(ledger.modifier(peer).unwrap(), 1.0);
+    }
+    let ledger = DurableCreditStore::new(open_durable_store(dir.path()).unwrap());
+    assert_eq!(ledger.totals(peer).unwrap(), wiped);
+}
+
+/// A row with nothing received has nothing to steal: stock's test is the
+/// downloaded total alone (`ClientCredits.cpp:236`).
+#[test]
+fn a_first_key_over_uploads_alone_keeps_them() {
+    let ledger = DurableCreditStore::new(rmule_testkit::memory_store());
+    let peer = UserHash::from_bytes([0x0B; UserHash::BYTE_LEN]);
+    ledger.record_upload(peer, 5_000_000).unwrap();
+    ledger.bind_public_key(peer, b"first key").unwrap();
+    assert_eq!(ledger.totals(peer).unwrap().uploaded, 5_000_000);
+}
+
+/// `GetCurrentIdentState` read at the three doors (`ClientCredits.cpp:68-131`):
+/// a keyed row pays and accrues only where its key was proved, a thief naming
+/// the hash neither takes the credit nor writes to the ledger, and a row with
+/// no key stays open.
+#[test]
+fn a_keyed_row_pays_and_accrues_only_where_its_key_was_proved() {
+    const MIB: u64 = 1 << 20;
+    let ledger = DurableCreditStore::new(rmule_testkit::memory_store());
+    let peer = UserHash::from_bytes([0x0C; UserHash::BYTE_LEN]);
+    let (owner, thief): (IpAddr, IpAddr) = (
+        "203.0.113.1".parse().unwrap(),
+        "203.0.113.2".parse().unwrap(),
+    );
+    ledger.bind_public_key(peer, b"key").unwrap();
+    ledger.record_download(peer, 100 * MIB).unwrap();
+    let earned = ledger.modifier(peer).unwrap();
+    assert!(earned > 1.0);
+
+    assert_eq!(ledger.proof(peer, thief), CreditProof::Owed);
+    assert_eq!(ledger.score_modifier(peer, thief).unwrap(), 1.0);
+    ledger.credit_upload(peer, thief, 1).unwrap();
+    ledger.credit_download(peer, thief, 1).unwrap();
+    assert_eq!(ledger.totals(peer).unwrap().uploaded, 0);
+    assert_eq!(ledger.totals(peer).unwrap().downloaded, 100 * MIB);
+
+    ledger.prove(peer, owner);
+    assert_eq!(ledger.proof(peer, owner), CreditProof::Proved);
+    assert_eq!(ledger.score_modifier(peer, owner).unwrap(), earned);
+    ledger.credit_upload(peer, owner, 7).unwrap();
+    assert_eq!(ledger.totals(peer).unwrap().uploaded, 7);
+
+    assert_eq!(ledger.proof(peer, thief), CreditProof::Elsewhere);
+    assert_eq!(ledger.score_modifier(peer, thief).unwrap(), 0.0);
+
+    let open = UserHash::from_bytes([0x0D; UserHash::BYTE_LEN]);
+    assert_eq!(ledger.proof(open, thief), CreditProof::Open);
+    ledger.credit_upload(open, thief, 3).unwrap();
+    assert_eq!(ledger.totals(open).unwrap().uploaded, 3);
+}
+
+/// One client holds one address per family (ADR-0107): a proof over IPv6 is no
+/// bad-guy mark on its IPv4 link.
+#[test]
+fn a_proof_in_one_family_leaves_the_other_alone() {
+    let ledger = DurableCreditStore::new(rmule_testkit::memory_store());
+    let peer = UserHash::from_bytes([0x0E; UserHash::BYTE_LEN]);
+    let (v4, v6): (IpAddr, IpAddr) = (
+        "203.0.113.1".parse().unwrap(),
+        "2001:db8::1".parse().unwrap(),
+    );
+    ledger.bind_public_key(peer, b"key").unwrap();
+    ledger.prove(peer, v4);
+    ledger.prove(peer, v6);
+    assert_eq!(ledger.proof(peer, v4), CreditProof::Proved);
+    assert_eq!(ledger.proof(peer, v6), CreditProof::Proved);
+}
+
+/// aMule drops a record 150 days unseen at load (`ClientCreditsList.cpp:169`).
+/// The ring holds no clock of its own, so a row ages whether or not a
+/// `clients.met` was ever written, a proof with no byte moved counts as seen,
+/// and a row inside the window is kept.
+#[test]
+fn a_row_unseen_for_150_days_leaves_at_open() {
+    let dir = tempfile::tempdir().unwrap();
+    let (stale, proved) = (
+        UserHash::from_bytes([0x0F; UserHash::BYTE_LEN]),
+        UserHash::from_bytes([0x10; UserHash::BYTE_LEN]),
+    );
+    let at: IpAddr = "203.0.113.1".parse().unwrap();
+    let start = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let opened = |days: u64| {
+        let store = open_durable_store(dir.path()).unwrap();
+        DurableCreditStore::opened_at(store, start + days * 86_400)
+    };
+    {
+        let ledger = opened(0);
+        ledger.record_download(stale, 5_000_000).unwrap();
+        ledger.bind_public_key(proved, b"key").unwrap();
+        ledger.checkpoint_at(start).unwrap();
+    }
+    {
+        let ledger = opened(149);
+        assert_eq!(ledger.totals(stale).unwrap().downloaded, 5_000_000);
+        ledger.prove(proved, at);
+        ledger.checkpoint_at(start + 149 * 86_400).unwrap();
+    }
+    let ledger = opened(151);
+    assert_eq!(ledger.totals(stale).unwrap(), CreditTotals::default());
+    let rows = ledger.snapshot().unwrap();
+    assert_eq!(
+        rows.iter().map(|row| row.key).collect::<Vec<_>>(),
+        vec![proved],
+        "the stale row left the store; the proved one was seen"
+    );
+}
+
+/// Accrual is a memory step (ADR-0031, ADR-0083): a store whose one writer is
+/// busy, as it is through any commit's device flush, holds no block's count.
+#[test]
+fn an_accrual_waits_for_no_store_writer() {
+    let store = rmule_testkit::memory_store();
+    let ledger = DurableCreditStore::new(store.clone());
+    let peer = UserHash::from_bytes([0x12; UserHash::BYTE_LEN]);
+    let (held_tx, held_rx) = std::sync::mpsc::channel();
+    let (done_tx, done_rx) = std::sync::mpsc::channel();
+
+    let writer = std::thread::spawn(move || {
+        store.write(|_| {
+            held_tx.send(()).unwrap();
+            done_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+            Ok::<_, rmule_core::CoreError>(())
+        })
+    });
+    held_rx.recv().unwrap();
+
+    ledger.record_upload(peer, 184_320).unwrap();
+
+    done_tx.send(()).unwrap();
+    writer.join().unwrap().unwrap();
+    assert_eq!(ledger.totals(peer).unwrap().uploaded, 184_320);
+}
+
+/// The checkpoint is what the store hears, once, and what moved after it is
+/// not written over a key bound meanwhile.
+#[test]
+fn what_moved_reaches_the_store_at_the_checkpoint_and_keeps_a_bound_key() {
+    let store = rmule_testkit::memory_store();
+    let ledger = DurableCreditStore::new(store.clone());
+    let peer = UserHash::from_bytes([0x13; UserHash::BYTE_LEN]);
+    let key = vec![0x30, 0x59, 0x01];
+
+    ledger.record_upload(peer, 7).unwrap();
+    let stored = |store| DurableCreditStore::new(store).totals(peer).unwrap();
+    assert_eq!(stored(store.clone()).uploaded, 0);
+
+    ledger.checkpoint().unwrap();
+    assert_eq!(
+        ledger.bind_public_key(peer, &key).unwrap(),
+        KeyBinding::Adopted
+    );
+    ledger.record_upload(peer, 3).unwrap();
+    ledger.checkpoint().unwrap();
+
+    assert_eq!(stored(store).uploaded, 10);
+    assert_eq!(ledger.public_key(peer).unwrap(), Some(key));
+}
+
+/// Accrual lands in memory (ADR-0083), so the ring reaches the disk at
+/// [`CreditStore::checkpoint`] — the call the core actor makes once a minute
+/// and on shutdown. Bytes accrued and then checkpointed survive the reopen with
 /// nothing else writing the store.
 #[test]
 fn accrued_bytes_are_durable_once_the_ring_is_checkpointed() {

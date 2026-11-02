@@ -1,0 +1,5 @@
+┌ Unshare ───────────────────────────────────────┐
+│ Unshare a file whose name is not known yet?   ▲│
+│                                               █│
+│ Stops serving it; peers lose the source.      ▼│
+└───────────────────────────────────────── 3 / 5 ┘

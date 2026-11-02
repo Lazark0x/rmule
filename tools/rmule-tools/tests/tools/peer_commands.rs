@@ -3,12 +3,14 @@
 //! fields the tool prints back. The two capture commands are covered by their
 //! `--help` surface here and by a live `#[ignore]`d run.
 
+use rmule_peer::WireStatus;
+
 use std::net::Ipv4Addr;
 
 use assert_cmd::Command;
 use predicates::prelude::*;
 use rmule_peer::{
-    FileReqAnsNoFil, FileStatus, HashSetAnswer, HashSetRequest, Hello, HelloAnswer, PartBitmap,
+    FileReqAnsNoFil, FileStatus, HashSetAnswer, HashSetRequest, Hello, HelloAnswer,
     PartOffsetWidth, PartRanges, PeerHelloBody, QueueRanking, ReqFileNameAnswer, RequestFileName,
     RequestParts, SendingPart, SetReqFileId, StartUploadReq,
 };
@@ -140,7 +142,7 @@ fn peer_packet_inspect_set_req_file_id_kind() {
 fn peer_packet_inspect_file_status_part_count_and_present_parts() {
     let pkt = FileStatus {
         file_hash: file_hash(),
-        bitmap: PartBitmap::decode(8, &[0b0000_1111]).unwrap(),
+        bitmap: WireStatus::decode(8, &[0b0000_1111]).unwrap(),
     }
     .encode_packet();
     run_inspect_against("status.bin", &pkt)
@@ -163,10 +165,11 @@ fn peer_packet_inspect_hash_set_request_kind() {
 fn peer_packet_inspect_hash_set_answer_lists_part_hashes() {
     let pkt = HashSetAnswer {
         file_hash: file_hash(),
-        part_hashes: vec![
+        part_hashes: rmule_primitives::PartHashList::new(vec![
             PartHash::from_bytes([0xAA; 16]),
             PartHash::from_bytes([0xBB; 16]),
-        ],
+        ])
+        .unwrap(),
     }
     .encode_packet();
     run_inspect_against("hsans.bin", &pkt)
@@ -220,7 +223,7 @@ fn peer_packet_inspect_ask_shared_files_dir_ans_kind() {
 
 #[test]
 fn peer_packet_inspect_request_parts_lists_three_ranges() {
-    let ranges = PartRanges::new([(0, 100), (200, 300), (0, 0)]).unwrap();
+    let ranges = PartRanges::new([(0, 100), (200, 300), (0, 0)]);
     let pkt = RequestParts {
         file_hash: file_hash(),
         ranges,

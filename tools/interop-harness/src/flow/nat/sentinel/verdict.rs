@@ -2,8 +2,9 @@
 //! decided.
 //!
 //! The flow carries two independent claims and the verdict keeps them apart.
-//! **rmule's half** is the sentinel-safe reader gate: a probe that decodes a
-//! sentinel-bearing payload through the compiled binary. **aMule's half** is
+//! **rmule's half** is the sentinel-safe reader gate: a probe that decodes
+//! sentinel-bearing payloads through the compiled binary and whose own lines
+//! the verdict keeps. **aMule's half** is
 //! the legacy leg: a stock 2.3.3 handed the same shape on the wire, judged
 //! solely on what it then dialled and whether its session survived. A run that
 //! measures only the first says so, in a `note` that travels with every verdict
@@ -14,8 +15,10 @@ use serde::Serialize;
 use super::legacy::LegacyObservation;
 use super::plan::{
     CONTROL_FIRST_RECORDS, CONTROL_SECOND_RECORDS, PACKED_FIRST_RECORDS, PACKED_SECOND_RECORDS,
-    TCP_RECORDS,
+    TCP_RECORDS, inline_misread,
 };
+
+use crate::verdict::Verdict;
 
 /// One sink dial as the verdict records it: aMule naming the endpoint it
 /// decoded out of a source record.
@@ -44,7 +47,7 @@ pub(crate) struct WireRow {
 pub(crate) struct SentinelVerdict {
     #[serde(rename = "scenario")]
     pub(crate) flow: &'static str,
-    pub(crate) verdict: &'static str,
+    pub(crate) verdict: Verdict,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) skip_reason: Option<String>,
     /// What this verdict does and does not claim, spelled out every time so a
@@ -76,6 +79,8 @@ pub(crate) struct SentinelVerdict {
     /// Did aMule dial the broadcast address a `0xFFFFFFFF` id unpacks to?
     /// `-1` when the row was never counted.
     pub(crate) amule_dialled_broadcast_id: i64,
+    /// SYNs at the endpoint the sentinel's first six inline bytes spell.
+    pub(crate) amule_dialled_inline_misread: i64,
     /// Did aMule dial the packed datagram's first body?
     pub(crate) amule_dialled_packed_first: bool,
     /// Did aMule dial the packed datagram's second body — the one only a reader
@@ -95,6 +100,8 @@ pub(crate) struct SentinelVerdict {
     pub(crate) amule_status: String,
     /// The probe argv that was (or was not) run.
     pub(crate) sentinel_reader_probe: Vec<String>,
+    /// What the probe printed: rmule's own reader on the lists it decoded.
+    pub(crate) sentinel_reader_lines: Vec<String>,
     /// aMule's own log lines naming the source list.
     pub(crate) amule_log_lines: Vec<String>,
     /// Every sink dial, in arrival order.
@@ -105,7 +112,7 @@ pub(crate) struct SentinelVerdict {
 
 /// How the legacy leg came out, and why.
 pub(crate) struct LegacyLabel {
-    /// `PASS`, `DESYNC`, `OBSERVED`.
+    /// `STRIDE-MISREAD`, `UNEXPECTED-READ`, `OBSERVED`.
     pub(crate) label: &'static str,
     /// The sentence that explains it.
     pub(crate) detail: String,
@@ -113,13 +120,13 @@ pub(crate) struct LegacyLabel {
 
 /// Judge the legacy leg on aMule's behaviour alone.
 ///
-/// `PASS` needs all three of the sentinel row's clauses about the counterparty:
-/// aMule dialled the record *before* the sentinel, dialled the one *after* it
-/// at the right offset, and kept its session. Anything else that still saw the
-/// list go out is a `DESYNC` — the finding this flow exists to detect. A leg
-/// where the list never went out (or nobody logged in) is `OBSERVED`: the
-/// topology stood up but the exchange did not fire, which proves nothing either
-/// way.
+/// `STRIDE-MISREAD` is the row's claim: aMule dialled the record *before* the
+/// sentinel, dialled the endpoint the sentinel's first six address bytes spell,
+/// never reached the record *after* it, dialled nothing at the sentinel's own
+/// port or id, and kept its session. Any other reaction to a list that went out
+/// is `UNEXPECTED-READ`. A leg where the list never went out (or nobody logged
+/// in) is `OBSERVED`: the topology stood up but the exchange did not fire,
+/// which proves nothing either way.
 pub(crate) fn judge_legacy(observation: &LegacyObservation) -> LegacyLabel {
     if observation.logins == 0 || !observation.emitted {
         return LegacyLabel {
@@ -134,40 +141,51 @@ pub(crate) fn judge_legacy(observation: &LegacyObservation) -> LegacyLabel {
     let before = observation.was_dialled(TCP_RECORDS[0].label);
     let after = observation.was_dialled(TCP_RECORDS[2].label);
     let sentinel_row = format!("syn_{}", TCP_RECORDS[1].label);
-    let (Some(sentinel_port), Some(broadcast)) = (
+    let (Some(sentinel_port), Some(broadcast), Some(misread)) = (
         observation.wire_row(&sentinel_row),
         observation.wire_row("syn_broadcast_id"),
+        observation.wire_row("syn_inline_misread"),
     ) else {
         return LegacyLabel {
             label: "OBSERVED",
             detail: format!(
-                "the pcap rows that settle the silence were not counted ({sentinel_row} = {}, \
-                 syn_broadcast_id = {}), so a zero at either would be one nobody measured",
+                "the pcap rows that settle the read were not counted ({sentinel_row} = {}, \
+                 syn_broadcast_id = {}, syn_inline_misread = {}), so a zero at any of them \
+                 would be one nobody measured",
                 observation.wire_row_recorded(&sentinel_row),
                 observation.wire_row_recorded("syn_broadcast_id"),
+                observation.wire_row_recorded("syn_inline_misread"),
             ),
         };
     };
-    if before && after && sentinel_port == 0 && broadcast == 0 && observation.session_survived {
+    let (misread_host, misread_port) = inline_misread(&TCP_RECORDS[1]);
+    if before
+        && !after
+        && misread > 0
+        && sentinel_port == 0
+        && broadcast == 0
+        && observation.session_survived
+    {
         return LegacyLabel {
-            label: "PASS",
+            label: "STRIDE-MISREAD",
             detail: format!(
-                "stock aMule 2.3.3 dialled {} and {} — the records either side of the Sentinel \
-                 Source — at their own ports, dialled nothing at the sentinel's port ({}) and \
-                 nothing at the broadcast address its 0xFFFFFFFF id unpacks to ({}), and kept its \
-                 server session. The sixteen tail bytes past the declared count shifted no record \
-                 and cost no session.",
-                TCP_RECORDS[0].host, TCP_RECORDS[2].host, sentinel_port, broadcast
+                "stock aMule 2.3.3 dialled {} before the Sentinel Source, read the sentinel's \
+                 id as an address and dropped it (nothing at its port or the broadcast address \
+                 it unpacks to: {sentinel_port}, {broadcast}), then took the first six inline \
+                 address bytes for a record and sent {misread} SYNs at \
+                 {misread_host}:{misread_port}. Its declared count ran out there, so it never \
+                 reached {}. The rest of the frame was ignored and the session survived.",
+                TCP_RECORDS[0].host, TCP_RECORDS[2].host
             ),
         };
     }
     LegacyLabel {
-        label: "DESYNC",
+        label: "UNEXPECTED-READ",
         detail: format!(
-            "stock aMule 2.3.3 did NOT read the sentinel-bearing list cleanly: \
+            "stock aMule 2.3.3 did not read the list the way a six-byte stride predicts: \
              dialled_before_sentinel = {before}, dialled_after_sentinel = {after}, \
-             syn_at_sentinel_port = {sentinel_port}, syn_at_broadcast_id = {broadcast}, \
-             session_survived = {}. This is the legacy-safety failure the flow exists to detect.",
+             syn_inline_misread = {misread}, syn_at_sentinel_port = {sentinel_port}, \
+             syn_at_broadcast_id = {broadcast}, session_survived = {}.",
             observation.session_survived
         ),
     }
@@ -212,7 +230,9 @@ mod tests {
         observe(journal, rows, status.to_owned(), Vec::new())
     }
 
-    const BOTH_SIDES: &str = r#"
+    /// The journal of the read run `1793352976` drew: the record before the
+    /// sentinel is dialled, the one after it is not.
+    const BEFORE_ONLY: &str = r#"
 logins = 1
 [[emitted]]
 transport = "tcp"
@@ -224,72 +244,71 @@ bytes = "e342"
 local = "203.0.113.50:5001"
 peer = "p"
 bytes = ""
-[[sink_dial]]
-local = "203.0.113.60:5003"
-peer = "p"
-bytes = ""
 "#;
 
-    /// The two silence rows, counted at zero.
-    fn quiet_rows() -> Vec<(String, u64)> {
+    /// The rows of a stride misread: the inline bytes dialled, the sentinel's
+    /// own endpoints silent.
+    fn misread_rows() -> Vec<(String, u64)> {
         vec![
             ("syn_sentinel".to_owned(), 0),
             ("syn_broadcast_id".to_owned(), 0),
+            ("syn_inline_misread".to_owned(), 10),
         ]
     }
 
     #[test]
-    fn dialling_both_sides_of_the_sentinel_and_keeping_the_session_is_the_pass() {
-        let judged = judge_legacy(&observation(BOTH_SIDES, quiet_rows(), "eD2k: Connected"));
-        assert_eq!(judged.label, "PASS", "{}", judged.detail);
+    fn the_inline_bytes_read_as_one_record_with_the_session_kept_is_the_stride_misread() {
+        let judged = judge_legacy(&observation(BEFORE_ONLY, misread_rows(), "eD2k: Connected"));
+        assert_eq!(judged.label, "STRIDE-MISREAD", "{}", judged.detail);
     }
 
-    /// A tcpdump that could not count a silence row is not the silence: the
-    /// leg reads `OBSERVED`, never the `PASS` a defaulted zero would give.
+    /// A tcpdump that could not count a row is not a zero: the leg reads
+    /// `OBSERVED`, never the label a defaulted zero would give.
     #[test]
-    fn an_uncounted_silence_row_is_not_a_pass() {
-        let judged = judge_legacy(&observation(BOTH_SIDES, Vec::new(), "eD2k: Connected"));
+    fn an_uncounted_row_settles_nothing() {
+        let judged = judge_legacy(&observation(BEFORE_ONLY, Vec::new(), "eD2k: Connected"));
         assert_eq!(judged.label, "OBSERVED", "{}", judged.detail);
-        let one_row = vec![("syn_broadcast_id".to_owned(), 0)];
-        let judged = judge_legacy(&observation(BOTH_SIDES, one_row, "eD2k: Connected"));
+        let two_rows = misread_rows().into_iter().take(2).collect();
+        let judged = judge_legacy(&observation(BEFORE_ONLY, two_rows, "eD2k: Connected"));
         assert_eq!(judged.label, "OBSERVED", "{}", judged.detail);
     }
 
-    /// The record *after* the sentinel going undialled while the one before it
-    /// was dialled is exactly the offset desync the tail could cause.
+    /// A body that dials the record after the sentinel skipped the inline
+    /// bytes, which is not what a six-byte stride does.
     #[test]
-    fn dialling_only_the_record_before_the_sentinel_is_a_desync() {
-        let only_before = BOTH_SIDES
-            .split("[[sink_dial]]")
-            .take(2)
-            .collect::<Vec<_>>()
-            .join("[[sink_dial]]");
-        let judged = judge_legacy(&observation(&only_before, quiet_rows(), "eD2k: Connected"));
-        assert_eq!(judged.label, "DESYNC", "{}", judged.detail);
-        assert!(judged.detail.contains("dialled_after_sentinel = false"));
+    fn reaching_the_record_after_the_sentinel_is_not_the_stride_read() {
+        let both = format!(
+            "{BEFORE_ONLY}[[sink_dial]]\nlocal = \"203.0.113.60:5003\"\npeer = \"p\"\nbytes = \"\"\n"
+        );
+        let judged = judge_legacy(&observation(&both, misread_rows(), "eD2k: Connected"));
+        assert_eq!(judged.label, "UNEXPECTED-READ", "{}", judged.detail);
+        assert!(judged.detail.contains("dialled_after_sentinel = true"));
     }
 
     #[test]
-    fn a_dial_at_the_broadcast_address_the_sentinel_id_unpacks_to_is_a_desync() {
-        let judged = judge_legacy(&observation(
-            BOTH_SIDES,
-            vec![
-                ("syn_sentinel".to_owned(), 0),
-                ("syn_broadcast_id".to_owned(), 1),
-            ],
-            "eD2k: Connected",
-        ));
-        assert_eq!(judged.label, "DESYNC", "{}", judged.detail);
+    fn no_dial_at_the_inline_bytes_is_not_the_stride_read() {
+        let mut rows = misread_rows();
+        rows[2].1 = 0;
+        let judged = judge_legacy(&observation(BEFORE_ONLY, rows, "eD2k: Connected"));
+        assert_eq!(judged.label, "UNEXPECTED-READ", "{}", judged.detail);
     }
 
     #[test]
-    fn a_dropped_session_is_a_desync_even_with_both_dials() {
+    fn a_dial_at_the_broadcast_address_the_sentinel_id_unpacks_to_is_not_the_stride_read() {
+        let mut rows = misread_rows();
+        rows[1].1 = 1;
+        let judged = judge_legacy(&observation(BEFORE_ONLY, rows, "eD2k: Connected"));
+        assert_eq!(judged.label, "UNEXPECTED-READ", "{}", judged.detail);
+    }
+
+    #[test]
+    fn a_dropped_session_is_not_the_stride_read() {
         let judged = judge_legacy(&observation(
-            BOTH_SIDES,
-            quiet_rows(),
+            BEFORE_ONLY,
+            misread_rows(),
             "eD2k: Not connected",
         ));
-        assert_eq!(judged.label, "DESYNC", "{}", judged.detail);
+        assert_eq!(judged.label, "UNEXPECTED-READ", "{}", judged.detail);
     }
 
     #[test]

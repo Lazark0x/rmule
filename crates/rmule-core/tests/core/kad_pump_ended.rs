@@ -14,10 +14,10 @@ use rmule_core::{
     ClientUdpBind, Core, CoreCommand, CoreConfig, CoreError, CoreEvent, DownloadCommand,
     DownloadEvent, DownloadFailure, KadEnableConfig, KadReachLevel, KadRuntimeFactory,
     KadSourceChannel, KadStopReason, PeerBuddy, PeerReach, PeerReachDropReason, PeerReachRoute,
+    ReachAddress,
 };
 use rmule_primitives::{
-    ClientId, FileHash, Ipv4Endpoint, PeerEndpoint, ServerEndpoint, SourceLookupTarget,
-    SourceSighting,
+    ClientId, FileHash, Ipv4Endpoint, ServerEndpoint, SourceLookupTarget, SourceSighting,
 };
 use tokio::sync::mpsc;
 use tokio::time::timeout;
@@ -67,8 +67,7 @@ impl KadRuntimeFactory for KillableKad {
 /// has nothing left to try before route 4's buddy.
 fn buddy_only_peer() -> PeerReach {
     PeerReach {
-        id: ClientId::from_u32(42),
-        tcp: PeerEndpoint::V4(Ipv4Endpoint::new(Ipv4Addr::new(45, 55, 200, 9), 4662)),
+        address: ReachAddress::LowId(ClientId::from_u32(42)),
         supports_direct_udp_callback: false,
         kad_udp: None,
         on_our_server: false,
@@ -77,6 +76,7 @@ fn buddy_only_peer() -> PeerReach {
             buddy_udp: Some(Ipv4Endpoint::new(Ipv4Addr::new(45, 55, 200, 9), 9000)),
         }),
         ipv6: None,
+        crypt: None,
         user_hash: None,
         supports_natt: false,
     }
@@ -198,6 +198,7 @@ async fn a_kad_death_ends_the_wait_of_a_download_that_had_only_kad() {
         source_hint: Some(ServerEndpoint::new("127.0.0.1", 1).unwrap()),
         name: rmule_testkit::file_name("kad-only.bin"),
         if_taken: rmule_core::NameTaken::Refuse,
+        kad_aich_root: None,
     }))
     .await
     .expect("download started");

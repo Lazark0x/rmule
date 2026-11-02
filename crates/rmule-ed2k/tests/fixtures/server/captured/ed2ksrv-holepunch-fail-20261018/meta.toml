@@ -1,0 +1,42 @@
+# The server-coordinated punch refused: a genuine `OP_LOWID_HOLEPUNCH_FAIL 0x62`
+# the third-party eD2k index server `andrey23127/ed2k-server` (pin `4da4774`,
+# v0.9.75) sent the asker of an `OP_LOWID_HOLEPUNCH_REQUEST 0x60` that named a
+# Low ID no client held — ADR-0091's second Rendezvous coordinator saying no.
+#
+# Cut from the server's own tap (`holepunch-fail/server.pcap`, the server's
+# namespace, TCP 4661) by TCP payload, one whole `0xE3` frame, never retyped:
+# 11 bytes = 5-byte header + opcode + 5-byte body. Nothing is fabricated
+# (ADR-0045).
+#
+# ## What this fixture is evidence FOR
+#
+# The `0x62` decoder against a second implementation's bytes: the body layout
+# `<target_id 4 LE><reason 1>` (the target reads `ba dc fe 00`, little-endian),
+# that the refusal names the target the request asked for, and that reason `1`
+# is "target not connected" — the one reason a later request can change.
+# Reasons `2` (target is High ID), `3` (bad request) and `4` (target sent no
+# UDP ports) were not drawn; they stay read from the server's source.
+#
+# Tier: **`single-oracle`** (ADR-0045 point 6). No other pinned body speaks the
+# `0x60`/`0x61`/`0x62` coordinator dialect.
+
+[provenance]
+counterparty  = "andrey23127/ed2k-server @ 4da4774 (v0.9.75), unmodified upstream source, image rmule/interop-ed2ksrv:local sha256:b21f342599b95bf64fa22243bac545c9a708991d9034ddc911d727e7403cd16e, pin verified by the image's org.rmule.ed2ksrv.commit label (recipe tools/interop-harness/images/ed2ksrv/Dockerfile, bench config tools/interop-harness/images/ed2ksrv/config.toml)"
+date          = "2026-10-18"
+runs          = "interop run 1792361017 (`ed2ksrv-holepunch-fail`), harness commit 34b0b73f, clean tree; verdict PASS, 3 of 3 claims. An earlier run the same day (1792359322) asked for 0x00FFFF00, whose four bytes read the same in either order; its frame is not kept"
+emitter       = "the `0x60` is `rmule-tools ed2k server probe --udp-ports-advert 4672 --holepunch-target 16702650`: a five-tag login carrying `CT_EMULE_UDPPORTS` (0x00001240), a High ID, then one request toward Low ID 0x00FEDCBA"
+stimulus_only = "rmule's `0x60` is not kept: it is rmule's own frame and never evidence (ADR-0045 point 2)"
+
+[topology]
+wan    = "fake-public 203.0.113.0/24; server 203.0.113.200 (TCP 4661)"
+asker  = "the probe at 203.0.113.2, High ID 40960203 (its own address), login advertised client UDP 4672"
+target = "Low ID 0x00FEDCBA, held by no client; its four bytes differ, so the byte order is read off the frame"
+
+[observed]
+server_tap = "one `0x60` from 203.0.113.2:47982 at 1792361131.629; one `0x62` back to it at the same millisecond"
+
+[frames.holepunch_fail_0x62]
+class     = "counterparty evidence"
+direction = "ed2ksrv -> rmule probe (203.0.113.2)"
+wire      = "e3 06 00 00 00 62 ba dc fe 00 01"
+layout    = "target Low ID u32 LE = 0x00FEDCBA (the id the request named); reason 1 = target not connected"

@@ -224,7 +224,7 @@ fn a_level_on_its_way_to_the_node_is_not_asked_for_twice() {
 }
 
 /// The node's own-IPv4 cache follows its owner on the change event (ADR-0084
-/// "Own address ownership"), and a Low-ID withdrawal is a change too: the
+/// "One owner of the Own Address"), and a Low-ID withdrawal is a change too: the
 /// node is re-bound to `0.0.0.0`, the value it is armed with when no address
 /// is known, so a key learned under the withdrawn address retires.
 #[test]
@@ -608,12 +608,14 @@ fn a_source_walk_answers_under_its_target_and_an_empty_walk_says_nothing() {
     let mut state = started(None, behind_nat(), now);
     let file_hash = FileHash::from_bytes([0x5B; FileHash::BYTE_LEN]);
     let target = SourceLookupTarget::new(file_hash, 1_024);
+    let storer = rmule_kad::KadNodeEndpoint::new(Ipv4Addr::new(198, 51, 100, 9), 4672);
 
     assert_eq!(
         step(
             &mut state,
             KadPumpInput::Event(KadEvent::SourcesFound {
                 target,
+                storer,
                 candidates: Vec::new(),
             }),
             now,
@@ -625,6 +627,7 @@ fn a_source_walk_answers_under_its_target_and_an_empty_walk_says_nothing() {
             &mut state,
             KadPumpInput::Event(KadEvent::SourcesFound {
                 target,
+                storer,
                 candidates: vec![rmule_kad::KadSourceCandidate::diagnostic(
                     rmule_kad::KadSourceDiagnostic::Firewalled
                 )],
@@ -635,6 +638,46 @@ fn a_source_walk_answers_under_its_target_and_an_empty_walk_says_nothing() {
             file_hash,
             answer: Vec::new(),
         }]
+    );
+}
+
+/// kno's own `0x3B` (bench run `1790199666`) crosses as the word of the
+/// storer that answered it, the party a loopback row is judged against
+/// (ADR-0085).
+#[test]
+fn a_kad_row_crosses_as_the_word_of_the_storer_that_answered() {
+    let datagram = include_bytes!(
+        "../../../../../rmule-kad/tests/fixtures/ipv6/captured/amule-kno-ab483654-kad-ip6-20260923/amule_kno_search_res_0x3b.bin"
+    );
+    let rmule_kad::KadDecoded::Plain(envelope) =
+        rmule_kad::decode_exact(datagram).expect("kno's datagram decodes")
+    else {
+        panic!("the bench ran every body crypt-off");
+    };
+    let candidates = rmule_kad::decode_source_result(&envelope).expect("rmule reads kno's answer");
+    let now = Instant::now();
+    let mut state = started(None, behind_nat(), now);
+    let target = SourceLookupTarget::new(FileHash::from_bytes([0x5C; FileHash::BYTE_LEN]), 1_024);
+    let storer = rmule_kad::KadNodeEndpoint::new(Ipv4Addr::new(45, 55, 200, 7), 4672);
+
+    let effects = step(
+        &mut state,
+        KadPumpInput::Event(KadEvent::SourcesFound {
+            target,
+            storer,
+            candidates,
+        }),
+        now,
+    );
+    let [KadPumpEffect::Sources { answer, .. }] = effects.as_slice() else {
+        panic!("one answer: {effects:?}");
+    };
+    let [row] = answer.as_slice() else {
+        panic!("one published source, one row: {answer:?}");
+    };
+    assert_eq!(
+        row.informant(),
+        rmule_primitives::Informant::Party(std::net::IpAddr::V4(storer.ip()))
     );
 }
 
@@ -708,6 +751,7 @@ fn contacts_are_counted_and_a_flood_offender_is_banned_when_reported() {
             KadPumpInput::Event(KadEvent::FloodOffenderDetected {
                 ip: offender,
                 opcode: 0x60,
+                proven: true,
             }),
             later,
         ),
@@ -715,5 +759,21 @@ fn contacts_are_counted_and_a_flood_offender_is_banned_when_reported() {
             ip: offender,
             at: later
         }]
+    );
+    assert_eq!(
+        step(
+            &mut state,
+            KadPumpInput::Event(KadEvent::FloodOffenderDetected {
+                ip: offender,
+                opcode: 0x60,
+                proven: false,
+            }),
+            later,
+        ),
+        [KadPumpEffect::Hush {
+            ip: offender,
+            at: later
+        }],
+        "a datagram that proved nothing bans nobody"
     );
 }

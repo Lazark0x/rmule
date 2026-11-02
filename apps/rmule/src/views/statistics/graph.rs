@@ -1,12 +1,12 @@
-//! The two rate graphs: one column per sample, newest at the right.
+//! The two rate graphs: one cell per history column, newest at the right.
 //!
-//! The window is stated in *time* — the sample ring holds ten minutes at the
-//! bridge's 1 Hz tick — and the pane plots as many of the newest samples as it
-//! has columns for, so it never interpolates. A metered zero keeps a floor so
-//! a live-but-idle link reads differently from one nobody measured; a stopped
-//! core freezes the graph on what was observed and says so in the title.
+//! The window picks what a column stands for — a tick, a minute, an hour — and
+//! the pane plots as many of the newest columns as it has cells for, so it never
+//! interpolates: wider panes see further back. A metered zero keeps a floor so
+//! a live-but-idle link reads differently from one nobody measured, and a span
+//! no tick landed in stays blank; a stopped core freezes the graph on what was
+//! observed and says so in the title.
 
-use std::collections::VecDeque;
 use std::time::Instant;
 
 use ratatui::Frame;
@@ -15,17 +15,14 @@ use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Paragraph, RenderDirection, Sparkline};
 
-use crate::rates::format_rate;
-use crate::state::{RateSample, UiState};
+use crate::state::{RateWindow, Rates, UiState};
 use crate::theme::Theme;
-use crate::views::relative_age;
-use crate::wrap::wrapped_lines;
+use crate::views::title::titled;
+use crate::words::statistics as words;
+use crate::words::units::rate;
+use crate::wrap::{display_width, wrapped_lines};
 
-/// The graph body before the first data tick. It names *why* the pane is
-/// empty, so a UI-only run does not read as a broken graph.
-pub(super) const NO_SAMPLES: &str = "no samples yet — one lands per core data tick";
-
-/// Which meter a graph plots. Both series ride the *same* [`RateSample`], so
+/// Which meter a graph plots. Both series ride the *same* history column, so
 /// the two graphs share an x-axis by construction — they cannot drift apart.
 #[derive(Clone, Copy)]
 pub(super) enum Series {
@@ -38,15 +35,15 @@ impl Series {
     /// immediate.
     const fn label(self) -> &'static str {
         match self {
-            Self::Down => "▼ Download",
-            Self::Up => "▲ Upload",
+            Self::Down => words::GRAPH_DOWN,
+            Self::Up => words::GRAPH_UP,
         }
     }
 
-    const fn value(self, sample: &RateSample) -> f64 {
+    const fn value(self, rates: Rates) -> f64 {
         match self {
-            Self::Down => sample.down_bps,
-            Self::Up => sample.up_bps,
+            Self::Down => rates.down_bps,
+            Self::Up => rates.up_bps,
         }
     }
 
@@ -62,14 +59,15 @@ impl Series {
 }
 
 /// One rate graph: a bordered pane whose title carries the current and peak
-/// readings and whose bottom border carries the visible time span.
+/// readings and whose bottom border carries the visible time span; the
+/// download graph, on top, says the window and its key.
 pub(super) fn draw_graph(
     frame: &mut Frame,
     area: Rect,
     state: &UiState,
     theme: &Theme,
     now: Instant,
-    series: Series,
+    (series, window): (Series, RateWindow),
 ) {
     let outline = Block::bordered().border_style(theme.chrome());
     let inner = outline.inner(area);
@@ -78,31 +76,41 @@ pub(super) fn draw_graph(
         return;
     }
 
-    let visible = visible_samples(&state.rate_history, inner.width);
+    let visible = state.rate_history.newest(window, usize::from(inner.width));
     let peak = visible
         .iter()
-        .map(|sample| series.value(sample))
+        .filter_map(|column| column.rates)
+        .map(|rates| series.value(rates))
         .fold(0.0_f64, f64::max);
-    let latest = visible.last().map(|sample| series.value(sample));
+    let latest = state.rate_history.latest().map(|rates| series.value(rates));
 
     let band = usize::from(area.width.saturating_sub(2));
-    let mut block = outline.title_top(Line::from(Span::styled(
-        graph_title(series.label(), latest, peak, band),
-        Style::new().fg(theme.fg),
-    )));
+    let hint = match series {
+        Series::Down => words::window_hint(window),
+        Series::Up => "",
+    };
+    let mut block = titled(
+        outline,
+        area.width,
+        (
+            &graph_title(series.label(), latest, (words::tallest(window), peak), band),
+            Style::new().fg(theme.fg),
+        ),
+        (hint, theme.dim_text()),
+    );
 
     // The x-axis lives on the bottom border: left edge = the oldest sample
     // still on screen, right edge = the newest tick — or an honest "stopped"
     // once the core's stream ended and the graph froze where it stood.
     if let Some(oldest) = visible.first() {
-        let left = format!(" {} ", relative_age(oldest.at, now));
+        let left = words::axis_age(now.saturating_duration_since(oldest.at));
         let (right, right_style) = if state.core_alive {
-            (" now ".to_string(), theme.dim_text())
+            (words::AXIS_NOW, theme.dim_text())
         } else {
-            (" stopped ".to_string(), Style::new().fg(theme.bad))
+            (words::AXIS_STOPPED, Style::new().fg(theme.bad))
         };
         // Both labels whole or neither (never truncate: drop a segment, never clip one).
-        if left.chars().count() + right.chars().count() <= band {
+        if display_width(&left) + display_width(right) <= band {
             block = block
                 .title_bottom(Line::from(Span::styled(left, theme.dim_text())))
                 .title_bottom(Line::from(Span::styled(right, right_style)).right_aligned());
@@ -113,7 +121,7 @@ pub(super) fn draw_graph(
     if visible.is_empty() {
         frame.render_widget(
             Paragraph::new(wrapped_lines(
-                NO_SAMPLES,
+                words::NO_SAMPLES,
                 usize::from(inner.width),
                 theme.dim_text(),
             )),
@@ -129,7 +137,11 @@ pub(super) fn draw_graph(
     let bars: Vec<u64> = visible
         .iter()
         .rev()
-        .map(|sample| bar_ticks(series.value(sample), peak, ticks))
+        .map(|column| {
+            column
+                .rates
+                .map_or(0, |rates| bar_ticks(series.value(rates), peak, ticks))
+        })
         .collect();
     frame.render_widget(
         Sparkline::default()
@@ -141,14 +153,7 @@ pub(super) fn draw_graph(
     );
 }
 
-/// The newest `width` samples, oldest first — exactly the ones a `width`-wide
-/// graph has columns for. Older history stays in the ring for a wider pane.
-fn visible_samples(history: &VecDeque<RateSample>, width: u16) -> Vec<&RateSample> {
-    let skip = history.len().saturating_sub(usize::from(width));
-    history.iter().skip(skip).collect()
-}
-
-/// One sample's bar height in eighth-of-a-row ticks, against a window scaled
+/// One column's bar height in eighth-of-a-row ticks, against a window scaled
 /// to its own `peak`.
 ///
 /// A *metered* zero keeps a one-tick floor: an idle second must read as a
@@ -170,20 +175,22 @@ fn bar_ticks(bps: f64, peak: f64, ticks: u64) -> u64 {
 /// The graph header, priority-dropped to fit its pane (never truncate: drop a whole
 /// segment, never clip one). The current reading outranks the peak; the label
 /// alone is the floor. With no samples at all there is no reading to state.
-fn graph_title(label: &str, now_bps: Option<f64>, peak_bps: f64, band: usize) -> String {
+fn graph_title(
+    label: &str,
+    now_bps: Option<f64>,
+    (tallest, peak_bps): (&str, f64),
+    band: usize,
+) -> String {
     let Some(now_bps) = now_bps else {
         return format!(" {label} ");
     };
-    let full = format!(
-        " {label} · now {} · peak {} ",
-        format_rate(now_bps),
-        format_rate(peak_bps)
-    );
-    if full.chars().count() <= band {
+    let now = rate(now_bps);
+    let full = words::graph_title_tallest(label, &now, tallest, &rate(peak_bps));
+    if display_width(&full) <= band {
         return full;
     }
-    let short = format!(" {label} · now {} ", format_rate(now_bps));
-    if short.chars().count() <= band {
+    let short = words::graph_title(label, &now);
+    if display_width(&short) <= band {
         return short;
     }
     format!(" {label} ")
@@ -191,8 +198,9 @@ fn graph_title(label: &str, now_bps: Option<f64>, peak_bps: f64, band: usize) ->
 
 #[cfg(test)]
 mod tests {
-    use super::super::draw;
+    use super::super::StatisticsView;
     use crate::golden::render_to_lines;
+    use ratatui::crossterm::event::KeyCode;
     use std::time::Duration;
 
     use rmule_core::diagnostics::DiagnosticsSnapshot;
@@ -202,6 +210,7 @@ mod tests {
 
     use super::*;
     use crate::fixture::*;
+    use crate::views::View;
 
     /// The distinction the whole graph rests on: a column the tick metered at
     /// zero is a baseline, a column with no sample is blank.
@@ -223,39 +232,91 @@ mod tests {
         assert_eq!(bar_ticks(0.0, 0.0, ticks), 1);
     }
 
+    fn snapshot_at(taken_at: Instant) -> crate::bridge::BridgeSnapshot {
+        crate::bridge::BridgeSnapshot {
+            diagnostics: DiagnosticsSnapshot::default(),
+            rates: crate::rates::TransferRates::default(),
+            taken_at,
+        }
+    }
+
+    /// Three days up: `w` walks the window, and the axis and the hint say which
+    /// one is up.
     #[test]
-    fn the_window_holds_the_newest_samples_the_pane_has_columns_for() {
-        let mut state = UiState::default();
+    fn w_walks_the_graphs_from_seconds_to_days_and_back() {
         let base = Instant::now();
-        rate_ticks(&mut state, base, 40, &DiagnosticsSnapshot::default());
-        let visible = visible_samples(&state.rate_history, 10);
-        assert_eq!(visible.len(), 10);
-        assert_eq!(
-            visible[0].at,
-            base + Duration::from_secs(30),
-            "oldest on screen"
+        let mut state = UiState::default();
+        state.apply(Action::Snapshot(Box::new(snapshot_at(base))), base);
+        rate_ticks(
+            &mut state,
+            base,
+            3 * 86_400,
+            &DiagnosticsSnapshot::default(),
         );
-        assert_eq!(
-            visible[9].at,
-            base + Duration::from_secs(39),
-            "newest is now"
+        let now = base + Duration::from_secs(3 * 86_400);
+        let mut view = StatisticsView::default();
+        let drawn = |view: &mut StatisticsView| {
+            render_to_lines(GOLDEN_W, GOLDEN_H, |frame| {
+                view.draw(frame, frame.area(), &state, &Theme::default_dark(), now);
+            })
+        };
+        let seconds = drawn(&mut view);
+        assert!(seconds.contains("1 s a column"), "{seconds}");
+        view.handle_key(press(KeyCode::Char('w')), &UiState::default());
+        let hours = drawn(&mut view);
+        assert!(hours.contains("1 min a column"), "{hours}");
+        view.handle_key(press(KeyCode::Char('w')), &UiState::default());
+        let days = drawn(&mut view);
+        assert!(
+            days.contains("1 h a column") && days.contains(" 3d ago "),
+            "{days}"
         );
-        // A pane wider than the history draws all of it, and no more.
-        assert_eq!(visible_samples(&state.rate_history, 200).len(), 40);
+        assert!(
+            days.contains("busiest hour") && days.contains("· up 3d 0h"),
+            "{days}"
+        );
+        view.handle_key(press(KeyCode::Char('w')), &UiState::default());
+        assert_eq!(drawn(&mut view), seconds);
+    }
+
+    /// The distinction a coarse window adds: a span no tick landed in is blank
+    /// beside a metered idle one.
+    #[test]
+    fn a_gap_in_the_ticks_draws_blank_beside_a_metered_idle_column() {
+        let base = Instant::now();
+        let mut state = UiState::default();
+        for secs in [0, 240] {
+            state.apply_snapshot(snapshot_at(base), base + Duration::from_secs(secs));
+        }
+        let mut view = StatisticsView::default();
+        view.handle_key(press(KeyCode::Char('w')), &UiState::default());
+        let rendered = render_to_lines(GOLDEN_W, GOLDEN_H, |frame| {
+            view.draw(
+                frame,
+                frame.area(),
+                &state,
+                &Theme::default_dark(),
+                base + Duration::from_secs(240),
+            );
+        });
+        assert!(rendered.contains("▁   ▁"), "floor, gap, floor:\n{rendered}");
     }
 
     #[test]
     fn the_graph_title_drops_whole_segments_as_the_pane_narrows() {
-        let full = graph_title("▼ Download", Some(1024.0), 4096.0, 60);
+        let full = graph_title("▼ Download", Some(1024.0), ("peak", 4096.0), 60);
         assert_eq!(full, " ▼ Download · now 1.0 KB/s · peak 4.0 KB/s ");
-        let narrow = graph_title("▼ Download", Some(1024.0), 4096.0, 30);
+        let narrow = graph_title("▼ Download", Some(1024.0), ("peak", 4096.0), 30);
         assert_eq!(narrow, " ▼ Download · now 1.0 KB/s ");
         assert_eq!(
-            graph_title("▼ Download", Some(1024.0), 4096.0, 14),
+            graph_title("▼ Download", Some(1024.0), ("peak", 4096.0), 14),
             " ▼ Download "
         );
         // No samples ⇒ no reading to state.
-        assert_eq!(graph_title("▲ Upload", None, 0.0, 60), " ▲ Upload ");
+        assert_eq!(
+            graph_title("▲ Upload", None, ("peak", 0.0), 60),
+            " ▲ Upload "
+        );
     }
 
     /// A stopped core stops appending samples; the graphs freeze on what was
@@ -264,12 +325,16 @@ mod tests {
     fn a_stopped_core_freezes_the_graphs_and_labels_them() {
         let base = Instant::now();
         let mut state = busy(base);
-        let before = state.rate_history.len();
+        let before = state.rate_history.newest(RateWindow::Seconds, 1_000).len();
         state.apply(Action::CoreClosed, base + Duration::from_secs(90));
-        assert_eq!(state.rate_history.len(), before, "no tail is invented");
+        assert_eq!(
+            state.rate_history.newest(RateWindow::Seconds, 1_000).len(),
+            before,
+            "no tail is invented"
+        );
 
         let rendered = render_to_lines(GOLDEN_W, GOLDEN_H, |frame| {
-            draw(
+            StatisticsView::default().draw(
                 frame,
                 frame.area(),
                 &state,
@@ -282,7 +347,7 @@ mod tests {
             "the axis marks the freeze:\n{rendered}"
         );
         assert!(
-            rendered.contains("core stopped"),
+            rendered.contains("engine stopped"),
             "the session pane says why"
         );
     }
@@ -293,7 +358,7 @@ mod tests {
         let mut state = busy(base);
         state.apply(Action::CoreClosed, base + Duration::from_secs(90));
         assert_golden("statistics_core_stopped", GOLDEN_W, GOLDEN_H, |frame| {
-            draw(
+            StatisticsView::default().draw(
                 frame,
                 frame.area(),
                 &state,
@@ -316,7 +381,7 @@ mod tests {
         let mut terminal = Terminal::new(TestBackend::new(GOLDEN_W, GOLDEN_H)).expect("terminal");
         terminal
             .draw(|frame| {
-                draw(
+                StatisticsView::default().draw(
                     frame,
                     Rect::new(0, 0, GOLDEN_W, GOLDEN_H),
                     &state,

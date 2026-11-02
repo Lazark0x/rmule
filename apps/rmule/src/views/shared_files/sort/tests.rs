@@ -74,7 +74,7 @@ fn shared(files: &[File]) -> UiState {
                 },
             );
         }
-        state.diagnostics.shared_files.insert(
+        state.shared_counters.insert(
             hash,
             rmule_core::diagnostics::SharedFileCounters {
                 requests: file.requests,
@@ -193,9 +193,9 @@ fn a_row_shows_the_registrys_name_and_size_and_the_runs_counters() {
         assert!(charlie.contains(&cell), "{cell} in {charlie}");
     }
     let unknown = row("0404");
-    assert!(unknown.contains(&"—".to_string()), "{unknown:?}");
+    assert!(unknown.contains(&"unknown".to_string()), "{unknown:?}");
     assert!(
-        lines[0].contains("4 files · —"),
+        lines[0].contains("4 files · size still being read"),
         "a total needs every size: {}",
         lines[0]
     );
@@ -259,15 +259,13 @@ fn accepted_ties_break_on_the_all_time_figure_before_the_name() {
         },
     ]);
     state
-        .diagnostics
-        .shared_files
+        .shared_counters
         .get_mut(&file_hash(1))
         .expect("counted")
         .all_time
         .accepted = 1;
     state
-        .diagnostics
-        .shared_files
+        .shared_counters
         .get_mut(&file_hash(2))
         .expect("counted")
         .all_time
@@ -325,8 +323,7 @@ fn the_cursor_follows_its_file_as_rows_arrive_leave_and_reorder() {
     // on top.
     sort_to(&mut view, &state, SharedColumn::Requests);
     state
-        .diagnostics
-        .shared_files
+        .shared_counters
         .get_mut(&file_hash(2))
         .expect("counted")
         .requests = 50;
@@ -338,7 +335,7 @@ fn the_cursor_follows_its_file_as_rows_arrive_leave_and_reorder() {
 #[test]
 fn a_header_click_sorts_by_its_column_and_again_reverses_at_two_widths() {
     let state = four();
-    for width in [GOLDEN_W, 66] {
+    for width in [110, 130] {
         let mut view = SharedView::default();
         let lines = draw(&mut view, &state, width);
         let (x, y) = cell_of(&lines, "Request");
@@ -361,28 +358,6 @@ fn a_header_click_sorts_by_its_column_and_again_reverses_at_two_widths() {
 }
 
 #[test]
-fn a_click_on_any_line_of_a_wrapped_row_selects_that_row() {
-    let state = four();
-    let mut view = SharedView::default();
-    // At 64 columns the File column is too narrow for a name: every
-    // named row wraps over several lines. A taller pane than the usual
-    // golden height keeps every row on screen despite the wrap — this
-    // test is about wrapped-row clicking, not scrolling.
-    let lines = render_to_lines(64, 40, |frame| {
-        view.draw(frame, frame.area(), &state, &theme(), Instant::now());
-    })
-    .lines()
-    .map(str::to_string)
-    .collect::<Vec<_>>();
-    let (x, y) = cell_of(&lines, "charli");
-    view.handle_click(x, y + 1, &state);
-    assert_eq!(view.files_selected, 2, "{}", lines.join("\n"));
-    let (x, y) = cell_of(&lines, "bravo");
-    view.handle_click(x, y + 1, &state);
-    assert_eq!(view.files_selected, 1);
-}
-
-#[test]
 fn golden_shared_sorted_by_requests() {
     let state = four();
     let mut view = SharedView::default();
@@ -390,4 +365,90 @@ fn golden_shared_sorted_by_requests() {
     assert_golden("shared_sorted_requests", GOLDEN_W, GOLDEN_H, |frame| {
         view.draw(frame, golden_area(), &state, &theme(), Instant::now());
     });
+}
+
+/// The levels `state` holds, on one more data tick.
+fn tick(state: &mut UiState, diagnostics: rmule_core::diagnostics::DiagnosticsSnapshot) {
+    state.apply_snapshot(
+        crate::bridge::BridgeSnapshot {
+            diagnostics,
+            rates: crate::rates::TransferRates::default(),
+            taken_at: Instant::now(),
+        },
+        Instant::now(),
+    );
+}
+
+#[test]
+fn what_the_table_does_not_read_rebuilds_nothing() {
+    let mut state = four();
+    let mut levels = state.diagnostics.clone();
+    levels.shared_files.clone_from(&state.shared_counters);
+    let view = SharedView::default();
+    let lines = view.sorted_lines(&state);
+
+    state.log_flash(crate::words::Sentence::for_test("elsewhere"), now());
+    state.apply(
+        Action::Core(rmule_core::CoreEvent::Serve(
+            rmule_core::ServeEvent::PeerQueued {
+                peer: peer_endpoint(200),
+                rank: 1,
+                file_hash: file_hash(1),
+                software: None,
+            },
+        )),
+        now(),
+    );
+    tick(&mut state, levels);
+
+    assert!(std::sync::Arc::ptr_eq(&lines, &view.sorted_lines(&state)));
+}
+
+#[test]
+fn a_tick_that_moved_a_counter_reads_at_once() {
+    let mut state = four();
+    let view = SharedView::default();
+    view.sorted_lines(&state);
+
+    let mut levels = state.diagnostics.clone();
+    levels.shared_files.clone_from(&state.shared_counters);
+    levels
+        .shared_files
+        .entry(file_hash(1))
+        .or_default()
+        .requests = 77;
+    tick(&mut state, levels);
+
+    let lines = view.sorted_lines(&state);
+    let line = lines
+        .iter()
+        .find(|line| line.file_hash == file_hash(1))
+        .expect("listed");
+    assert_eq!(line.requests, Some(77));
+}
+
+#[test]
+fn a_slot_taken_reads_at_once() {
+    let mut state = four();
+    let view = SharedView::default();
+    view.sorted_lines(&state);
+
+    state.apply(
+        Action::Core(rmule_core::CoreEvent::Serve(
+            rmule_core::ServeEvent::UploadSlotGranted {
+                peer: peer_endpoint(200),
+                file_hash: file_hash(1),
+                software: None,
+                road: rmule_core::GrantRoad::Linked,
+            },
+        )),
+        now(),
+    );
+
+    let lines = view.sorted_lines(&state);
+    let line = lines
+        .iter()
+        .find(|line| line.file_hash == file_hash(1))
+        .expect("listed");
+    assert_eq!(line.uploading, 1);
 }

@@ -625,11 +625,10 @@ pub(crate) fn punch_claims(
         note: format!(
             "Both ends of the punch are rmule, so every row above is `rmule-only` and is \
              scored exercised rather than captured; the counterparty bytes are the \
-             ed2ksrv's own, off its attachment at {server_v4}. One gateway per peer \
-             ({}), because ed2k-server `{}` keys `observed_udp_ports` by IPv4 address \
-             alone and two NAT-T clients behind one NAT overwrite each other's observed port.",
-            gateways.join(", "),
+             ed2ksrv's own ({}), off its attachment at {server_v4}. One gateway per peer \
+             ({}): the punch is between two gateways.",
             crate::flow::ed2ksrv::pin_text(),
+            gateways.join(", "),
         ),
         tunnel_rose: None,
     }
@@ -653,9 +652,16 @@ fn sum_rows(wire: &[WireRow], prefix: &str) -> i64 {
 /// The server's tap: rmule's `0x60` in, the server's own `0x61` to both
 /// peers, and the keepalive cadence that makes an observed port fresh enough
 /// to introduce.
+/// One punch's datagrams: `punch_burst`'s, the named port and its
+/// neighbours.
+const PUNCH_BURST_DATAGRAMS: i64 = 32;
+
 fn punch_wire_claims(flow: NattFlow, wire: &[WireRow]) -> Vec<Claim> {
     let cone = flow != NattFlow::ServerPunchSymmetric;
-    let punches: i64 = sum_rows(wire, "holepunch-datagrams-from-");
+    let plain_punches: i64 = sum_rows(wire, "holepunch-datagrams-from-");
+    // Cut only on a run whose target requires the crypt layer.
+    let obfuscated_punches: i64 = sum_rows(wire, "obfuscated-punch-from-");
+    let punches = plain_punches + obfuscated_punches.max(0);
     let mut claims = vec![
         Claim::about(
             "the-server-received-one-holepunch-request",
@@ -723,6 +729,21 @@ fn punch_wire_claims(flow: NattFlow, wire: &[WireRow]) -> Vec<Claim> {
             ),
         )
     });
+    if obfuscated_punches >= 0 {
+        let plain_from_requester = packets(wire, "holepunch-datagrams-from-a");
+        let obfuscated_from_requester = packets(wire, "obfuscated-punch-from-a");
+        claims.push(Claim::about(
+            "a-target-that-requires-the-crypt-layer-is-punched-through-it",
+            obfuscated_from_requester >= PUNCH_BURST_DATAGRAMS,
+            Evidence::RmuleOnly,
+            format!(
+                "the requester's burst at the target crossed its WAN tap as \
+                 {obfuscated_from_requester} obfuscated datagrams against a burst of \
+                 {PUNCH_BURST_DATAGRAMS}, any past the burst being the tunnel's path keepalive, \
+                 and {plain_from_requester} plain `0xA1`; byte 29 of the `0x61` is what told it",
+            ),
+        ));
+    }
     if !cone {
         // **Counterparty-zero, read on both taps.** A `0xB2` that left the LAN
         // and never crossed the WAN would be a bench fault; a `0xB2` that

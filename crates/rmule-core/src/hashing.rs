@@ -11,7 +11,7 @@ use rmule_primitives::{ED2K_PART_SIZE, Ed2kFileLink, FileHash, PartHash, PartHas
 
 use crate::{DownloadFailure, VerificationAuthority};
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub(crate) struct ResolvedHashSet {
     pub authority: VerificationAuthority,
     pub hashes: Vec<PartHash>,
@@ -36,22 +36,6 @@ pub(crate) fn resolve_hash_set_authority(
             hashes: Vec::new(),
         }),
     }
-}
-
-/// Whether a peer-supplied part hash set is `file_hash`'s own: the count
-/// `file_size` implies, and — for a file with a set at all — the MD4 of the
-/// part hashes laid end to end equals the file hash. aMule's rule for a
-/// received set, `CKnownFile::LoadHashsetFromFile(.., checkhash = true)`
-/// (`src/KnownFile.cpp:521-543` at `4e8f2b3c`: the count at `:524`, the
-/// hash of the list at `:535-536` via `CreateHashFromHashlist`, `:787-799`).
-/// A set that fails it is proven wrong by the file hash alone — no peer's word
-/// needed — so its sender can be distrusted (ADR-0090 "Source ownership").
-pub(crate) fn hash_set_proves_file(
-    file_hash: FileHash,
-    file_size: u64,
-    hashes: &[PartHash],
-) -> bool {
-    PartHashSet::from_hashes(file_size, hashes.to_vec()).is_ok_and(|set| set.belongs_to(file_hash))
 }
 
 /// The link's part hash set, when it is the file's own; `None` otherwise, so
@@ -81,21 +65,13 @@ pub(crate) fn part_hash_on_arrival(
         .get(part_index as usize)
         .copied()
         .or_else(|| {
-            (file.size < ED2K_PART_SIZE).then(|| PartHash::from_bytes(*file.file_hash.as_bytes()))
+            (file.size() < ED2K_PART_SIZE).then(|| PartHash::from_bytes(*file.file_hash.as_bytes()))
         })
 }
 
 /// The eD2k part hash of `bytes`.
 pub(crate) fn part_hash_of(bytes: &[u8]) -> PartHash {
     PartHash::from_bytes(ed2k::Ed2kBlue::digest(bytes).into())
-}
-
-pub(crate) fn verify_part_bytes(expected: PartHash, bytes: &[u8]) -> Result<(), DownloadFailure> {
-    if part_hash_of(bytes) == expected {
-        Ok(())
-    } else {
-        Err(DownloadFailure::PartVerificationFailed)
-    }
 }
 
 /// The eD2k file hash of the first `file_size` bytes `reader` yields, read one
@@ -169,21 +145,18 @@ mod tests {
     fn small_file_without_part_hash_set_checks_its_part_against_the_file_hash() {
         let bytes = b"abc";
         let summary = FileHashSummary::digest_bytes(bytes);
-        let file = Ed2kFileLink {
-            name: rmule_primitives::Ed2kText::from_utf8("abc"),
-            size: summary.file_size(),
-            file_hash: summary.file_hash(),
-            part_hash_set: None,
-            aich_root: None,
-            ipv6_sources: Vec::new(),
-            sources: Default::default(),
-        };
+        let file = Ed2kFileLink::new(
+            rmule_primitives::Ed2kText::from_utf8("abc"),
+            summary.file_size(),
+            summary.file_hash(),
+        )
+        .expect("a size eD2k addresses");
         let resolved = resolve_hash_set_authority(None, None).unwrap();
 
         let expected = part_hash_on_arrival(&resolved, &file, 0).unwrap();
 
-        verify_part_bytes(expected, bytes).unwrap();
-        assert!(verify_part_bytes(expected, b"abd").is_err());
+        assert_eq!(part_hash_of(bytes), expected);
+        assert_ne!(part_hash_of(b"abd"), expected);
     }
 
     /// A reader that refuses any single read larger than one part, so a hash

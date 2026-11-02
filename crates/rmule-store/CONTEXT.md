@@ -5,7 +5,7 @@ The domain-free durable layer (ADR-0083): one engine file, spoken to through typ
 ## Language
 
 **Store**:
-One durable state file (or the same store on the engine's in-memory backend) opened by exactly one process, plus the read and write transactions that see it. A caller does not open and close a transaction by hand: it hands the store a closure, which commits when the closure returns and aborts when it fails. Every write commits durably before it returns, unless the caller asked for a **deferred write** — a commit with no device flush, for a counter whose last few seconds are worth less than the flush, made durable by the next ordinary commit or by a **flush**. A store is opened against a **Schema** — the full list of tables its owners have registered — and a **Version ladder**; all registered tables exist from the moment the open returns, so a read can never trip over a table nobody has written yet.
+One durable state file (or the same store on the engine's in-memory backend) opened by exactly one process, plus the read and write transactions that see it. A caller does not open and close a transaction by hand: it hands the store a closure, which commits when the closure returns and aborts when it fails. Every write commits durably before it returns. A store is opened against a **Schema** — the full list of tables its owners have registered — and a **Version ladder**; all registered tables exist from the moment the open returns, so a read can never trip over a table nobody has written yet.
 _Avoid_: database (the engine's word), connection, repository (a domain seam that rides the store, not the store)
 
 **Record**:
@@ -37,5 +37,5 @@ The set of tables one store owns, assembled by the domain crates that declare th
 _Avoid_: migration (that is the ladder), DDL
 
 **Version ladder / Upgrade step**:
-The store-wide version and the ordered steps that carry a file from one version to the next. Each step rewrites the tables of one version into the next inside a single durable write and stamps the new version before the next step runs; a file newer than the running build is refused, a rung with no step is refused, and a fresh file is stamped at the current version with no steps run. Old record shapes exist only as long as the step that reads them.
+The store-wide version and the ordered steps that carry a file from one version to the next. Each step rewrites the tables of one version into the next inside a single durable write and stamps the new version before the next step runs; a file newer than the running build is refused, a file under the ladder's **floor** — the oldest version a published build wrote — is refused, both before anything writes to the file, a rung with no step is refused, and a fresh file is stamped at the current version with no steps run. Old record shapes exist only as long as the step that reads them.
 _Avoid_: schema migration (SQL vocabulary), user_version, data patch

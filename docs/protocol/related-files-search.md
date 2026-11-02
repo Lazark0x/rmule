@@ -13,7 +13,7 @@ tree with no research directory, so this wire note lives under `docs/protocol/`.
 |---|---|---|
 | eMule | `srchybrid/` in the emule-qt reference pin. It is byte-identical to the eMule 0.70b pin (`docs/reference/emule-source/eMule.meta.toml:5,13`) | irwir/eMule `13983526` |
 | aMule | `src/` in the kno fork pin. This is the kno fork, not upstream (`docs/reference/amule-kno/amule-kno.meta.toml:5`) | kno/amule `ab483654` |
-| ed2ksrv@eacf7f1 | andrey23127/ed2k-server v0.9.70, the bench's earlier pin and still `tools/ed2ksrv-differ`'s (`Cargo.toml:25`), read from the local cargo git db `~/.cargo/git/db/ed2k-server-b80c5adba11d5604` | `eacf7f1` |
+| ed2ksrv@eacf7f1 | andrey23127/ed2k-server v0.9.70, the bench's earlier pin, read from the local cargo git db `~/.cargo/git/db/ed2k-server-b80c5adba11d5604` | `eacf7f1` |
 | ed2ksrv@pin | the bench's current pin of record, v0.9.75 (`tools/interop-harness/images/ed2ksrv/pin.env:7-9`), cloned from GitHub for this note | `4da4774f` |
 | Lugdunum | closed source, no first-party documentation. What is known comes from ed2k-server's comment about a decompile, a captured `OP_IDCHANGE`, and the captured replies of §6 (bench run `1790603580`, Lugdunum 17.15) | — |
 

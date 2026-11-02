@@ -3,11 +3,14 @@
 //! connects hands the candidate to the callback roads, once.
 
 use rmule_primitives::{
-    CryptStance, Ipv6Endpoint, OutboundCrypt, PeerSource, SourceCryptOptions, SourceSighting,
-    UserHash,
+    CryptStance, Informant, Ipv6Endpoint, OutboundCrypt, PeerSource, SourceCryptOptions,
+    SourceSighting, UserHash,
 };
 
 use super::*;
+
+/// Stock's global dead-source window for a Low ID (`DeadSourceList.cpp:35`).
+const LOW_ID_WINDOW: Duration = Duration::from_secs(45 * 60);
 
 fn half() -> Ipv6Endpoint {
     Ipv6Endpoint::new("3fff:ed2:1::7".parse().unwrap(), 4662)
@@ -28,6 +31,7 @@ fn low_with_crypt(n: u32, half: Ipv6Endpoint, crypt: u8) -> SourceSighting {
         PeerSource::new(low(n), 4662),
         Some(TARGET_HASH),
         Some(SourceCryptOptions::from_byte(crypt)),
+        Informant::Own,
     )
     .with_ipv6_half(Some(half))
 }
@@ -41,7 +45,8 @@ fn known_ipv6() -> DialPosition {
 /// An ExtSX Low-ID record with a `CT_MOD_IP_V6` half, as the
 /// connected-server namespace pools it.
 fn low_with_half(n: u32) -> SourceSighting {
-    SourceSighting::plain(PeerSource::new(low(n), 4662)).with_ipv6_half(Some(half()))
+    SourceSighting::plain(PeerSource::new(low(n), 4662), Informant::Own)
+        .with_ipv6_half(Some(half()))
 }
 
 fn state(capability: CallbackCapability, dial: DialPosition) -> DownloadState {
@@ -152,7 +157,8 @@ fn without_a_known_ipv6_rung_0_is_skipped() {
 #[test]
 fn a_half_is_the_only_road_left_and_its_failure_is_honest_starvation() {
     let mut state = pooled_state(file_hash_only_content(ONE_PART), &[], QUIET_POSTURE, 1);
-    let global = SourceSighting::plain(PeerSource::new(low(7), 4662)).with_ipv6_half(Some(half()));
+    let global = SourceSighting::plain(PeerSource::new(low(7), 4662), Informant::Own)
+        .with_ipv6_half(Some(half()));
     let _ = take(&mut state, Channel::Global(source_server(3)), [global]);
     assert!(
         state.start(t0()).is_empty(),
@@ -285,13 +291,14 @@ fn exchanging_state() -> (DownloadState, PeerEndpoint) {
         spawned(&started).contains(&PeerEndpoint::V6(half())),
         "{started:?}"
     );
-    let _ = state.on_worker_event(t0(), high, PeerWorkerEvent::Connected);
+    let _ = connect(&mut state, t0(), high);
     (state, high)
 }
 
 /// `high`'s source exchange names the candidate at `at`; what it spawned.
 fn sight(state: &mut DownloadState, high: PeerEndpoint, at: Ipv6Endpoint) -> Vec<PeerEndpoint> {
-    let source = SourceSighting::plain(PeerSource::new(low(7), 4662)).with_ipv6_half(Some(at));
+    let source = SourceSighting::plain(PeerSource::new(low(7), 4662), Informant::Own)
+        .with_ipv6_half(Some(at));
     spawned(&via_exchange(state, high, vec![source]))
 }
 
@@ -323,8 +330,8 @@ fn a_new_half_reopens_rung_0_once_and_a_spent_half_stays_spent() {
     let same = sight(&mut state, high, half());
     assert!(same.is_empty(), "a spent half is not re-dialed: {same:?}");
 
-    // That sighting took the callback road; let it lapse too.
-    let _ = until_road_ends(&mut state, connected_key(low(7)));
+    // A dead Low ID opens nothing for its 45 minutes, whatever half it names.
+    let _ = state.on_tick(t0() + LOW_ID_WINDOW * 2);
     let moved = sight(&mut state, high, moved_half());
     assert_eq!(moved, vec![PeerEndpoint::V6(moved_half())]);
 
@@ -333,24 +340,19 @@ fn a_new_half_reopens_rung_0_once_and_a_spent_half_stays_spent() {
     assert!(again.is_empty(), "the new half is spent in turn: {again:?}");
 }
 
-/// A spent rung-0 half is spent for one to two re-ask periods, like any
-/// High-ID endpoint, not for the run: once it has sat one out,
-/// the next sighting dials it again.
+/// A spent rung-0 half is spent for a Low ID's window, not for the run: once
+/// it has sat that out, the next sighting dials it again.
 #[test]
-fn a_spent_half_is_redialled_after_it_sits_out_a_reask_period() {
+fn a_spent_half_is_redialled_after_stocks_window() {
     let (mut state, high) = exchanging_state();
     fail_dial(&mut state, half());
     let _ = until_road_ends(&mut state, connected_key(low(7)));
 
-    let _ = state.on_tick(t0() + FILE_REASK_TIME);
+    let _ = state.on_tick(t0() + LOW_ID_WINDOW - Duration::from_secs(1));
     let within = sight(&mut state, high, half());
-    assert!(
-        within.is_empty(),
-        "spent in the period that just ended: {within:?}"
-    );
-    let _ = until_road_ends(&mut state, connected_key(low(7)));
+    assert!(within.is_empty(), "spent inside its window: {within:?}");
 
-    let _ = state.on_tick(t0() + FILE_REASK_TIME * 2);
+    let _ = state.on_tick(t0() + LOW_ID_WINDOW * 2);
     assert_eq!(
         sight(&mut state, high, half()),
         vec![PeerEndpoint::V6(half())]
@@ -408,7 +410,8 @@ fn an_ip_filtered_rung_0_half_never_reaches_the_route_choice() {
     let capability = CallbackCapability::server_high_id();
 
     let exchanged = admit_halves(
-        SourceSighting::plain(PeerSource::new(low(7), 4662)).with_ipv6_half(Some(half())),
+        SourceSighting::plain(PeerSource::new(low(7), 4662), Informant::Own)
+            .with_ipv6_half(Some(half())),
         admits,
     )
     .expect("a Low ID names no address of its own to refuse");

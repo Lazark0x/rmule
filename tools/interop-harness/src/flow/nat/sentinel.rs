@@ -1,6 +1,6 @@
 //! `sentinel-sources-legacy` (ADR-0092): a **Sentinel Source**-bearing
-//! source list is handed to a *stock aMule 2.3.3* and to rmule, and the flow
-//! asserts the legacy body reads it without desyncing while rmule parses it.
+//! source list is handed to a *stock aMule 2.3.3* and to rmule. rmule reads the
+//! inline address; the legacy body walks six bytes a record and misreads it.
 //!
 //! The flow carries the ADR-0092 sentinel row's two claims as two independent legs.
 //!
@@ -11,12 +11,11 @@
 //! `READER_READINESS_MARKER` is the one this repository ships. No probe (or a
 //! probe that fails) writes a documented `SKIPPED`, never a silent pass.
 //!
-//! **aMule's half — the legacy leg.** ADR-0092 originally named `ed2ksrv` as
-//! the body that would emit the sentinel row, but the pinned `ed2ksrv` is
-//! v4-only and has no config surface for emitting one, so
-//! that row could not be driven by its own named bodies. The claim it protects
-//! — *does a stock 2.3.3 desync on the shape?* — does not need `ed2ksrv` at
-//! all: rmule owns the encoders, so rmule emits the list as **Stimulus** and
+//! **aMule's half — the legacy leg.** The question it asks — *what does a stock
+//! 2.3.3 do with the shape?* — needs no server that emits sentinels:
+//! ed2k-server sends one only to a session that named an IPv6, which a stock
+//! aMule never does (`ed2ksrv-server-surface` draws the server's half). rmule
+//! owns the encoders, so rmule emits the list as **Stimulus** and
 //! aMule's reaction is the evidence (the Kad Stimulus Node and the Registrant are the same
 //! posture). `--drive-legacy` runs that leg; without
 //! it the flow is the gate alone, and says so.
@@ -26,12 +25,12 @@ pub(crate) mod plan;
 pub(crate) mod verdict;
 
 use std::ffi::OsString;
-use std::fs;
 use std::process::{Command, Stdio};
 
 use anyhow::{Context, Result, bail};
 
 use crate::artifacts::RunLayout;
+use crate::verdict::Verdict;
 
 pub use self::legacy::LegacyDrive;
 use self::legacy::LegacyObservation;
@@ -63,8 +62,8 @@ const GATE_ONLY_NOTE: &str = "this verdict covers only whether rmule's sentinel-
 
 /// What a run with the legacy leg measures.
 const BOTH_LEGS_NOTE: &str = "two independent claims. rmule's half: the sentinel-safe reader \
-     (ADR-0085) decoded a sentinel-bearing payload through the probed binary \
-     (`sentinel_reader_present`). aMule's half: a STOCK aMule 2.3.3 was handed the same shape on \
+     (ADR-0085) decoded sentinel-bearing payloads through the probed binary \
+     (`sentinel_reader_present`, `sentinel_reader_lines`). aMule's half: a STOCK aMule 2.3.3 was handed the same shape on \
      the wire by an rmule-authored stimulus and judged solely on its own behaviour — which \
      endpoints it dialled (`legacy_sink_dial`, `legacy_wire_row`), what its own log said \
      (`amule_log_lines`), and whether its session survived. The emit side is an `rmule-only` row \
@@ -94,8 +93,8 @@ pub struct SentinelSourcesLegacyOptions<'a> {
 /// about the sentinel design, reported as a failure after the verdict is on
 /// disk.
 pub fn run_sentinel_sources_legacy(options: SentinelSourcesLegacyOptions<'_>) -> Result<()> {
-    let (present, detail) = probe_reader(options.sentinel_reader_probe);
-    let (gate_label, skip_reason) = gate(present, &detail);
+    let (present, detail, reader_lines) = probe_reader(options.sentinel_reader_probe);
+    let skip_reason = gate(present, &detail);
 
     let observation = match (&options.legacy, present) {
         (Some(drive), true) => Some(legacy::drive(
@@ -112,28 +111,26 @@ pub fn run_sentinel_sources_legacy(options: SentinelSourcesLegacyOptions<'_>) ->
     let verdict = assemble(
         options.container_runtime,
         options.sentinel_reader_probe,
-        gate_label,
+        reader_lines,
         skip_reason,
         observation,
     );
     announce(&verdict);
     write_verdict(options.layout, &verdict)?;
-    if verdict.legacy_leg == "DESYNC" {
-        bail!(
-            "sentinel-sources-legacy: the legacy body desynced — {}",
-            verdict.legacy_detail
-        );
+    if verdict.legacy_leg == "UNEXPECTED-READ" {
+        bail!("sentinel-sources-legacy: {}", verdict.legacy_detail);
     }
     Ok(())
 }
 
-/// Fold both legs into one verdict. The overall label is the weaker of the two:
-/// a gate that did not lift skips, a legacy leg that did not fire downgrades a
-/// `PASS` to `OBSERVED`, and a desync fails.
+/// Fold both legs into one verdict. A gate that did not lift skips, a gate that
+/// lifted with no legacy leg behind it is `OBSERVED` (it proves the reader is
+/// there and nothing about stock aMule), a legacy leg that did not fire is
+/// `OBSERVED`, and a read the stride does not explain fails.
 fn assemble(
     container_runtime: &str,
     reader_probe: &[String],
-    gate_label: &'static str,
+    reader_lines: Vec<String>,
     skip_reason: Option<String>,
     observation: Option<LegacyObservation>,
 ) -> SentinelVerdict {
@@ -141,7 +138,11 @@ fn assemble(
     let Some(observation) = observation else {
         return SentinelVerdict {
             flow: FLOW,
-            verdict: gate_label,
+            verdict: if present {
+                Verdict::Observed
+            } else {
+                Verdict::Skipped
+            },
             skip_reason,
             note: GATE_ONLY_NOTE,
             sentinel_reader_present: present,
@@ -156,6 +157,7 @@ fn assemble(
             amule_dialled_after_sentinel: false,
             amule_dialled_sentinel_port: -1,
             amule_dialled_broadcast_id: -1,
+            amule_dialled_inline_misread: -1,
             amule_dialled_packed_first: false,
             amule_dialled_packed_second: false,
             amule_dialled_control_first: false,
@@ -163,6 +165,7 @@ fn assemble(
             packed_leg: "NOT-RUN",
             amule_status: String::new(),
             sentinel_reader_probe: reader_probe.to_vec(),
+            sentinel_reader_lines: reader_lines,
             amule_log_lines: Vec::new(),
             legacy_sink_dial: Vec::new(),
             legacy_wire_row: Vec::new(),
@@ -171,9 +174,9 @@ fn assemble(
 
     let judged = judge_legacy(&observation);
     let overall = match judged.label {
-        "PASS" => "PASS",
-        "DESYNC" => "FAIL",
-        _ => "OBSERVED",
+        "STRIDE-MISREAD" => Verdict::Pass,
+        "UNEXPECTED-READ" => Verdict::Fail,
+        _ => Verdict::Observed,
     };
     SentinelVerdict {
         flow: FLOW,
@@ -193,6 +196,7 @@ fn assemble(
         amule_dialled_sentinel_port: observation
             .wire_row_recorded(&format!("syn_{}", TCP_RECORDS[1].label)),
         amule_dialled_broadcast_id: observation.wire_row_recorded("syn_broadcast_id"),
+        amule_dialled_inline_misread: observation.wire_row_recorded("syn_inline_misread"),
         amule_dialled_packed_first: observation.was_dialled(PACKED_FIRST_RECORDS[0].label),
         amule_dialled_packed_second: observation.was_dialled(PACKED_SECOND_RECORDS[0].label),
         amule_dialled_control_first: observation.was_dialled(CONTROL_FIRST_RECORDS[0].label),
@@ -200,6 +204,7 @@ fn assemble(
         packed_leg: judge_packed(&observation),
         amule_status: observation.amule_status.clone(),
         sentinel_reader_probe: reader_probe.to_vec(),
+        sentinel_reader_lines: reader_lines,
         amule_log_lines: observation.amule_log_lines.clone(),
         legacy_sink_dial: observation
             .sink_dials
@@ -240,14 +245,10 @@ fn announce(verdict: &SentinelVerdict) {
 
 /// The gate's whole decision, pulled out of the I/O so it is unit-testable
 /// without a [`RunLayout`]: `present` (already measured by [`probe_reader`])
-/// picks `PASS` with no skip reason, or `SKIPPED` naming `detail`.
-fn gate(present: bool, detail: &str) -> (&'static str, Option<String>) {
-    if present {
-        return ("PASS", None);
-    }
-    (
-        "SKIPPED",
-        Some(format!(
+/// lifts it, or a skip reason names `detail`.
+fn gate(present: bool, detail: &str) -> Option<String> {
+    (!present).then(|| {
+        format!(
             "the sentinel-safe reader could not be confirmed present: {detail}. Standing the \
              topology up without it would record 'rmule did not parse the sentinel' for a \
              reason that is not interop, which ADR-0045 forbids. Point --sentinel-reader-probe \
@@ -255,31 +256,46 @@ fn gate(present: bool, detail: &str) -> (&'static str, Option<String>) {
              /path/to/target/debug/rmule-tools ed2k sentinel-probe` — a binary's absolute \
              path, no embedded flags, since `num_args = 1..` stops at the first `-`-prefixed \
              token) and this flow lifts with no further change here."
-        )),
-    )
+        )
+    })
 }
 
-/// Run the configured probe, if any. Never an error: a probe that fails IS the
-/// answer.
-fn probe_reader(argv: &[String]) -> (bool, String) {
+/// Run the configured probe, if any, and keep what it printed. Never an error:
+/// a probe that fails IS the answer.
+fn probe_reader(argv: &[String]) -> (bool, String, Vec<String>) {
     let Some((program, args)) = argv.split_first() else {
         return (
             false,
             "no --sentinel-reader-probe configured on this branch".to_owned(),
+            Vec::new(),
         );
     };
-    let status = Command::new(OsString::from(program))
+    let output = Command::new(OsString::from(program))
         .args(args)
         .stdin(Stdio::null())
-        .stdout(Stdio::null())
         .stderr(Stdio::null())
-        .status();
-    match status {
-        Ok(status) if status.success() => (true, format!("`{}` succeeded", argv.join(" "))),
-        Ok(status) => (false, format!("`{}` exited {status}", argv.join(" "))),
+        .output();
+    match output {
+        Ok(output) => {
+            let lines = String::from_utf8_lossy(&output.stdout)
+                .lines()
+                .map(str::to_owned)
+                .collect();
+            if output.status.success() {
+                (true, format!("`{}` succeeded", argv.join(" ")), lines)
+            } else {
+                let status = output.status;
+                (
+                    false,
+                    format!("`{}` exited {status}", argv.join(" ")),
+                    lines,
+                )
+            }
+        }
         Err(error) => (
             false,
             format!("`{}` could not run: {error}", argv.join(" ")),
+            Vec::new(),
         ),
     }
 }
@@ -288,7 +304,7 @@ fn write_verdict(layout: &RunLayout, verdict: &SentinelVerdict) -> Result<()> {
     let text = toml::to_string_pretty(verdict).context("serialize sentinel verdict")?;
     let path = layout.root().join("sentinel-sources-legacy-verdict.toml");
     println!("{text}");
-    fs::write(&path, text).with_context(|| format!("write {}", path.display()))
+    crate::verdict::write(&path, &text)
 }
 
 #[cfg(test)]
@@ -297,18 +313,16 @@ mod tests {
 
     #[test]
     fn a_present_reader_passes_the_gate_with_no_skip_reason() {
-        let (verdict, skip_reason) = gate(true, "`rmule-tools ed2k sentinel-probe` succeeded");
-        assert_eq!(verdict, "PASS");
-        assert!(skip_reason.is_none(), "a PASS names no skip reason");
+        let skip_reason = gate(true, "`rmule-tools ed2k sentinel-probe` succeeded");
+        assert!(skip_reason.is_none(), "a lifted gate names no skip reason");
     }
 
     #[test]
     fn an_absent_reader_is_skipped_and_names_the_probes_own_detail() {
-        let (verdict, skip_reason) = gate(
+        let skip_reason = gate(
             false,
             "no --sentinel-reader-probe configured on this branch",
         );
-        assert_eq!(verdict, "SKIPPED");
         let reason = skip_reason.expect("an absent reader must name why");
         assert!(
             reason.contains("no --sentinel-reader-probe configured on this branch"),
@@ -318,7 +332,7 @@ mod tests {
 
     #[test]
     fn an_unconfigured_probe_reads_as_absent() {
-        let (present, detail) = probe_reader(&[]);
+        let (present, detail, _) = probe_reader(&[]);
         assert!(!present);
         assert_eq!(
             detail,
@@ -329,25 +343,26 @@ mod tests {
     #[test]
     fn a_succeeding_probe_command_reads_as_present() {
         let argv = vec!["true".to_owned()];
-        let (present, detail) = probe_reader(&argv);
+        let (present, detail, _) = probe_reader(&argv);
         assert!(present, "{detail}");
     }
 
     #[test]
     fn a_failing_probe_command_reads_as_absent() {
         let argv = vec!["false".to_owned()];
-        let (present, detail) = probe_reader(&argv);
+        let (present, detail, _) = probe_reader(&argv);
         assert!(!present);
         assert!(detail.contains("exited"), "{detail}");
     }
 
-    /// A gate-only run must never read as the whole sentinel-row claim: its note says
-    /// the legacy leg did not run, and the leg's own field says `NOT-RUN`.
+    /// A gate-only run proves the reader is there and nothing about stock aMule,
+    /// so it reads `OBSERVED`: its note says the legacy leg did not run, and the
+    /// leg's own field says `NOT-RUN`.
     #[test]
     fn a_gate_only_verdict_says_the_legacy_leg_did_not_run() {
         let probe = vec!["true".to_owned()];
-        let verdict = assemble("docker", &probe, "PASS", None, None);
-        assert_eq!(verdict.verdict, "PASS");
+        let verdict = assemble("docker", &probe, Vec::new(), None, None);
+        assert_eq!(verdict.verdict, Verdict::Observed);
         assert_eq!(verdict.legacy_leg, "NOT-RUN");
         assert!(
             verdict.note.contains("legacy leg was NOT run"),

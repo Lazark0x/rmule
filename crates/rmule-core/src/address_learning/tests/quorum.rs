@@ -371,3 +371,64 @@ fn hello_identity(reflected: Option<&str>) -> rmule_peer::PeerIdentity {
         connected_server: Ipv4Endpoint::new(Ipv4Addr::UNSPECIFIED, 0),
     })
 }
+
+// ------------------------------------------------------- mixed-age windows
+
+/// Freshness before ranking (ADR-0084): five lapsed votes for one held
+/// address do not outrank three fresh ones for another; the fresh quorum is
+/// adopted.
+#[test]
+fn a_fresh_quorum_outranks_a_larger_lapsed_one() {
+    let mut store = bound_store();
+    let start = Instant::now();
+    store.refresh_interfaces(&[v6(1), v6(2)]);
+    for index in 10..15u8 {
+        store.observe(AddressObservation::peer_vote(observer(index), v6(1)), start);
+    }
+    let now = start + OBSERVATION_WINDOW + Duration::from_secs(60);
+    for index in 20..23u8 {
+        store.observe(AddressObservation::peer_vote(observer(index), v6(2)), now);
+    }
+    assert_eq!(
+        store.known_address(AddressFamily::V6, now),
+        Some(v6(2)),
+        "the fresh quorum holds"
+    );
+    assert_eq!(
+        store.address_tier(AddressFamily::V6, now),
+        Some(ConfidenceTier::PeerVote)
+    );
+}
+
+/// The Kad address rung's window slides with every backer: a report whose
+/// only agreeing backer has left the window is no agreement, and a fresh
+/// second observer restores it.
+#[test]
+fn a_lapsed_backer_does_not_hold_a_fresh_kad_report() {
+    let mut store = bound_store();
+    let start = Instant::now();
+    store.observe(
+        AddressObservation::kad_observed_address(ipv4(observer(1)), ipv4(v4(7))),
+        start,
+    );
+    let now = start + OBSERVATION_WINDOW + Duration::from_secs(60);
+    store.observe(
+        AddressObservation::kad_observed_address(ipv4(observer(2)), ipv4(v4(7))),
+        now,
+    );
+    assert_eq!(store.known_address(AddressFamily::V4, now), None);
+    assert_eq!(
+        store.address(AddressFamily::V4, now),
+        Some(v4(7)),
+        "the agreement that lapsed is still the stale last-known"
+    );
+    store.observe(
+        AddressObservation::kad_observed_address(ipv4(observer(3)), ipv4(v4(7))),
+        now,
+    );
+    assert_eq!(store.known_address(AddressFamily::V4, now), Some(v4(7)));
+    assert_eq!(
+        store.address_tier(AddressFamily::V4, now),
+        Some(ConfidenceTier::KadCheck)
+    );
+}

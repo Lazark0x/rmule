@@ -122,7 +122,6 @@ async fn a_challenge_gated_status_reply_populates_the_capability_store() {
 
     let stored = capabilities
         .lock()
-        .unwrap()
         .get(&server)
         .expect("a gated reply populates the store under the TCP endpoint")
         .clone();
@@ -166,7 +165,6 @@ async fn a_forged_challenge_neither_mutates_the_store_nor_burns_the_ping() {
 
     let stored = capabilities
         .lock()
-        .unwrap()
         .get(&server)
         .expect("the genuine reply landed")
         .clone();
@@ -194,7 +192,7 @@ async fn a_status_reply_with_no_outstanding_ping_is_dropped() {
     );
     engine.run().await;
 
-    assert!(capabilities.lock().unwrap().is_empty());
+    assert!(capabilities.lock().is_empty());
 }
 
 /// An engine over an empty script plus its shared handles — the desc
@@ -258,7 +256,7 @@ async fn a_valid_status_reply_fires_the_desc_request_on_every_other_ping() {
             .await;
     }
 
-    let sends = transport.sends.lock().unwrap().clone();
+    let sends = transport.sends.lock().clone();
     assert_eq!(sends.len(), 2, "pings 1 and 3 fire, ping 2 skips");
     for (endpoint, datagram) in &sends {
         assert_eq!(
@@ -285,11 +283,11 @@ async fn the_desc_chain_lands_display_fields_that_survive_a_status_re_ping() {
     engine
         .demux(stat_res_datagram(0x55AA_0007, 1000), udp_src)
         .await;
-    assert_eq!(transport.sends.lock().unwrap().len(), 1, "0xA2 fired");
+    assert_eq!(transport.sends.lock().len(), 1, "0xA2 fired");
     engine.demux(desc_res_datagram(0xABCD_F0FF), udp_src).await;
 
     {
-        let store = capabilities.lock().unwrap();
+        let store = capabilities.lock();
         let record = store.get(&server).expect("the 0x97 record exists");
         assert_eq!(record.display.name.as_deref(), Some("Lugdunum"));
         assert_eq!(record.display.description.as_deref(), Some("a test server"));
@@ -302,7 +300,7 @@ async fn the_desc_chain_lands_display_fields_that_survive_a_status_re_ping() {
     engine
         .demux(stat_res_datagram(0x55AA_0007, 1234), udp_src)
         .await;
-    let store = capabilities.lock().unwrap();
+    let store = capabilities.lock();
     let record = store.get(&server).expect("the record survives");
     assert_eq!(record.users, 1234, "the re-ping refreshed the counts");
     assert_eq!(
@@ -327,7 +325,7 @@ async fn a_desc_reply_must_echo_the_outstanding_challenge() {
     // mutates nothing and leaves the challenge standing…
     engine.demux(desc_res_datagram(0x0BAD_F0FF), udp_src).await;
     assert_eq!(
-        capabilities.lock().unwrap().get(&server).unwrap().display,
+        capabilities.lock().get(&server).unwrap().display,
         rmule_ed2k::ServerDescTags::default(),
         "the mismatched reply landed nothing"
     );
@@ -336,7 +334,6 @@ async fn a_desc_reply_must_echo_the_outstanding_challenge() {
     assert_eq!(
         capabilities
             .lock()
-            .unwrap()
             .get(&server)
             .unwrap()
             .display
@@ -345,15 +342,10 @@ async fn a_desc_reply_must_echo_the_outstanding_challenge() {
         Some("Lugdunum")
     );
     // And the settled challenge is one-shot: a replay is silent again.
-    capabilities
-        .lock()
-        .unwrap()
-        .get_mut(&server)
-        .unwrap()
-        .display = Default::default();
+    capabilities.lock().get_mut(&server).unwrap().display = Default::default();
     engine.demux(desc_res_datagram(0xABCD_F0FF), udp_src).await;
     assert_eq!(
-        capabilities.lock().unwrap().get(&server).unwrap().display,
+        capabilities.lock().get(&server).unwrap().display,
         rmule_ed2k::ServerDescTags::default(),
         "one answer per ask (aMule zeroes the challenge)"
     );
@@ -376,14 +368,14 @@ async fn a_legacy_desc_reply_updates_only_a_proven_server() {
 
     // No 0x97-proven record yet: the unsolicited legacy reply drops.
     engine.demux(legacy.clone(), udp_src).await;
-    assert!(capabilities.lock().unwrap().is_empty());
+    assert!(capabilities.lock().is_empty());
 
     challenges.expect(server, 0x55AA_0007);
     engine
         .demux(stat_res_datagram(0x55AA_0007, 1000), udp_src)
         .await;
     engine.demux(legacy, udp_src).await;
-    let store = capabilities.lock().unwrap();
+    let store = capabilities.lock();
     let display = &store.get(&server).unwrap().display;
     // aMule 2.3.3's assignment: first string → description, second →
     // name (the pinned code path, not the opcode comment).
@@ -484,7 +476,7 @@ async fn a_crypt_ping_reply_decrypts_and_settles_from_the_obfuscation_offset() {
         .await;
 
     assert_eq!(
-        capabilities.lock().unwrap().get(&server).map(|c| c.users),
+        capabilities.lock().get(&server).map(|c| c.users),
         Some(1000),
         "the decrypted 0x97 populated the store under the TCP endpoint"
     );
@@ -508,7 +500,7 @@ async fn a_crypt_ping_reply_is_keyed_on_its_challenge_from_every_server_port() {
         let mut record =
             crate::server_capabilities::test_record_with_flags(ServerUdpFlags::UDPOBFUSCATION);
         record.udp_crypt = Some(saved_crypt(obf_port, None));
-        capabilities.lock().unwrap().insert(server, record);
+        capabilities.lock().insert(server, record);
         challenges.expect_crypt(server, 0x0BAD_F00D);
 
         engine
@@ -519,7 +511,7 @@ async fn a_crypt_ping_reply_is_keyed_on_its_challenge_from_every_server_port() {
             .await;
 
         assert_eq!(
-            capabilities.lock().unwrap().get(&server).map(|c| c.users),
+            capabilities.lock().get(&server).map(|c| c.users),
             Some(users),
             "a crypt-ping reply from port {from} decrypted under the challenge"
         );
@@ -542,7 +534,7 @@ async fn an_obfuscation_key_reply_decrypts_from_the_advertised_port() {
     let mut record =
         crate::server_capabilities::test_record_with_flags(ServerUdpFlags::UDPOBFUSCATION);
     record.udp_crypt = Some(saved_crypt(obf_port, Some(ours)));
-    capabilities.lock().unwrap().insert(server, record);
+    capabilities.lock().insert(server, record);
     // The encrypted reply echoes an outstanding plain challenge.
     challenges.expect(server, 0x55AA_0042);
 
@@ -551,7 +543,7 @@ async fn an_obfuscation_key_reply_decrypts_from_the_advertised_port() {
         .await;
 
     assert_eq!(
-        capabilities.lock().unwrap().get(&server).map(|c| c.users),
+        capabilities.lock().get(&server).map(|c| c.users),
         Some(1000),
         "the ServerUDPKey-decrypted reply refreshed the record"
     );
@@ -572,7 +564,7 @@ async fn a_plaintext_reply_still_routes_with_crypt_enabled() {
         .await;
 
     assert_eq!(
-        capabilities.lock().unwrap().get(&server).map(|c| c.users),
+        capabilities.lock().get(&server).map(|c| c.users),
         Some(1000),
     );
 }

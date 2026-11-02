@@ -13,8 +13,9 @@
 //! item A1, and its own note on why: such a lookup "could not be made
 //! correct".
 
+use parking_lot::Mutex;
 use std::io;
-use std::sync::Mutex;
+use std::sync::Arc;
 use std::task::{Context, Poll};
 use std::time::Instant;
 
@@ -24,7 +25,7 @@ use rmule_primitives::{
     encrypt_datagram_client,
 };
 
-use super::keys::NattKeyTable;
+use super::registry::TunnelRegistry;
 
 /// The client-UDP send half, narrowed to what NAT-T needs. The production impl
 /// is the shared [`ClientUdpSocket`](crate::ed2k::ClientUdpSocket)'s Family
@@ -136,7 +137,7 @@ pub struct SentFrame {
 pub struct NattSender<S> {
     sink: S,
     crypt: Option<Box<dyn NattCrypt>>,
-    keys: Mutex<NattKeyTable>,
+    registry: Arc<Mutex<TunnelRegistry>>,
 }
 
 impl<S> std::fmt::Debug for NattSender<S> {
@@ -149,13 +150,13 @@ impl<S> std::fmt::Debug for NattSender<S> {
 
 impl<S: NattDatagramSink> NattSender<S> {
     /// Build the send path over `sink`. `crypt` armed ⇒ transport frames are
-    /// obfuscated once a KEY frame has supplied the endpoint's hash, and rmule
-    /// asserts its own hash in return.
+    /// obfuscated once a KEY frame has supplied the endpoint's hash and the
+    /// endpoint is no stranger, and rmule asserts its own hash in return.
     pub fn new(sink: S, crypt: Option<Box<dyn NattCrypt>>) -> Self {
         Self {
             sink,
             crypt,
-            keys: Mutex::new(NattKeyTable::new()),
+            registry: Arc::new(Mutex::new(TunnelRegistry::new())),
         }
     }
 
@@ -165,22 +166,18 @@ impl<S: NattDatagramSink> NattSender<S> {
         self.crypt.as_ref().map_or(0, |crypt| crypt.crypt_options())
     }
 
-    /// Adopt the hash an inbound KEY frame carried.
-    pub fn learn_key(&self, peer: PeerEndpoint, hash: UserHash, now: Instant) {
-        self.keys
-            .lock()
-            .expect("the NAT-T key table is never poisoned")
-            .learn(peer, hash, now);
+    /// The **Tunnel Registry** this path keys its sends from, the one ledger
+    /// the engines and the demux share.
+    #[must_use]
+    pub fn registry(&self) -> Arc<Mutex<TunnelRegistry>> {
+        Arc::clone(&self.registry)
     }
 
     /// The hash a send to `peer` would obfuscate under, if any — the
     /// observable the KEY-interplay tests read.
     #[must_use]
-    pub fn key_for(&self, peer: PeerEndpoint, now: Instant) -> Option<UserHash> {
-        self.keys
-            .lock()
-            .expect("the NAT-T key table is never poisoned")
-            .key_for(peer, now)
+    pub fn send_key(&self, peer: PeerEndpoint, now: Instant) -> Option<UserHash> {
+        self.registry.lock().send_key(peer, now)
     }
 
     /// The local address, for logging.
@@ -203,9 +200,11 @@ impl<S: NattDatagramSink> NattSender<S> {
 
     /// Send one transport payload (uTP or QUIC) to `peer`, awaiting the socket.
     ///
-    /// `opens` marks an opening payload — a uTP `ST_SYN` or a QUIC long header
-    /// — which is where a KEY frame is due, because that is the first moment
-    /// the peer could need our hash and the last moment before data flows.
+    /// `opens` marks an opening payload — our own uTP `ST_SYN` or a QUIC long
+    /// header, a responder's included — which is where a KEY frame is due,
+    /// because that is the first moment the peer could need our hash and the
+    /// last moment before data flows. The `ST_STATE` that answers an inbound
+    /// `ST_SYN` opens nothing, so an accepted uTP Tunnel asserts no hash.
     ///
     /// # Errors
     /// Whatever the socket returned. A KEY frame that fails to send is *not*
@@ -297,10 +296,7 @@ impl<S: NattDatagramSink> NattSender<S> {
 
     /// A KEY frame claimed at `now` did not leave: give its window back.
     fn unclaim_key_frame(&self, peer: PeerEndpoint, now: Instant) {
-        self.keys
-            .lock()
-            .expect("the NAT-T key table is never poisoned")
-            .unclaim_key_frame(peer, now);
+        self.registry.lock().keys.unclaim_key_frame(peer, now);
     }
 
     /// Frame, key-arm and (maybe) obfuscate one transport payload. Pure given
@@ -317,13 +313,13 @@ impl<S: NattDatagramSink> NattSender<S> {
         let Some(crypt) = self.crypt.as_deref().filter(|crypt| crypt.armed()) else {
             return (None, plain, false);
         };
-        let mut keys = self
-            .keys
-            .lock()
-            .expect("the NAT-T key table is never poisoned");
-        let key_frame = (opens && keys.claim_key_frame(peer, now))
-            .then(|| NattFrame::Key(crypt.own_user_hash()).encode());
-        let obfuscated = keys.key_for(peer, now).and_then(|peer_hash| {
+        let (claimed, peer_hash) = {
+            let mut registry = self.registry.lock();
+            let claimed = opens && registry.keys.claim_key_frame(peer, now);
+            (claimed, registry.send_key(peer, now))
+        };
+        let key_frame = claimed.then(|| NattFrame::Key(crypt.own_user_hash()).encode());
+        let obfuscated = peer_hash.and_then(|peer_hash| {
             let sender = crypt.sender_address(peer.family())?;
             Some(encrypt_datagram_client(
                 &plain,
@@ -334,7 +330,6 @@ impl<S: NattDatagramSink> NattSender<S> {
                 &crypt.nonce(),
             ))
         });
-        drop(keys);
         match obfuscated {
             Some(bytes) => (key_frame, bytes, true),
             None => (key_frame, plain, false),
@@ -358,18 +353,12 @@ mod tests {
 
     impl NattDatagramSink for std::sync::Arc<Recorder> {
         async fn send_to(&self, peer: PeerEndpoint, datagram: &[u8]) -> io::Result<usize> {
-            self.sent
-                .lock()
-                .expect("recorder")
-                .push((peer, datagram.to_vec()));
+            self.sent.lock().push((peer, datagram.to_vec()));
             Ok(datagram.len())
         }
 
         fn try_send_to(&self, peer: PeerEndpoint, datagram: &[u8]) -> io::Result<usize> {
-            self.sent
-                .lock()
-                .expect("recorder")
-                .push((peer, datagram.to_vec()));
+            self.sent.lock().push((peer, datagram.to_vec()));
             Ok(datagram.len())
         }
 
@@ -379,10 +368,7 @@ mod tests {
             peer: PeerEndpoint,
             datagram: &[u8],
         ) -> Poll<io::Result<usize>> {
-            self.sent
-                .lock()
-                .expect("recorder")
-                .push((peer, datagram.to_vec()));
+            self.sent.lock().push((peer, datagram.to_vec()));
             Poll::Ready(Ok(datagram.len()))
         }
 
@@ -480,7 +466,7 @@ mod tests {
                 obfuscated: false
             }
         );
-        let log = recorder.sent.lock().expect("recorder").clone();
+        let log = recorder.sent.lock().clone();
         assert_eq!(log.len(), 2);
         assert_eq!(log[0].1, NattFrame::Key(hash(0x11)).encode());
         assert_eq!(log[1].1, vec![0xB2, 0x00, 0x41, 0x00]);
@@ -494,13 +480,13 @@ mod tests {
     async fn a_learned_key_turns_the_very_next_transport_frame_obfuscated() {
         let (recorder, sender) = armed_sender();
         let now = Instant::now();
-        sender.learn_key(peer(), hash(0x99), now);
+        sender.registry().lock().learn_key(peer(), hash(0x99), now);
         let sent = sender
             .send_transport(peer(), NattFrameType::Utp, &[0x41, 0x00], false, now)
             .await
             .expect("recorded");
         assert!(sent.obfuscated && !sent.key_frame_sent);
-        let log = recorder.sent.lock().expect("recorder").clone();
+        let log = recorder.sent.lock().clone();
         assert_eq!(log.len(), 1);
         assert!(
             !is_udp_plaintext_marker(log[0].1[0]),
@@ -516,10 +502,10 @@ mod tests {
     async fn a_caps_frame_stays_plaintext_even_with_a_key_in_hand() {
         let (recorder, sender) = armed_sender();
         let now = Instant::now();
-        sender.learn_key(peer(), hash(0x99), now);
+        sender.registry().lock().learn_key(peer(), hash(0x99), now);
         let frame = NattFrame::Key(hash(0x11));
         sender.send_frame(peer(), &frame).await.expect("recorded");
-        let log = recorder.sent.lock().expect("recorder").clone();
+        let log = recorder.sent.lock().clone();
         assert_eq!(log[0].1[0], 0xB2);
     }
 
@@ -539,16 +525,13 @@ mod tests {
             })),
         );
         let now = Instant::now();
-        sender.learn_key(peer(), hash(0x99), now);
+        sender.registry().lock().learn_key(peer(), hash(0x99), now);
         let sent = sender
             .send_transport(peer(), NattFrameType::Utp, &[0x41], false, now)
             .await
             .expect("recorded");
         assert!(!sent.obfuscated);
-        assert_eq!(
-            recorder.sent.lock().expect("recorder")[0].1,
-            vec![0xB2, 0x00, 0x41]
-        );
+        assert_eq!(recorder.sent.lock()[0].1, vec![0xB2, 0x00, 0x41]);
     }
 
     /// Disarmed: no KEY frame is asserted at all. Inviting a peer to obfuscate
@@ -569,7 +552,7 @@ mod tests {
                 obfuscated: false
             }
         );
-        assert_eq!(recorder.sent.lock().expect("recorder").len(), 1);
+        assert_eq!(recorder.sent.lock().len(), 1);
     }
 
     /// The policy behind the crypt half changes live (ADR-0046): disarmed,
@@ -589,7 +572,7 @@ mod tests {
             })),
         );
         let now = Instant::now();
-        sender.learn_key(peer(), hash(0x99), now);
+        sender.registry().lock().learn_key(peer(), hash(0x99), now);
         let send = || sender.send_transport(peer(), NattFrameType::Utp, &[0x41], true, now);
 
         assert!(send().await.expect("recorded").obfuscated);
@@ -613,7 +596,7 @@ mod tests {
     fn the_poll_send_reports_the_payload_length_not_the_datagrams() {
         let (recorder, sender) = armed_sender();
         let now = Instant::now();
-        sender.learn_key(peer(), hash(0x99), now);
+        sender.registry().lock().learn_key(peer(), hash(0x99), now);
         let waker = std::task::Waker::noop();
         let mut cx = Context::from_waker(waker);
         let payload = [0x41u8, 0x00, 0x01, 0x02];
@@ -623,7 +606,7 @@ mod tests {
             panic!("the recorder always accepts");
         };
         assert_eq!(len, payload.len());
-        let log = recorder.sent.lock().expect("recorder").clone();
+        let log = recorder.sent.lock().clone();
         assert_eq!(log.len(), 2, "the KEY frame rode alongside");
         assert!(log[1].1.len() > payload.len() + 2, "crypt header present");
     }
@@ -641,12 +624,12 @@ mod tests {
         }
 
         fn try_send_to(&self, _peer: PeerEndpoint, datagram: &[u8]) -> io::Result<usize> {
-            let mut refuse = self.refuse.lock().expect("refusing");
+            let mut refuse = self.refuse.lock();
             if *refuse > 0 {
                 *refuse -= 1;
                 return Err(io::ErrorKind::WouldBlock.into());
             }
-            self.sent.lock().expect("refusing").push(datagram.to_vec());
+            self.sent.lock().push(datagram.to_vec());
             Ok(datagram.len())
         }
 
@@ -686,12 +669,12 @@ mod tests {
         sender
             .try_send_transport(peer(), NattFrameType::Utp, &[0x41], true, now)
             .expect("the payload itself went");
-        assert!(!sink.sent.lock().expect("refusing").contains(&key));
+        assert!(!sink.sent.lock().contains(&key));
         sender
             .try_send_transport(peer(), NattFrameType::Utp, &[0x41], true, now)
             .expect("sent");
         assert_eq!(
-            sink.sent.lock().expect("refusing")[1],
+            sink.sent.lock()[1],
             key,
             "the retried opener carries the KEY frame the first one lost"
         );

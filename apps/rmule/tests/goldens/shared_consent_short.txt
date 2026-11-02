@@ -1,0 +1,5 @@
+┌ Share the download directory? ─────────────────┐
+│ Share /dl? 3 files, 2.9 KB.                   ▲│
+│                                               █│
+│ Every file's name and hash will be offered to ▼│
+└──────────────────────────────────────── 3 / 10 ┘

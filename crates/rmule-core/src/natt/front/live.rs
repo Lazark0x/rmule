@@ -66,6 +66,9 @@ pub(super) struct Node {
     pub(super) port: u16,
     commands: mpsc::Sender<NattCommand>,
     pub(super) accepted: mpsc::Receiver<AdmittedPeer>,
+    /// The **Peer Roster** the front's admission reads, for a leg whose
+    /// counterparty no punch expects.
+    roster: crate::peer_roster::SharedPeerRoster,
     /// The one counter surface both halves of this node write: the client-UDP
     /// engine's inbox drops and the front's tunnel and retirement tallies. A
     /// leg reads it to say what the wire did rather than what it hoped.
@@ -140,6 +143,7 @@ impl Node {
             // No Kad node in this assembly: the inlet stays empty, which is
             // what the front reads as "nothing to hand a Kad datagram to".
             crate::client_udp::SharedKadInlet::default(),
+            crate::ban_store::SharedBanStore::default(),
         );
         tokio::spawn(engine.run());
         let drain = Arc::clone(&socket);
@@ -157,6 +161,7 @@ impl Node {
             crate::adapters::HelloAdverts::default(),
         );
         let claims = crate::adapters::AwaitedInbound::default();
+        let roster = crate::peer_roster::SharedPeerRoster::default();
         let commands = spawn(
             ClientUdpNattSink(socket),
             NattIdentity {
@@ -177,6 +182,7 @@ impl Node {
                 admit,
                 claims: claims.clone(),
                 peer_pin: crate::adapters::SharedPeerPin::default(),
+                roster: roster.clone(),
                 diagnostics: diagnostics.clone(),
                 events: None,
                 prediction: None,
@@ -188,6 +194,7 @@ impl Node {
             port,
             commands,
             accepted,
+            roster,
             diagnostics,
             admit_tx,
             claims,
@@ -250,8 +257,7 @@ impl Node {
                 .admit_tx
                 .try_send(AdmittedPeer {
                     conn,
-                    dialed_toward: None,
-                    test_connection: false,
+                    origin: crate::adapters::InboundOrigin::Socket,
                     awaited_server: None,
                 })
                 .is_err()
@@ -276,6 +282,7 @@ impl Node {
                 role,
                 burst: false,
                 source: rmule_peer::natt::PunchTargetSource::Observed,
+                crypt: None,
             })
             .await
             .expect("the front is running");
@@ -310,6 +317,7 @@ impl Node {
                         buddy: None,
                         advertised_udp: None,
                     },
+                    crypt: None,
                     offer: crate::natt::RendezvousOffer {
                         // The buddy in this fixture is our own test code and
                         // never reads what we claim about ourselves.
@@ -400,8 +408,8 @@ async fn two_fronts_raise_a_tunnel_over_loopback_and_carry_a_hello() {
         .expect("the dialer's tunnel entered the serve pipeline")
         .expect("the admit channel is open");
     assert_eq!(
-        dialed.dialed_toward,
-        Some(b_hash),
+        dialed.origin,
+        crate::adapters::InboundOrigin::DialedTunnel(b_hash),
         "a dialed tunnel names the target its punch was aimed at (ADR-0091)"
     );
     let accepted = tokio::time::timeout(deadline, b.accepted.recv())
@@ -409,7 +417,8 @@ async fn two_fronts_raise_a_tunnel_over_loopback_and_carry_a_hello() {
         .expect("the responder's tunnel entered the serve pipeline")
         .expect("the admit channel is open");
     assert_eq!(
-        accepted.dialed_toward, None,
+        accepted.origin,
+        crate::adapters::InboundOrigin::AcceptedTunnel,
         "an accepted tunnel was aimed at us by somebody else; no download may claim it"
     );
     let mut dialed = dialed.conn;
@@ -457,12 +466,18 @@ async fn a_tunnel_rises_with_both_admitted_paths_drained_off_task() {
         .await
         .expect("the dialer's tunnel entered the serve pipeline")
         .expect("the admit channel is open");
-    assert_eq!(dialed.dialed_toward, Some(b_hash));
+    assert_eq!(
+        dialed.origin,
+        crate::adapters::InboundOrigin::DialedTunnel(b_hash)
+    );
     let accepted = tokio::time::timeout(deadline, b_accepted.recv())
         .await
         .expect("the responder's tunnel entered the serve pipeline")
         .expect("the admit channel is open");
-    assert_eq!(accepted.dialed_toward, None);
+    assert_eq!(
+        accepted.origin,
+        crate::adapters::InboundOrigin::AcceptedTunnel
+    );
     assert_eq!(
         a_diagnostics.snapshot().session.natt_inbox_drops_total,
         0,
@@ -567,7 +582,10 @@ async fn a_dial_whose_first_opener_lands_on_nothing_is_recovered_by_the_redial()
         .await
         .expect("the re-dial reached the responder inside one attempt")
         .expect("the admit channel is open");
-    assert_eq!(dialed.dialed_toward, Some(b_hash));
+    assert_eq!(
+        dialed.origin,
+        crate::adapters::InboundOrigin::DialedTunnel(b_hash)
+    );
     tokio::time::timeout(deadline, b.accepted.recv())
         .await
         .expect("the responder accepted the opener it was awake for")
@@ -595,6 +613,10 @@ async fn a_caps_probe_is_silent_before_identity_and_answered_once_published() {
     let probe_socket = tokio::net::UdpSocket::bind("127.0.0.1:0")
         .await
         .expect("a loopback probe socket binds");
+    node.roster.mark_known(
+        crate::peer_roster::PeerRelation::Upload,
+        Ipv4Endpoint::new(std::net::Ipv4Addr::LOCALHOST, 4662),
+    );
     let node_addr = std::net::SocketAddr::from((std::net::Ipv4Addr::LOCALHOST, node.port));
     let probe_naming = |expected: UserHash| {
         NattFrame::Caps(CapsFrame {
@@ -725,14 +747,24 @@ async fn a_tunnel_adopted_cancels_a_still_pending_hold_toward_the_same_peer() {
         .expect("the dialer's tunnel entered the serve pipeline")
         .expect("the admit channel is open");
     assert_eq!(
-        dialed.dialed_toward,
-        Some(b_hash),
+        dialed.origin,
+        crate::adapters::InboundOrigin::DialedTunnel(b_hash),
         "the dialed path names the peer whose hold this leg is proving against"
     );
     tokio::time::timeout(deadline, b.accepted.recv())
         .await
         .expect("the responder's tunnel entered the serve pipeline")
         .expect("the admit channel is open");
+
+    // The hello that ends the attempt, as the triage reports it for any
+    // Tunnel (ADR-0091, security rule 12).
+    a.claims.tunnel_identified(
+        dialed.conn.peer_endpoint(),
+        rmule_peer::peer_udp::crypt::PeerUdpCryptTarget::new(
+            b_hash,
+            rmule_primitives::CryptStance::disabled(),
+        ),
+    );
 
     let after_adoption = a.diagnostics.snapshot().session;
     assert_eq!(
@@ -744,11 +776,11 @@ async fn a_tunnel_adopted_cancels_a_still_pending_hold_toward_the_same_peer() {
         "one tunnel: the real one that just rose"
     );
 
-    // Past the hold's own deadline, and then some: if it survived adoption,
+    // Past the hold's own deadline, and then some: if it survived the hello,
     // its burst has fired at the fake address and a second dial toward it has
-    // spawned (`dials.arm` sees no in-flight entry left behind by the risen
-    // Tunnel — `DialSchedule::risen` removed it — so a second dial is a fresh
-    // one, not a refusal).
+    // spawned (`dials.arm` sees no in-flight entry left behind by the hello
+    // — `DialSchedule::risen` removed it — so a second dial is a fresh one,
+    // not a refusal).
     tokio::time::sleep(Duration::from_millis(900)).await;
     let after_wait = a.diagnostics.snapshot().session;
     assert_eq!(

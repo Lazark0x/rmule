@@ -53,8 +53,8 @@ const REPLY_DEADLINE: Duration = Duration::from_millis(250);
 const ORACLE_NAME: &str = "rmule-differ-oracle";
 const ORACLE_DESC: &str = "ed2k-server as a decode oracle";
 const ORACLE_VERSION: &str = "17.15";
-/// Their hardcoded `pingflg`/`ST_UDPFLAGS` (`udp.rs:667`) — `ed2k-server#4`.
-const ORACLE_UDP_FLAGS: u32 = 0x0000_17FB;
+/// Their `pingflg`/`ST_UDPFLAGS`, read from the oracle so a re-pin moves it.
+const ORACLE_UDP_FLAGS: u32 = ed2k_server::proto::opcodes::SERVER_UDP_FLAGS;
 
 /// A live, unpatched `ed2k-server` bound on loopback.
 ///

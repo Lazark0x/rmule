@@ -27,7 +27,7 @@ mod tcp_streams;
 
 pub use self::tcp_streams::ed2k_frame_listing;
 pub(crate) use self::tcp_streams::{
-    ED2K_PROTOCOLS, Ed2kFrame, TcpCapture, TcpOpen, TcpStream, tcp_capture, tcp_streams,
+    ED2K_PROTOCOLS, Ed2kFrame, TcpCapture, TcpClose, TcpOpen, TcpStream, tcp_capture, tcp_streams,
     tcp_streams_in,
 };
 
@@ -158,6 +158,30 @@ fn udp4_datagram(record: &Record) -> Result<Udp4Datagram> {
             .context("the UDP payload runs past the captured frame")?
             .to_vec(),
     })
+}
+
+/// Every IPv4 connection attempt in `pcap` (a SYN without an ACK): when the
+/// tap saw it, and who dialed.
+///
+/// # Errors
+/// If the file cannot be read or is not a classic `EN10MB` pcap.
+pub(crate) fn tcp4_syns(pcap: &Path) -> Result<Vec<(f64, std::net::Ipv4Addr)>> {
+    const SYN: u8 = 0x02;
+    const ACK: u8 = 0x10;
+    const FLAGS_AT: usize = 13;
+    Ok(records(pcap)?
+        .iter()
+        .filter_map(|record| {
+            let (ip, ihl) = ipv4_packet(&record.frame, IPPROTO_TCP).ok()?;
+            let flags = *ip.get(ihl + FLAGS_AT)?;
+            (flags & (SYN | ACK) == SYN).then(|| {
+                (
+                    record.at,
+                    std::net::Ipv4Addr::new(ip[12], ip[13], ip[14], ip[15]),
+                )
+            })
+        })
+        .collect())
 }
 
 /// One IPv6/UDP datagram read whole: both endpoints and the payload.

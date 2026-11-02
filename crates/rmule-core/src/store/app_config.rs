@@ -14,14 +14,17 @@
 
 mod servers;
 
-pub(crate) use servers::{grow_from_v8, grow_from_v9, grow_from_v11, grow_from_v13};
+pub(crate) use servers::{grow_from_v13, grow_from_v14};
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use rmule_kad::KadId;
 use rmule_primitives::{ClientIdentity, Ed2kText, SecureIdentKey, UserHash};
-use rmule_store::{Indexed, Readable, Record, Store, StoreError, TableDefinition};
+use rmule_store::redb::ReadableTable;
+use rmule_store::{
+    Indexed, Readable, Record, Store, StoreError, TableDefinition, UpgradeStep, WriteTransaction,
+};
 use serde::{Deserialize, Serialize};
 
 use crate::CoreError;
@@ -31,6 +34,7 @@ use crate::app_config::{
 };
 
 use super::Schema;
+use super::home_path::HomePath;
 
 /// The key every identity singleton is stored under. The table holds at most
 /// this one record, so the key is a constant rather than a mint.
@@ -41,6 +45,30 @@ const SINGLETON: u8 = 0;
 /// interprets. Not a record kind: the value is the column.
 const PREFERENCES: TableDefinition<'static, &str, &str> =
     TableDefinition::new("app_config.preference");
+
+/// Store version 17 → 18 (ADR-0115): a Temp Directory inside the Data Directory
+/// becomes relative to it, as a download row's part path did at version 17, so
+/// a move of that directory carries the setting. A version-17 build refuses the
+/// store rather than read the text against its own working directory.
+pub(crate) const UPGRADE_FROM_V17: UpgradeStep = UpgradeStep {
+    from: 17,
+    run: root_temp_dir,
+};
+
+/// Rewrite the stored Temp Directory against the directory the store lies in.
+fn root_temp_dir(txn: &WriteTransaction) -> Result<(), StoreError> {
+    let Some(home) = rmule_store::climbing_home(txn)? else {
+        return Ok(());
+    };
+    let key = Preference::TempDir.key();
+    let mut table = txn.open_table(PREFERENCES)?;
+    let Some(text) = table.get(key)?.map(|text| text.value().to_owned()) else {
+        return Ok(());
+    };
+    let rooted = HomePath::new(Path::new(&text), Some(&home));
+    table.insert(key, rooted.text())?;
+    Ok(())
+}
 
 /// The persisted eD2k [`ClientIdentity`]. `extra_tags` is not carried: it is a
 /// login-time decoration of the identity, not durable identity material.
@@ -142,8 +170,8 @@ pub(crate) fn schema() -> Schema {
         .merge(servers::schema())
 }
 
-/// The seam's tables as store versions 12 and 13 declared them: today's, the
-/// server list in its shape before the aux-ports list.
+/// The seam's tables as store version 13 declared them: today's, the server
+/// list in its shape before the aux-ports list.
 #[cfg(test)]
 pub(crate) fn schema_v13() -> Schema {
     Schema::new()
@@ -154,31 +182,18 @@ pub(crate) fn schema_v13() -> Schema {
         .merge(servers::schema_v13())
 }
 
-/// The seam's tables as store versions 1 to 8 declared them, the server list
-/// in its old shape with its endpoint index, for a test that builds an older
-/// store.
-#[cfg(test)]
-pub(crate) fn schema_v1() -> Schema {
-    Schema::new()
-        .indexed(&CLIENT_IDENTITY)
-        .indexed(&KAD_IDENTITY)
-        .indexed(&SECURE_IDENT_KEY)
-        .table(PREFERENCES)
-        .merge(servers::schema_v1())
-}
-
 /// Add a static server named `name` at `endpoint`, failed twice, to the
-/// list as a store of versions 1 to 8 kept it.
+/// list as a store of version 13 kept it.
 ///
 /// # Errors
 /// The store's.
 #[cfg(test)]
-pub(crate) fn add_server_v1(
+pub(crate) fn add_server_v13(
     txn: &rmule_store::WriteTransaction,
     endpoint: &rmule_primitives::ServerEndpoint,
     name: &str,
 ) -> Result<(), StoreError> {
-    servers::add_v1(txn, endpoint, name)
+    servers::add_v13(txn, endpoint, name)
 }
 
 /// The durable owner of the app's Client Identity, Secure User Identification
@@ -242,7 +257,7 @@ static SECURE_IDENT: Singleton<SecureIdentKeyRecord> = Singleton {
     table: &SECURE_IDENT_KEY,
     mint: || {
         let key = SecureIdentKey::generate()
-            .map_err(|e| CoreError::Repository(format!("secure-ident keygen: {e}")))?;
+            .map_err(|e| CoreError::SecureIdentKey(format!("keygen: {e}")))?;
         Ok(SecureIdentKeyRecord {
             private_key: key.to_der(),
         })
@@ -296,6 +311,17 @@ impl DurableAppConfig {
         self.set_value(preference.key(), value)
     }
 
+    /// Remove what `preference` holds, so it reads unset again.
+    pub(crate) fn clear_preference(&self, preference: Preference) -> Result<(), CoreError> {
+        self.store.write::<_, CoreError>(|txn| {
+            txn.open_table(PREFERENCES)
+                .map_err(StoreError::from)?
+                .remove(preference.key())
+                .map_err(StoreError::from)?;
+            Ok(())
+        })
+    }
+
     /// Replace the advertised nickname. Mints the identity first when none
     /// exists, so the edit can never land on a row that is not there.
     pub(crate) fn set_nickname(&self, nickname: &Ed2kText) -> Result<(), CoreError> {
@@ -317,14 +343,25 @@ impl DurableAppConfig {
         KAD_IDENTITY_SINGLETON.edit(&self.store, |record| record.udp_port = port)
     }
 
-    /// Persist the download directory. Fails with
-    /// [`CoreError::Repository`] on a path that is not valid UTF-8, since the
-    /// preferences column is text.
+    /// Persist the download directory, never inside the Data Directory
+    /// (ADR-0101). Fails with [`CoreError::PathNotUtf8`] on a path that is not
+    /// valid UTF-8, since the preferences column is text.
     pub(crate) fn set_download_dir(&self, dir: &Path) -> Result<(), CoreError> {
-        let value = dir
-            .to_str()
-            .ok_or_else(|| CoreError::Repository("download dir is not valid UTF-8".to_owned()))?;
-        self.set_preference(Preference::DownloadDir, value)
+        self.set_preference(Preference::DownloadDir, dir_text(dir)?)
+    }
+
+    /// Persist the Temp Directory, relative to the Data Directory when it
+    /// lies inside it. Fails as [`set_download_dir`](Self::set_download_dir).
+    pub(crate) fn set_temp_dir(&self, dir: &Path) -> Result<(), CoreError> {
+        dir_text(dir)?;
+        let rooted = HomePath::new(dir, HomePath::home_of(&self.store));
+        self.set_preference(Preference::TempDir, rooted.text())
+    }
+
+    /// The Temp Directory the operator set, read against the Data Directory.
+    pub(crate) fn temp_dir(&self) -> Result<Option<PathBuf>, CoreError> {
+        let stored = self.preference(Preference::TempDir)?;
+        Ok(stored.map(|text| HomePath::from_stored(text).path(HomePath::home_of(&self.store))))
     }
 
     /// Read the decimal `u32` stored under `preference`, or mint one from OS
@@ -344,6 +381,12 @@ impl DurableAppConfig {
     }
 }
 
+/// `dir`'s text; the preferences column can hold no other.
+fn dir_text(dir: &Path) -> Result<&str, CoreError> {
+    dir.to_str()
+        .ok_or_else(|| CoreError::PathNotUtf8(dir.to_owned()))
+}
+
 impl AppConfigStore for DurableAppConfig {
     fn ensure_identity(&self) -> Result<ClientIdentity, CoreError> {
         IDENTITY.ensure(&self.store).map(ClientIdentity::from)
@@ -352,7 +395,7 @@ impl AppConfigStore for DurableAppConfig {
     fn ensure_secure_ident_key(&self) -> Result<SecureIdentKey, CoreError> {
         let record = SECURE_IDENT.ensure(&self.store)?;
         SecureIdentKey::from_der(&record.private_key)
-            .map_err(|e| CoreError::Repository(format!("stored secure-ident key: {e}")))
+            .map_err(|e| CoreError::SecureIdentKey(format!("stored: {e}")))
     }
 
     fn ensure_kad_identity(&self) -> Result<KadIdentity, CoreError> {
@@ -371,5 +414,31 @@ impl AppConfigStore for DurableAppConfig {
 
     fn ensure_kad_udp_key(&self) -> Result<u32, CoreError> {
         self.ensure_secret(Preference::KadUdpKey)
+    }
+}
+
+#[cfg(test)]
+mod pinned {
+    use super::*;
+    use crate::store::assert_pinned;
+
+    #[test]
+    fn the_identity_records_keep_their_bytes() {
+        let client = ClientIdentityRecord {
+            user_hash: UserHash::from_bytes([7; UserHash::BYTE_LEN]),
+            nickname: Ed2kText::from_bytes(b"me".to_vec()),
+            tcp_port: 300,
+            protocol_version: 60,
+        };
+        assert_pinned(&client, &format!("{}026d65ac023c", "07".repeat(16)));
+        let kad = KadIdentityRecord {
+            kad_id: [9; KadId::BYTE_LEN],
+            udp_port: 300,
+        };
+        assert_pinned(&kad, &format!("{}ac02", "09".repeat(KadId::BYTE_LEN)));
+        let key = SecureIdentKeyRecord {
+            private_key: vec![0xAB, 0xCD],
+        };
+        assert_pinned(&key, "02abcd");
     }
 }

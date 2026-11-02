@@ -25,7 +25,7 @@ use crate::artifacts::RunLayout;
 use crate::docker::{Docker, DockerCommand, RunContainer};
 
 pub use client::{
-    DownloadCrypt, REGISTRANT_ANNOUNCE_TIMEOUT_SECS, REGISTRANT_PORT_BASE, Registrant,
+    DownloadCrypt, ProbeAsks, REGISTRANT_ANNOUNCE_TIMEOUT_SECS, REGISTRANT_PORT_BASE, Registrant,
     RmuleClientContainer, release_held_download,
 };
 pub use run::{
@@ -77,6 +77,68 @@ const CONTAINER_CARGO_HOME: &str = "/tmp/rmule-cargo-home";
 /// The `--server` a Kad-only stimulus run points at: a closed local port, so the
 /// non-fatal login failure lands immediately instead of hanging.
 const STIMULUS_CLOSED_SERVER_ENDPOINT: &str = "127.0.0.1:4661";
+
+/// The rust image `rmule-tools` compiles in for every container flow. Its
+/// glibc is the driver image's (Debian bookworm), so the binary it leaves
+/// runs there unchanged.
+pub const DRIVER_PREBUILD_IMAGE: &str = "rust:1.94.0-bookworm";
+
+/// Compile `rmule-tools` for the container platform into the host-persisted
+/// cache under `workspace` (once cold, seconds warm) and return the binary.
+/// The driver image takes this file instead of compiling inside `docker build`.
+///
+/// # Errors
+/// If the workspace cannot be resolved or the prebuild container fails; the
+/// error carries the container's stderr.
+pub fn prebuild_driver_binary(docker: &Docker, workspace: &Path) -> Result<PathBuf> {
+    let root = workspace
+        .canonicalize()
+        .with_context(|| format!("resolve the workspace {}", workspace.display()))?;
+    let workspace = RmuleWorkspace::new(DRIVER_PREBUILD_IMAGE, root);
+    let output = workspace
+        .prebuild_command(docker)?
+        .to_command()
+        .stdin(std::process::Stdio::null())
+        .output()
+        .context("run the rmule-tools prebuild for the driver image")?;
+    if !output.status.success() {
+        anyhow::bail!(
+            "the rmule-tools prebuild for the driver image failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    Ok(workspace.target_cache()?.join(tools_binary()))
+}
+
+/// The harness environment variable that picks the cargo profile every
+/// container `rmule-tools` builds and runs under: `release` for a run that
+/// measures rate or cost, anything else (or unset) the default dev profile.
+const TOOLS_PROFILE: &str = "RMULE_BENCH_TOOLS_PROFILE";
+
+/// Whether this harness run builds and runs `rmule-tools` in release.
+fn tools_in_release() -> bool {
+    std::env::var_os(TOOLS_PROFILE).is_some_and(|profile| profile == "release")
+}
+
+/// The `rmule-tools` binary's path under the target dir, for the profile this
+/// harness run builds.
+pub(crate) fn tools_binary() -> &'static str {
+    if tools_in_release() {
+        "release/rmule-tools"
+    } else {
+        "debug/rmule-tools"
+    }
+}
+
+/// `container`, a `cargo build` or `cargo run` so far, under [`tools_binary`]'s
+/// profile.
+fn in_tools_profile(container: RunContainer) -> RunContainer {
+    if tools_in_release() {
+        container.arg("--release")
+    } else {
+        container
+    }
+}
 
 /// The `RMULE_LOG` level an rmule container runs at: `RMULE_SERVE_LOG` from the
 /// harness's own environment when set (the serve-side tracing knob),
@@ -163,17 +225,18 @@ impl RmuleWorkspace {
     /// `cargo run -p rmule-tools --` against the host-persisted target and
     /// `CARGO_HOME` caches: one cold build per host, seconds thereafter.
     fn cached_cargo_run(&self, layout: &RunLayout) -> Result<RunContainer> {
-        Ok(self
-            .container(layout)
-            .volume(self.target_cache()?, CONTAINER_TARGET_DIR)
-            .volume(self.cargo_home_cache()?, CONTAINER_CARGO_HOME)
-            .env("CARGO_TARGET_DIR", CONTAINER_TARGET_DIR)
-            .env("CARGO_HOME", CONTAINER_CARGO_HOME)
-            .arg("cargo")
-            .arg("run")
-            .arg("-p")
-            .arg("rmule-tools")
-            .arg("--"))
+        Ok(in_tools_profile(
+            self.container(layout)
+                .volume(self.target_cache()?, CONTAINER_TARGET_DIR)
+                .volume(self.cargo_home_cache()?, CONTAINER_CARGO_HOME)
+                .env("CARGO_TARGET_DIR", CONTAINER_TARGET_DIR)
+                .env("CARGO_HOME", CONTAINER_CARGO_HOME)
+                .arg("cargo")
+                .arg("run"),
+        )
+        .arg("-p")
+        .arg("rmule-tools")
+        .arg("--"))
     }
 
     /// The `rmule-tools` binary [`prebuild_command`](Self::prebuild_command)
@@ -183,7 +246,7 @@ impl RmuleWorkspace {
         Ok(self
             .container(layout)
             .volume(self.target_cache()?, CONTAINER_TARGET_DIR)
-            .arg(format!("{CONTAINER_TARGET_DIR}/debug/rmule-tools")))
+            .arg(format!("{CONTAINER_TARGET_DIR}/{}", tools_binary())))
     }
 
     /// [`Self::prebuilt`], held until the file `gate` names inside the
@@ -198,7 +261,7 @@ impl RmuleWorkspace {
             .arg("-c")
             .arg(HOLD_UNTIL_GATE)
             .arg(gate)
-            .arg(format!("{CONTAINER_TARGET_DIR}/debug/rmule-tools")))
+            .arg(format!("{CONTAINER_TARGET_DIR}/{}", tools_binary())))
     }
 
     /// Compile `rmule-tools` for the container's platform into the
@@ -206,19 +269,22 @@ impl RmuleWorkspace {
     /// rustup reach the registry. Foreground and cached: a warm run returns in
     /// seconds.
     fn prebuild_command(&self, docker: &Docker) -> Result<DockerCommand> {
+        crate::run_record::expect_binary(&self.target_cache()?.join(tools_binary()));
         Ok(docker.run_container(
-            RunContainer::new(self.image.clone())
-                .remove_after_exit()
-                .workdir(CONTAINER_WORKSPACE)
-                .volume(&self.root, CONTAINER_WORKSPACE)
-                .volume(self.target_cache()?, CONTAINER_TARGET_DIR)
-                .volume(self.cargo_home_cache()?, CONTAINER_CARGO_HOME)
-                .env("CARGO_TARGET_DIR", CONTAINER_TARGET_DIR)
-                .env("CARGO_HOME", CONTAINER_CARGO_HOME)
-                .arg("cargo")
-                .arg("build")
-                .arg("-p")
-                .arg("rmule-tools"),
+            in_tools_profile(
+                RunContainer::new(self.image.clone())
+                    .remove_after_exit()
+                    .workdir(CONTAINER_WORKSPACE)
+                    .volume(&self.root, CONTAINER_WORKSPACE)
+                    .volume(self.target_cache()?, CONTAINER_TARGET_DIR)
+                    .volume(self.cargo_home_cache()?, CONTAINER_CARGO_HOME)
+                    .env("CARGO_TARGET_DIR", CONTAINER_TARGET_DIR)
+                    .env("CARGO_HOME", CONTAINER_CARGO_HOME)
+                    .arg("cargo")
+                    .arg("build"),
+            )
+            .arg("-p")
+            .arg("rmule-tools"),
         ))
     }
 

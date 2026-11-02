@@ -8,8 +8,10 @@
 //! rmule reuses `PartHash` (the 16-byte MD4 newtype already in
 //! `rmule-primitives::hash`); there is no separate `Md4` primitive.
 
-use rmule_peer::PeerPacket;
-use rmule_primitives::{FileHash, Packet, PacketProtocol, PartHash};
+use rmule_peer::{HashSetAnswer, PeerPacket};
+use rmule_primitives::{
+    FileHash, MAX_ED2K_FILE_SIZE, Packet, PacketProtocol, PartHash, PartHashSet,
+};
 
 fn hash() -> FileHash {
     FileHash::from_bytes([0x01; 16])
@@ -45,7 +47,7 @@ fn op_hashsetanswer_round_trips_with_three_part_hashes() {
     match PeerPacket::decode(&packet).expect("answer") {
         PeerPacket::HashSetAnswer(a) => {
             assert_eq!(a.file_hash, hash());
-            assert_eq!(a.part_hashes, parts);
+            assert_eq!(a.part_hashes.hashes(), parts);
             assert_eq!(a.encode_packet().payload(), payload.as_slice());
         }
         other => panic!("expected HashSetAnswer, got {other:?}"),
@@ -62,7 +64,7 @@ fn op_hashsetanswer_round_trips_with_single_part_hash() {
     let packet = Packet::new(PacketProtocol::Edonkey, 0x52, payload.clone());
     match PeerPacket::decode(&packet).expect("answer") {
         PeerPacket::HashSetAnswer(a) => {
-            assert_eq!(a.part_hashes.len(), 1);
+            assert_eq!(a.part_hashes.count(), 1);
             assert_eq!(a.encode_packet().payload(), payload.as_slice());
         }
         other => panic!("expected HashSetAnswer, got {other:?}"),
@@ -100,7 +102,7 @@ fn op_hashsetanswer_accepts_zero_part_count_for_single_chunk_file() {
     match PeerPacket::decode(&packet).expect("zero-part answer decodes") {
         PeerPacket::HashSetAnswer(a) => {
             assert_eq!(a.file_hash, file_hash);
-            assert!(a.part_hashes.is_empty());
+            assert_eq!(a.part_hashes.count(), 0);
             assert_eq!(a.encode_packet().payload(), payload.as_slice());
         }
         other => panic!("expected HashSetAnswer, got {other:?}"),
@@ -108,11 +110,32 @@ fn op_hashsetanswer_accepts_zero_part_count_for_single_chunk_file() {
 }
 
 #[test]
-fn op_hashsetanswer_rejects_trailing_bytes() {
+fn op_hashsetanswer_reads_past_nothing_after_its_counted_hashes() {
     let mut payload = hash().as_bytes().to_vec();
     payload.extend_from_slice(&1u16.to_le_bytes());
     payload.extend_from_slice(part_hash(0).as_bytes());
-    payload.push(0xFF); // trailing byte not covered by declared hash count
+    payload.push(0xFF); // aMule stops at the count and never sees this byte
     let packet = Packet::new(PacketProtocol::Edonkey, 0x52, payload);
-    assert!(PeerPacket::decode(&packet).is_err());
+    let PeerPacket::HashSetAnswer(answer) = PeerPacket::decode(&packet).expect("reads") else {
+        panic!("not a hash set");
+    };
+    assert_eq!(answer.part_hashes.hashes(), &[part_hash(0)]);
+}
+
+/// The largest set eD2k has, for a file of exactly 256 GiB, frames and reads
+/// back whole.
+#[test]
+fn the_set_of_the_largest_file_round_trips() {
+    let count = PartHashSet::expected_hash_count(MAX_ED2K_FILE_SIZE).unwrap();
+    let set = PartHashSet::from_hashes(
+        MAX_ED2K_FILE_SIZE,
+        vec![PartHash::from_bytes([9; PartHash::BYTE_LEN]); count],
+    )
+    .unwrap();
+    let answer = HashSetAnswer {
+        file_hash: FileHash::from_bytes([1; FileHash::BYTE_LEN]),
+        part_hashes: set.into_list(),
+    };
+    let packet = answer.encode_packet();
+    assert_eq!(HashSetAnswer::decode_packet(&packet).unwrap(), answer);
 }

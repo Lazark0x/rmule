@@ -254,21 +254,31 @@ fn a_buddy_the_hello_named_takes_the_next_callback_without_a_walk() {
         serving_buddy: Some(buddy_udp),
         ..HelloFacts::of(TARGET)
     };
+    let answered = PeerWorkerEvent::every_part(state.file_size);
     for event in [
         PeerWorkerEvent::Identity(named.identity()),
         PeerWorkerEvent::Connected,
-        PeerWorkerEvent::Disconnected,
+        answered,
     ] {
         ended = state.on_worker_event(t0(), peer(9), event);
     }
+    assert!(!ended.is_empty());
+    let ended = state.on_worker_event(
+        t0() + MIN_REQUEST_TIME,
+        peer(9),
+        PeerWorkerEvent::Disconnected,
+    );
     assert_eq!(
         named_buddy(&ended),
         Some((BUDDY_ID, Some(buddy_udp))),
         "back in its lane, the source's callback goes to the hello's endpoint: {ended:?}"
     );
 
-    let _ = state.on_tick(t0() + CALLBACK_TIMEOUT);
-    let later = via_kad(&mut state, vec![id_only_row(0x00)]);
+    let lapsed = t0() + MIN_REQUEST_TIME + CALLBACK_TIMEOUT;
+    let _ = state.on_tick(lapsed);
+    let free = lapsed + Duration::from_secs(45 * 60);
+    let _ = state.on_tick(free);
+    let later = take_at(&mut state, free, Channel::Kad, vec![id_only_row(0x00)]).decisions;
     assert_eq!(
         named_buddy(&later),
         Some((BUDDY_ID, Some(buddy_udp))),

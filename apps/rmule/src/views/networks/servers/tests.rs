@@ -12,37 +12,51 @@ use crate::golden::assert_golden;
 
 use super::*;
 use crate::fixture::*;
+/// Each Ping State renders its own cell: the round trip, or the word for
+/// why there is none — never a bare dash — and a missing count or age says
+/// the same word as the row's ping, or that the answer left a count unset;
+/// every word fits its column.
 #[test]
-fn the_greedy_pair_share_the_slack_and_the_row_always_fits() {
-    let headers: Vec<usize> = ServersTable::COLUMNS
-        .iter()
-        .map(|column| column.label.len())
-        .collect();
-    for pane in 30usize..=200 {
-        let widths = server_widths(pane, &SERVER_COLS, &headers);
-        let used = widths.iter().sum::<usize>() + widths.len() - 1 + SERVER_GUTTER_W;
-        assert!(used <= pane, "row overflows a {pane}-wide pane: {used}");
+fn each_ping_state_renders_its_own_cell_and_counts_and_age_follow_it() {
+    let unanswered = PingState::Unanswered {
+        since: Duration::from_secs(600),
+    };
+    for (ping, cell, count) in [
+        (
+            PingState::Measured(Duration::from_millis(42)),
+            "42ms",
+            "unset",
+        ),
+        (
+            PingState::Measured(Duration::from_millis(2_500)),
+            "2.5s",
+            "unset",
+        ),
+        (PingState::NotAskedYet, "soon", "soon"),
+        (PingState::Awaiting, "wait", "wait"),
+        (unanswered, "lost", "lost"),
+    ] {
+        assert_eq!(format_ping(&ping), cell);
         assert!(
-            widths
-                .iter()
-                .zip(&headers)
-                .all(|(width, header)| *width == 0 || width >= header),
-            "a header is split in a {pane}-wide pane: {widths:?}"
+            cell.chars().count() <= server_floors()[4],
+            "{cell} overflows Ping"
         );
-        assert!(widths[SERVER_NAME_COL] >= 4, "Name gave way at {pane}");
+        assert_eq!(count_cell(None, &ping), count);
+        assert_eq!(count_cell(Some(431_004), &ping), "431k");
+        let age = age_cell(None, &ping);
+        assert!(
+            age.chars().count() <= server_floors()[7],
+            "{age} overflows Age"
+        );
+        if ping.measured().is_none() {
+            assert_eq!(age, cell, "an undated row's age says why, as its ping");
+        }
+        assert_eq!(age_cell(Some(Duration::from_secs(59)), &ping), "59s");
     }
-    // With room to spare both identity columns grow, not just the first.
-    let wide = server_widths(140, &SERVER_COLS, &headers);
-    assert!(wide[SERVER_NAME_COL] > SERVER_COLS[SERVER_NAME_COL]);
-    assert!(wide[SERVER_DESC_COL] > SERVER_COLS[SERVER_DESC_COL]);
 }
 
 #[test]
 fn dynamics_render_as_dashes_until_a_server_reports_them() {
-    assert_eq!(format_ping(None), "—");
-    assert_eq!(format_ping(Some(Duration::from_millis(42))), "42ms");
-    assert_eq!(format_ping(Some(Duration::from_millis(2_500))), "2.5s");
-    assert_eq!(format_age(None), "—", "never answered");
     for (secs, cell) in [
         (0, "0s"),
         (59, "59s"),
@@ -54,16 +68,12 @@ fn dynamics_render_as_dashes_until_a_server_reports_them() {
         (8_639_999, "99d"),
         (8_640_000, "14w"),
     ] {
-        assert_eq!(format_age(Some(Duration::from_secs(secs))), cell);
+        assert_eq!(format_age(Duration::from_secs(secs)), cell);
     }
-    assert_eq!(short_count(None), "—");
-    assert_eq!(short_count(Some(0)), "0", "zero users is a measurement");
-    assert_eq!(short_count(Some(9_999)), "9999");
-    assert_eq!(short_count(Some(431_004)), "431k");
-    assert_eq!(short_count(Some(24_507_112)), "24M");
-    for count in [0u32, 9_999, 10_000, 999_999, 1_000_000, u32::MAX] {
+    assert_eq!(short_count(0), "0", "zero users is a measurement");
+    for count in [0, 9_999, 10_000, 999_999, 1_000_000, u64::from(u32::MAX)] {
         assert!(
-            short_count(Some(count)).chars().count() <= 5,
+            short_count(count).chars().count() <= 5,
             "{count} overflows the cell"
         );
     }
@@ -76,8 +86,6 @@ fn the_connected_row_is_marked_by_a_glyph_beside_the_selection_arrow() {
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
 
-    // Short names so each row is one display line and the gutter reads
-    // straight down.
     let state = UiState {
         diagnostics: DiagnosticsSnapshot {
             servers: vec![
@@ -87,6 +95,7 @@ fn the_connected_row_is_marked_by_a_glyph_beside_the_selection_arrow() {
             connected_server: Some(endpoint("10.0.0.2", 4242)),
             ..DiagnosticsSnapshot::default()
         },
+        connected_server: Some(endpoint("10.0.0.2", 4242)),
         ..UiState::default()
     };
     let theme = Theme::default_dark();
@@ -100,20 +109,21 @@ fn the_connected_row_is_marked_by_a_glyph_beside_the_selection_arrow() {
                 &state,
                 &theme,
                 Instant::now(),
-            )
+            );
         })
         .expect("draw");
     let buffer = terminal.backend().buffer();
-    let y0 = view.server_rows.line_of(0).expect("row 0 drawn");
+    let y0 = view.drawn.line_of(0).expect("row 0 drawn");
     let gutter = |y: u16| -> String {
         (1u16..4)
             .map(|x| buffer.cell((x, y)).map_or(" ", |cell| cell.symbol()))
             .collect()
     };
+    let y1 = view.drawn.line_of(1).expect("row 1 drawn");
     // Row 0 is selected but not connected; row 1 is connected, not selected.
     assert_eq!(gutter(y0), "▸  ", "selection arrow only");
-    assert_eq!(gutter(y0 + 1), " ● ", "connected dot only");
-    let dot = buffer.cell((2u16, y0 + 1)).expect("connected dot");
+    assert_eq!(gutter(y1), " ● ", "connected dot only");
+    let dot = buffer.cell((2u16, y1)).expect("connected dot");
     assert_eq!(dot.style().fg, Some(theme.good));
 }
 
@@ -205,72 +215,35 @@ fn golden_networks_connected_with_log() {
 }
 
 #[test]
-fn golden_networks_wrap_long_row() {
+fn golden_networks_cut_long_row() {
     let state = long_row();
     let mut view = NetworksView::new();
     let now = Instant::now();
-    assert_golden("networks_wrap_long_row", 78, 21, |frame| {
+    assert_golden("networks_cut_long_row", 78, 21, |frame| {
         let area = frame.area();
         view.draw(frame, area, &state, &Theme::default_dark(), now);
     });
 }
 
+/// A row longer than its table takes one line, its text cut in the middle,
+/// and the selected row's whole name rides the Off-screen line.
 #[test]
-fn a_wrapped_row_keeps_every_character_and_maps_its_lines_back_to_the_row() {
-    use ratatui::Terminal;
-    use ratatui::backend::TestBackend;
-
+fn a_long_row_takes_one_line_and_the_off_screen_line_says_it_whole() {
     let state = long_row();
     let mut view = NetworksView::new();
-    // 30 rows, not the golden's 21: the narrower Name floor
-    // (Address widened) wraps this fixture's row taller, and a
-    // row extending past the pane edge is a viewport property, not a
-    // truncation — the assertion needs the whole row on screen.
-    let mut terminal = Terminal::new(TestBackend::new(78, 30)).expect("terminal");
-    terminal
-        .draw(|frame| {
-            view.draw(
-                frame,
-                Rect::new(0, 0, 78, 30),
-                &state,
-                &Theme::default_dark(),
-                Instant::now(),
-            )
-        })
-        .expect("draw");
-    let buffer = terminal.backend().buffer();
-    let rendered: String = (0..30u16)
-        .map(|y| {
-            (0..78u16)
-                .map(|x| buffer.cell((x, y)).map_or(" ", |cell| cell.symbol()))
-                .collect::<String>()
-        })
+    let shown = screen(&mut view, &state, 80, 24);
+    let flat: String = shown
+        .lines()
+        .map(|line| line.trim_matches(|c| c == '│' || c == ' '))
         .collect::<Vec<_>>()
-        .join("\n");
+        .join(" ");
+    assert!(flat.contains("…"), "the name is cut:\n{shown}");
     assert!(
-        rendered.contains("Nummer"),
-        "the name's tail was cut:\n{rendered}"
+        flat.contains("Off-screen: Name Der Grosse Deutsche Donkey Server Nummer Zwei"),
+        "{shown}"
     );
-    assert!(
-        rendered.contains("clock"),
-        "the description's tail was cut:\n{rendered}"
-    );
-    assert!(
-        !rendered.contains('…'),
-        "no renderer in this crate truncates"
-    );
-    let (first, second) = (
-        view.server_rows.line_of(0).expect("row 0 drawn"),
-        view.server_rows.line_of(1).expect("row 1 drawn"),
-    );
-    assert!(
-        second - first > 1,
-        "the first row occupies several display lines"
-    );
-    view.handle_click(4, second, &state);
-    assert_eq!(view.server_sel, 1);
-    view.handle_click(4, first + 1, &state);
-    assert_eq!(view.server_sel, 0);
+    assert!(flat.contains("moderated around the clock"), "{shown}");
+    assert_eq!(view.drawn.line_of(0).map(|y| y + 1), view.drawn.line_of(1));
 }
 
 /// A table taller than its pane scrolls by whole rows, and the selection
@@ -301,22 +274,25 @@ fn a_long_list_scrolls_the_selected_row_into_view() {
                     &state,
                     &Theme::default_dark(),
                     Instant::now(),
-                )
+                );
             })
             .expect("draw");
     };
     draw(&mut view);
-    assert_eq!(view.server_offset, 0);
+    assert_eq!(view.viewport.first(), 0);
     view.handle_key(press(KeyCode::Char('G')), &state);
     draw(&mut view);
-    assert!(view.server_offset > 0, "the table scrolled to the last row");
     assert!(
-        view.server_rows.line_of(39).is_some(),
+        view.viewport.first() > 0,
+        "the table scrolled to the last row"
+    );
+    assert!(
+        view.drawn.line_of(39).is_some(),
         "the selected row is on screen"
     );
     view.handle_key(press(KeyCode::Char('g')), &state);
     draw(&mut view);
-    assert_eq!(view.server_offset, 0, "g scrolls back to the top");
+    assert_eq!(view.viewport.first(), 0, "g scrolls back to the top");
 }
 
 /// Everything on screen, one string per row.
@@ -340,6 +316,7 @@ fn detail_golden(name: &str, state: &UiState, down: usize) {
     for _ in 0..down {
         view.handle_key(press(KeyCode::Char('j')), state);
     }
+    view.handle_key(press(KeyCode::Char('d')), state);
     let now = Instant::now();
     assert_golden(name, 80, 34, |frame| {
         let area = frame.area();
@@ -374,31 +351,58 @@ fn golden_detail_pane_withheld_shares() {
     detail_golden("networks_detail_withheld", &state, 0);
 }
 
-/// Where the pane would take more than half the table's body, it collapses
-/// to the one wrapped line of grants and UDP flags — the frame the
-/// `networks_populated` golden draws — and the Health and Shares sentences
-/// are the pane's alone.
+/// The list keeps the screen: at 80x24 eleven servers show as eleven rows
+/// less only what the pane has no line for, under them the selected server's
+/// health, and its grants are one key away.
 #[test]
-fn the_detail_pane_collapses_where_the_table_would_lose_half_its_rows() {
-    let state = listed_servers();
+fn the_list_keeps_the_screen_and_the_grants_are_behind_a_key() {
+    let mut state = listed_servers();
+    let servers: Vec<ServerDiagnostics> = (0..11u8)
+        .map(|n| listed(&format!("10.0.0.{n}"), 4661, &format!("Server number {n}")))
+        .collect();
+    state.diagnostics.servers = servers;
     let mut view = NetworksView::new();
-    let flat = |shown: String| {
-        shown
-            .lines()
-            .map(|line| line.trim_matches(|c| c == '│' || c == ' ').to_string())
-            .collect::<Vec<_>>()
-            .join(" ")
+    let shown = screen(&mut view, &state, 78, 22);
+    assert!(
+        view.drawn.line_of(5).is_some(),
+        "six rows at least:\n{shown}"
+    );
+    assert!(shown.contains("Health:"), "{shown}");
+    assert!(!shown.contains("Grants"), "{shown}");
+
+    view.handle_key(press(KeyCode::Char('d')), &state);
+    let shown = screen(&mut view, &state, 78, 22);
+    assert!(shown.contains("Grants"), "{shown}");
+    view.handle_key(press(KeyCode::Esc), &state);
+    let shown = screen(&mut view, &state, 78, 22);
+    assert!(!shown.contains("Grants"), "{shown}");
+}
+
+/// A server list longer than its pane: the bar runs down the header and the
+/// rows, and the border counts the cursor's row of the forty.
+#[test]
+fn golden_networks_servers_overflow() {
+    let servers: Vec<ServerDiagnostics> = (0..40u8)
+        .map(|n| listed(&format!("10.0.0.{n}"), 4661, &format!("Server {n}")))
+        .collect();
+    let state = UiState {
+        diagnostics: DiagnosticsSnapshot {
+            servers,
+            ..DiagnosticsSnapshot::default()
+        },
+        ..UiState::default()
     };
-    let short = flat(screen(&mut view, &state, 80, 21));
-    assert!(short.contains("Grants at login (14m ago)"), "{short}");
-    assert!(!short.contains("Health:"), "{short}");
-    let tall = flat(screen(&mut view, &state, 80, 34));
-    assert!(
-        tall.contains("Health: answering — its last answer came 12s ago"),
-        "{tall}"
-    );
-    assert!(
-        tall.contains("Shares: not announced to this session yet"),
-        "{tall}"
-    );
+    let mut view = NetworksView::new();
+    for _ in 0..25 {
+        view.handle_key(press(KeyCode::Char('j')), &state);
+    }
+    assert_golden("networks_servers_overflow", 78, 24, |frame| {
+        view.draw(
+            frame,
+            frame.area(),
+            &state,
+            &Theme::default_dark(),
+            Instant::now(),
+        );
+    });
 }

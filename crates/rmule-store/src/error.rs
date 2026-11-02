@@ -4,6 +4,8 @@
 //! uniqueness, table-type agreement and the version ladder — each as its own
 //! variant so a caller can match on what actually went wrong.
 
+use std::path::PathBuf;
+
 use redb::{
     CommitError, DatabaseError, SetDurabilityError, StorageError, TableError, TransactionError,
 };
@@ -85,6 +87,14 @@ pub enum StoreError {
         /// The version this build's ladder tops out at.
         current: u32,
     },
+    /// The file is older than any version this build climbs from.
+    #[error("store is version {found}, under this build's floor {floor}")]
+    TooOld {
+        /// The version stamped in the file.
+        found: u32,
+        /// The oldest version this build's ladder climbs from.
+        floor: u32,
+    },
     /// The ladder has no step starting at a version the file is at.
     #[error("upgrade ladder has no step from version {from}")]
     MissingStep {
@@ -94,6 +104,94 @@ pub enum StoreError {
     /// The store carries no version stamp, which `open` always writes.
     #[error("store carries no version stamp")]
     Unversioned,
+    /// The copy a climb keeps could not be made, so the climb did not start.
+    #[error("copying the store to {} before upgrading it: {source}", .copy.display())]
+    NotCopied {
+        /// Where the copy was to lie.
+        copy: PathBuf,
+        /// What the file system said.
+        #[source]
+        source: std::io::Error,
+    },
+}
+
+/// Why a store would not open, sorted by what the operator can do about it.
+/// A code a front end writes its sentence from, never one to log instead of
+/// the [`StoreError`] it came from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OpenRefusal {
+    /// Another process holds the file.
+    Busy,
+    /// A newer build wrote the file.
+    Newer {
+        /// The version stamped in the file.
+        found: u32,
+        /// The version this build's ladder tops out at.
+        current: u32,
+    },
+    /// The file is older than any version this build climbs from.
+    TooOld {
+        /// The version stamped in the file.
+        found: u32,
+        /// The oldest version this build's ladder climbs from.
+        floor: u32,
+    },
+    /// The file, or a record in it, is not what a store holds.
+    Damaged,
+    /// The disk said no. `os_code` is the system's own, when it gave one.
+    Disk {
+        /// What the system refused for.
+        kind: std::io::ErrorKind,
+        /// The system's code.
+        os_code: Option<i32>,
+    },
+    /// The copy a climb keeps could not be made; the file is as it was.
+    NotCopied {
+        /// The system's code.
+        os_code: Option<i32>,
+    },
+}
+
+impl StoreError {
+    /// What refused the open, for the operator.
+    #[must_use]
+    pub fn open_refusal(&self) -> OpenRefusal {
+        match self {
+            Self::Engine(redb::Error::DatabaseAlreadyOpen) => OpenRefusal::Busy,
+            // An error the system did not raise is the engine reading a file
+            // short or wrong, as a truncated store reads.
+            Self::Engine(redb::Error::Io(error)) => {
+                error
+                    .raw_os_error()
+                    .map_or(OpenRefusal::Damaged, |os_code| OpenRefusal::Disk {
+                        kind: error.kind(),
+                        os_code: Some(os_code),
+                    })
+            }
+            Self::FutureVersion { found, current } => OpenRefusal::Newer {
+                found: *found,
+                current: *current,
+            },
+            Self::TooOld { found, floor } => OpenRefusal::TooOld {
+                found: *found,
+                floor: *floor,
+            },
+            Self::NotCopied { source, .. } => OpenRefusal::NotCopied {
+                os_code: source.raw_os_error(),
+            },
+            _ => OpenRefusal::Damaged,
+        }
+    }
+
+    /// Whether this failure leaves the engine answering nothing but its
+    /// latch: any failed read or write of the file does, until a reopen.
+    #[must_use]
+    pub(crate) const fn stops_the_engine(&self) -> bool {
+        matches!(
+            self,
+            Self::Engine(redb::Error::Io(_) | redb::Error::PreviousIo)
+        )
+    }
 }
 
 impl From<TableError> for StoreError {

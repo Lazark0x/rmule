@@ -1,8 +1,9 @@
 //! Unit tests for the in-process CoreClient bridge.
 
+use parking_lot::Mutex;
 use std::collections::BTreeMap;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
 
 use rmule_core::diagnostics::{
     DownloadDiagnostics, SessionCounters, UploadDiagnostics, WorkerEntry, WorkerPhase, WorkerSlot,
@@ -24,6 +25,8 @@ struct FakeCore {
     /// A core whose quit never ends —
     /// `CORE_SHUTDOWN_GRACE` must still let the caller through.
     hang_on_shutdown: bool,
+    /// A defect on the data tick.
+    panic_on_snapshot: bool,
 }
 
 struct FakeCoreControls {
@@ -49,6 +52,7 @@ fn fake_core_with(hang_on_shutdown: bool) -> (FakeCore, FakeCoreControls) {
             sent: sent_tx,
             shutdown_calls: shutdown_calls.clone(),
             hang_on_shutdown,
+            panic_on_snapshot: false,
         },
         FakeCoreControls {
             events: event_tx,
@@ -59,12 +63,20 @@ fn fake_core_with(hang_on_shutdown: bool) -> (FakeCore, FakeCoreControls) {
     )
 }
 
-impl CoreHandle for FakeCore {
+impl CommandDoor for mpsc::Sender<CoreCommand> {
     async fn send(&self, command: CoreCommand) -> Result<(), CoreError> {
-        self.sent
-            .send(command)
+        mpsc::Sender::send(self, command)
             .await
             .map_err(|_| CoreError::ServiceStopped)
+    }
+}
+
+impl CoreHandle for FakeCore {
+    type Door = mpsc::Sender<CoreCommand>;
+    type QuitEvents = mpsc::Receiver<CoreEvent>;
+
+    fn door(&self) -> mpsc::Sender<CoreCommand> {
+        self.sent.clone()
     }
 
     async fn next_event(&mut self) -> Option<CoreEvent> {
@@ -72,7 +84,8 @@ impl CoreHandle for FakeCore {
     }
 
     fn diagnostics_snapshot(&self) -> DiagnosticsSnapshot {
-        self.snapshot.lock().expect("snapshot mutex").clone()
+        assert!(!self.panic_on_snapshot, "a defect on the data tick");
+        self.snapshot.lock().clone()
     }
 
     fn quit(self) -> mpsc::Receiver<CoreEvent> {
@@ -91,6 +104,7 @@ fn queued(id: u64) -> CoreEvent {
         download_id: DownloadId::from_u64(id),
         file_hash: FileHash::from_bytes([0; 16]),
         metadata: rmule_core::DownloadMetadata::unnamed(0),
+        file_path: crate::fixture::part_file(),
     })
 }
 
@@ -120,8 +134,14 @@ fn set_byte_levels(snapshot: &Arc<Mutex<DiagnosticsSnapshot>>, received: u64, se
             workers,
             received_bytes: received,
             known_sources: 0,
+            source_activity: rmule_core::diagnostics::SourceActivity::default(),
             dials_ended: 0,
             dial_ends: Default::default(),
+            handed_over: Default::default(),
+            allocated_bytes: None,
+            hole_verdict: None,
+            completion: None,
+            part_check: None,
             reask_replies_ignored: 0,
         },
     );
@@ -139,7 +159,7 @@ fn set_byte_levels(snapshot: &Arc<Mutex<DiagnosticsSnapshot>>, received: u64, se
             bytes_sent: sent,
         },
     );
-    let mut snapshot = snapshot.lock().expect("snapshot mutex");
+    let mut snapshot = snapshot.lock();
     snapshot.downloads = downloads;
     snapshot.uploads = uploads;
     snapshot.session = SessionCounters {
@@ -229,7 +249,7 @@ async fn the_kad_facts_ride_the_data_tick_of_the_sync_snapshot() {
     let (action_tx, mut action_rx) = mpsc::channel(64);
     let _handle = spawn(core, action_tx, BridgeConfig::default());
 
-    controls.snapshot.lock().expect("snapshot").kad = Some(kad_diag(false));
+    controls.snapshot.lock().kad = Some(kad_diag(false));
     let mut seen = None;
     for _ in 0..8 {
         if let Action::Snapshot(frame) = action_rx.recv().await.expect("bus open")
@@ -246,7 +266,7 @@ async fn the_kad_facts_ride_the_data_tick_of_the_sync_snapshot() {
     );
 
     // Latest-state-wins: the next tick carries the newer level.
-    controls.snapshot.lock().expect("snapshot").kad = Some(kad_diag(true));
+    controls.snapshot.lock().kad = Some(kad_diag(true));
     let mut last = None;
     for _ in 0..8 {
         if let Action::Snapshot(frame) = action_rx.recv().await.expect("bus open")
@@ -269,7 +289,6 @@ async fn commands_reach_the_core_port() {
 
     handle
         .send(CoreCommand::DisconnectFromServer)
-        .await
         .expect("command lands");
     let mut forwarded = false;
     for _ in 0..4 {
@@ -300,7 +319,7 @@ async fn core_shutdown_announces_and_poisons_the_client() {
         }
     }
     // The bridge task has returned; the command door now refuses.
-    let refused = handle.send(CoreCommand::DumpDiagnostics).await;
+    let refused = handle.send(CoreCommand::DumpDiagnostics);
     assert_eq!(refused, Err(CoreClientError::CoreStopped));
 }
 
@@ -343,10 +362,10 @@ async fn graceful_shutdown_runs_core_quit_exactly_once() {
     );
 
     // Idempotent across the door and across clones: a second call, from
-    // either handle, finds nothing left to fire.
+    // either handle, has the first one's answer and fires nothing.
     assert!(
-        !handle.clone().graceful_shutdown().await,
-        "a second call must not re-run shutdown"
+        handle.clone().graceful_shutdown().await,
+        "a second call must answer as the first did"
     );
     assert_eq!(controls.shutdown_calls.load(Ordering::SeqCst), 1);
 }
@@ -408,52 +427,72 @@ async fn grace_elapsed_sends_an_unconfirmed_flush_flash_before_the_ack() {
     );
 }
 
-/// The quit steps are facts of the run like any other: each reaches the Run
-/// Log as the core runs it, whether or not the UI is still there to hear it.
+/// A parked command path never holds the event path: the forwarder waits for
+/// the core's room on its own task, so the events behind it still reach the
+/// bus and the UI's send still returns at once (ADR-0069).
 #[tokio::test(start_paused = true)]
-async fn quit_steps_are_written_to_the_run_log_even_with_the_ui_gone() {
-    use std::io::Write;
+async fn a_full_inbox_holds_no_event_and_no_sender() {
+    let (mut core, controls) = fake_core();
+    let (room_tx, room_rx) = mpsc::channel(1);
+    core.sent = room_tx;
+    let (action_tx, mut action_rx) = mpsc::channel(64);
+    let handle = spawn(core, action_tx, BridgeConfig::default());
 
-    #[derive(Clone, Default)]
-    struct Captured(Arc<Mutex<Vec<u8>>>);
-    impl Write for Captured {
-        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-            self.0.lock().expect("captured").extend_from_slice(bytes);
-            Ok(bytes.len())
+    // The first takes the door's one slot, the second parks the forwarder.
+    for _ in 0..200 {
+        handle
+            .send(CoreCommand::DumpDiagnostics)
+            .expect("handed over without waiting");
+    }
+    tokio::task::yield_now().await;
+    controls.events.send(queued(1)).await.expect("room");
+
+    let forwarded = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if let Some(Action::Core(event)) = action_rx.recv().await {
+                return event;
+            }
         }
-        fn flush(&mut self) -> std::io::Result<()> {
-            Ok(())
+    })
+    .await
+    .expect("the event path is not parked behind the commands");
+    assert!(matches!(forwarded, CoreEvent::Download(_)));
+    drop(room_rx);
+}
+
+/// Whether `CoreClosed` reaches the bus, whatever precedes it.
+async fn core_closed_arrives(actions: &mut mpsc::Receiver<Action>) -> bool {
+    while let Some(action) = actions.recv().await {
+        if matches!(action, Action::CoreClosed) {
+            return true;
         }
     }
+    false
+}
 
-    let captured = Captured::default();
-    let sink = captured.clone();
-    let subscriber = tracing_subscriber::fmt()
-        .with_ansi(false)
-        .with_writer(move || sink.clone())
-        .finish();
-    let _installed = tracing::subscriber::set_default(subscriber);
+/// A panic in the bridge must not leave the UI showing a live core.
+#[tokio::test(start_paused = true)]
+async fn a_panicked_bridge_closes_the_core_on_the_bus() {
+    let (mut core, _controls) = fake_core();
+    core.panic_on_snapshot = true;
+    let (action_tx, mut action_rx) = mpsc::channel(64);
+    let _handle = spawn(core, action_tx, BridgeConfig::default());
+    assert!(core_closed_arrives(&mut action_rx).await);
+}
 
-    let (events_tx, events_rx) = mpsc::channel(4);
-    for step in [rmule_core::QuitStep::Search, rmule_core::QuitStep::Kad] {
-        events_tx
-            .send(CoreEvent::Quitting { step })
-            .await
-            .expect("room");
-    }
-    drop(events_tx);
-    let (action_tx, action_rx) = mpsc::channel(4);
-    drop(action_rx);
-    forward_quit(events_rx, &action_tx, &Default::default()).await;
-
-    let log = String::from_utf8(captured.0.lock().expect("captured").clone()).expect("utf8");
-    let steps: Vec<&str> = log
-        .lines()
-        .filter(|line| line.contains("quit.step"))
-        .collect();
-    assert_eq!(steps.len(), 2, "{log}");
-    assert!(
-        steps[0].contains("step=search") && steps[1].contains("step=kad"),
-        "{log}"
-    );
+/// The actor's tasks can hold the event stream open past the actor, so its
+/// told death is the core's end.
+#[tokio::test(start_paused = true)]
+async fn the_actors_told_death_closes_the_core_on_the_bus() {
+    let (core, controls) = fake_core();
+    let (action_tx, mut action_rx) = mpsc::channel(64);
+    let _handle = spawn(core, action_tx, BridgeConfig::default());
+    controls
+        .events
+        .send(CoreEvent::TaskDied {
+            task: LongTask::Core,
+        })
+        .await
+        .unwrap();
+    assert!(core_closed_arrives(&mut action_rx).await);
 }

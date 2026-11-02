@@ -42,7 +42,7 @@ fn a_v0_claimants_name_ask_status_is_discarded_and_a_v1_claimants_kept() {
     let (mut state, [a, b, c, _d]) = pool_with_known_unknown_and_empty_status(file, size, t);
 
     // Both hold parts 0 and 1 and lack part 2, which no pooled source offers.
-    let holds_0_and_1 = PartBitmap::downloader(size, |i| i.value() < 2);
+    let holds_0_and_1 = WireStatus::downloader(size, |i| i.value() < 2);
     for (octets, claim, expected) in [([8, 8, 8, 8], 1, vec![c]), ([9, 9, 9, 9], 0, vec![a, b, c])]
     {
         let asker = identify_claiming(&mut state, octets, claim, 0, t);
@@ -71,13 +71,13 @@ fn a_v0_claimants_udp_reask_status_is_discarded_too() {
     let _ = slot_request(&mut state, waiter, file, t);
     let ping = ReaskFilePing {
         file_hash: file,
-        part_status: Some(PartBitmap::downloader(size, |i| i.value() < 2)),
+        part_status: Some(WireStatus::downloader(size, |i| i.value() < 2)),
         complete_sources: Some(0),
     }
     .encode_udp();
     assert!(matches!(
         state
-            .on_reask_ping(t, udp([10, 0, 0, 2], 6000), &ping)
+            .on_reask_ping(t, udp([10, 0, 0, 2], 6000), &ping, &no_modifiers())
             .as_slice(),
         [ServeDecision::SendClientUdp { .. }],
     ));
@@ -288,4 +288,41 @@ fn a_bundle_cut_short_is_gated_before_it_ends_the_connection() {
             ServeDecision::Disconnect { peer: asker },
         ],
     );
+}
+
+/// A plain bundle names no size, so its walker follows the wire's count. A
+/// count that is not the file's is one aMule clears after its two bytes
+/// (`UploadClient.cpp:418-422`): its bytes never ran out, and the name ask is
+/// answered, link kept.
+#[test]
+fn a_status_that_counts_another_file_never_cuts_a_plain_bundle() {
+    let file = hash(0x5E);
+    let t = Instant::now();
+    let mut state = serving_state(1, vec![entry(file, 4096, "served.bin")]);
+    let asker = identify_claiming(&mut state, [8, 8, 8, 9], 1, 0, t);
+    let wrong_count = rmule_peer::WireStatus::decode(9, &[0, 0]).expect("a status");
+    let decisions = state.on_conn_event(
+        t,
+        asker,
+        ServeInput::Server(ServerEvent::FileBundleRequested {
+            file_hash: file,
+            file_size: None,
+            asks: Vec::new(),
+            cut: Some(rmule_peer::BundleCut::NameStatus(Some(wrong_count))),
+        }),
+        &no_modifiers(),
+    );
+    assert!(
+        !decisions
+            .iter()
+            .any(|decision| matches!(decision, ServeDecision::Disconnect { .. })),
+        "{decisions:?}"
+    );
+    assert!(decisions.iter().any(|decision| matches!(
+        decision,
+        ServeDecision::Send {
+            command: ServerCommand::AnswerFileName { .. },
+            ..
+        }
+    )));
 }

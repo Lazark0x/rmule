@@ -52,6 +52,8 @@ pub(crate) fn drive(
         Ipv6Flow::KadTags => super::kad_tags::drive(bench, options, stage),
         Ipv6Flow::ServerSentinel => server_sentinel(bench, options, stage),
         Ipv6Flow::UdpKey => udp_key(bench, options, stage),
+        Ipv6Flow::Asker => super::v6_asker::drive(bench, options, stage),
+        Ipv6Flow::OversizedRange => super::oversized_range::drive(bench, options, stage),
         Ipv6Flow::HelloSurface => super::hello_surface::drive(bench, options, stage),
     }
 }
@@ -418,6 +420,53 @@ fn udp_key(
                 "the control tells a silent crypt leg from a silent socket".to_owned(),
             ),
         ]);
+
+        // The same ask from a client emule-qt holds: the sender lookup finds it,
+        // so the file-not-found branch keys its answer, and the reply is
+        // emule-qt's own 35-byte-keyed datagram.
+        run_driver(
+            bench,
+            options,
+            stage,
+            "udpkey-emuleqt-keyed",
+            &[
+                "ipv6".to_owned(),
+                "udp-key".to_owned(),
+                "--peer".to_owned(),
+                format!("[{qt_v6}]:{BODY_CLIENT_UDP_PORT}"),
+                "--peer-user-hash".to_owned(),
+                qt_hash.clone(),
+                "--user-hash".to_owned(),
+                RMULE_USER_HASH.to_owned(),
+                "--our-address".to_owned(),
+                stage.v6(HOST_DRIVER).to_owned(),
+                "--bind-port".to_owned(),
+                BODY_CLIENT_UDP_PORT.to_string(),
+                "--hold-link".to_owned(),
+                format!("[{qt_v6}]:{BODY_PEER_TCP_PORT}"),
+                "--capture".to_owned(),
+                out("udpkey-emuleqt-keyed-capture"),
+                "--out".to_owned(),
+                out("udpkey-emuleqt-keyed.toml"),
+            ],
+        )?;
+        let row = DriverRow::read(&stage.leg_dir.join("udpkey-emuleqt-keyed.toml"))?;
+        claims.push(Claim::about(
+            "emuleqt-keys-its-answer-to-a-client-it-holds",
+            row.flag("obfuscated_reply_decrypted") && row.int("obfuscated_reply_opcode") == 0x92,
+            Evidence::Captured,
+            format!(
+                "with a held hello naming this UDP port, the crypt layer and a Kad version, the \
+                 answer came back obfuscated and our 35-byte inbound derivation over emule-qt's \
+                 own IPv6 recovered it: reply received={} plaintext={} decrypted={} opcode=0x{:02X} \
+                 raw={}",
+                row.flag("obfuscated_reply_received"),
+                row.flag("obfuscated_reply_was_plaintext"),
+                row.flag("obfuscated_reply_decrypted"),
+                row.int("obfuscated_reply_opcode").max(0),
+                row.text("obfuscated_reply_raw")
+            ),
+        ));
     }
 
     // kno's own refusal, measured rather than read.
@@ -634,8 +683,9 @@ fn direct_dial(
     Ok((claims, String::new()))
 }
 
-/// `ipv6-server-sentinel`: a capable server emits a **Sentinel Source** to a
-/// capable session — and the pinned `ed2ksrv` is not one.
+/// `ipv6-server-sentinel`: what `ed2ksrv` on the bench's default config draws
+/// of the IPv6 dialect, which is nothing. The pin speaks the dialect on
+/// `config-ipv6.toml`, and `ed2ksrv-server-surface` holds that row.
 fn server_sentinel(
     bench: &mut Bench,
     options: &Ipv6DialectOptions<'_>,
@@ -647,18 +697,14 @@ fn server_sentinel(
                 "an-ipv6-capable-ed2k-server-to-talk-to",
                 format!(
                     "the ed2ksrv counterparty image is not built on this bench, so nothing \
-                     was measured here. The pin itself is the standing blocker: {} has zero \
-                     IPv6, read off ed2k-server's source and confirmed against the image's \
-                     own config schema, and no upstream build with IPv6 exists yet to pin.",
+                     was measured here. {} speaks IPv6 only on `config-ipv6.toml`; that row \
+                     is `ed2ksrv-server-surface`.",
                     crate::flow::ed2ksrv::pin_text(),
                 ),
             )],
-            "Documented Absence, naming the missing pin: no upstream build with IPv6 exists yet, so no \
-             ed2k-server build exists that could emit a Sentinel Source to a capable \
-             session. This run additionally had no ed2ksrv image built, so the silence was \
-             not re-measured on the wire; the flow takes that measurement automatically as \
-             soon as the image is present, and asserts the real row as soon as the image is \
-             IPv6-capable."
+            "Superseded by `ed2ksrv-server-surface`: this flow runs the default config, which \
+             carries no IPv6. This run had no ed2ksrv image built, so the silence was not \
+             re-measured on the wire."
                 .to_owned(),
         ));
     }
@@ -729,9 +775,9 @@ fn server_sentinel(
                 row.int("server_list_v6_count") > 0,
                 Evidence::SingleOracle,
                 format!(
-                    "{} IPv6 servers in the trailing block. ADR-0087 classifies this surface \
-                     and OP_CALLBACKREQUESTED_IPV6 (0x26) as single-oracle: eNode-go is the \
-                     only implementation known to emit them.",
+                    "{} IPv6 servers in the trailing block. A re-pinned ed2k-server \
+                     is then the one implementation known to emit the block, so the claim \
+                     is single-oracle.",
                     row.int("server_list_v6_count")
                 ),
             ),
@@ -751,16 +797,15 @@ fn server_sentinel(
             -1
         };
         claims.push(Claim::absence(
-            "no-ipv6-capable-ed2ksrv-pin-exists",
+            "the-default-config-draws-no-ipv6",
             ipv6_surfaces,
             format!(
                 "measured: the ed2k-server image ({}) answered the login with \
                  SRV_TCPFLG = 0x{:08X} — SRV_TCPFLG_IPV6 (0x4000) clear — sent no \
                  ST_IPV6_STATUS ({}), named no CT_MOD_SVR_IP_V6 ({:?}), returned {} sentinel \
-                 records and a server list with {} IPv6 entries. No upstream build with IPv6 \
-                 exists yet to pin; until one does, this row \
-                 has no counterparty and the harness fabricates none.",
-                crate::flow::ed2ksrv::body_pin(&bench.docker, options.ed2ksrv_image),
+                 records and a server list with {} IPv6 entries, on the default config. The \
+                 dialect's row runs on `config-ipv6.toml`, in `ed2ksrv-server-surface`.",
+                crate::flow::ed2ksrv::ED2KSRV.body_pin(&bench.docker, options.ed2ksrv_image),
                 row.int("tcp_flags_bits"),
                 row.flag("ipv6_status_present"),
                 row.text("server_ipv6"),
@@ -770,15 +815,14 @@ fn server_sentinel(
         ));
         claims.push(Claim::blocked(
             "a-sentinel-source-dialled-from-a-capable-session",
-            "blocked: no pinnable ed2k-server build speaks the dialect, so no \
-             server can emit the row this flow would dial. The flow lifts itself the moment \
-             `server_claims_ipv6` reads true against a re-pinned image — no code change.",
+            "blocked here: the default config emits no sentinel to dial. \
+             `ed2ksrv-server-surface` draws the sentinel on `config-ipv6.toml`.",
         ));
         claims.push(Claim::blocked(
             "op-callbackrequested-ipv6-0x26-consumed-from-a-server",
-            "single-oracle and undriven: ADR-0087 records eNode-go as the only implementation \
-             that emits 0x26 or the OP_SERVERLIST v6 block, and the bench carries no eNode-go \
-             pin.",
+            "source-derived and undriven: the pin emits neither 0x26 nor the OP_SERVERLIST \
+             v6 block on any config (`ed2ksrv-server-surface` measures that), so ADR-0087 \
+             rests them on the emule-qt IPv6 spec alone.",
         ));
     }
 
@@ -786,11 +830,10 @@ fn server_sentinel(
         String::new()
     } else {
         format!(
-            "Documented Absence. The IPv6-dialect server row needs an `ed2ksrv` pin with IPv6, \
-             and none exists yet: the pinned build is {}, which carries no IPv6 at all. The absence \
-             above is measured from the server's own login and OP_SERVERIDENT bytes rather \
-             than read off a release note, and the flow asserts the real row automatically \
-             once a capable pin appears.",
+            "Documented Absence on the default config of {}. The dialect's server row runs on \
+             `config-ipv6.toml` and is `ed2ksrv-server-surface`'s; this flow no longer settles \
+             it. The absence above is measured from the server's own login and OP_SERVERIDENT \
+             bytes.",
             crate::flow::ed2ksrv::pin_text(),
         )
     };

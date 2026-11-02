@@ -28,9 +28,10 @@
 mod journal;
 mod session;
 
+use parking_lot::Mutex;
 use std::net::{IpAddr, SocketAddr};
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};

@@ -6,6 +6,7 @@
 //! responder's, tested on captures in `rmule-peer`.
 
 use super::*;
+use rmule_peer::WireStatus;
 use rmule_peer::{ConnectionEvent, ServerCommand, ServerEvent};
 
 /// A waiter is resolved by its advertised UDP endpoint, or by its IP alone
@@ -21,11 +22,11 @@ fn a_waiter_is_resolved_by_its_udp_endpoint_or_its_ip_alone() {
 
     let src = udp([10, 0, 0, 2], 6000);
     assert_eq!(
-        state.on_reask_ping(t, src, &reask_ping(file)),
+        state.on_reask_ping(t, src, &reask_ping(file), &no_modifiers()),
         vec![ServeDecision::SendClientUdp {
             to: src,
             datagram: ReaskAck {
-                part_status: Some(PartBitmap::complete_source_sentinel()),
+                part_status: Some(WireStatus::complete_source()),
                 rank: 1,
             }
             .encode_udp(),
@@ -39,11 +40,11 @@ fn a_waiter_is_resolved_by_its_udp_endpoint_or_its_ip_alone() {
     // IP still matches, since exactly one waiter shares that IP.
     let other_port = udp([10, 0, 0, 2], 9999);
     assert_eq!(
-        state.on_reask_ping(t, other_port, &reask_ping(file)),
+        state.on_reask_ping(t, other_port, &reask_ping(file), &no_modifiers()),
         vec![ServeDecision::SendClientUdp {
             to: other_port,
             datagram: ReaskAck {
-                part_status: Some(PartBitmap::complete_source_sentinel()),
+                part_status: Some(WireStatus::complete_source()),
                 rank: 1,
             }
             .encode_udp(),
@@ -64,7 +65,7 @@ fn a_waiters_hello_claim_decides_its_ping_and_a_silenced_one_is_counted() {
 
     let mut claimant = one_waiter_state(file, 4096, waiter, 6000, 4, t);
     assert_eq!(
-        claimant.on_reask_ping(t, src, &hash_only_ping(file)),
+        claimant.on_reask_ping(t, src, &hash_only_ping(file), &no_modifiers()),
         vec![ServeDecision::Emit(ServeEvent::ReaskPingMalformed {
             peer: waiter
         })],
@@ -75,11 +76,11 @@ fn a_waiters_hello_claim_decides_its_ping_and_a_silenced_one_is_counted() {
     identify_udp_claiming(&mut v0, waiter, user(0x0A), 6000, 4, 0, t);
     let _ = slot_request(&mut v0, waiter, file, t);
     assert_eq!(
-        v0.on_reask_ping(t, src, &hash_only_ping(file)),
+        v0.on_reask_ping(t, src, &hash_only_ping(file), &no_modifiers()),
         vec![ServeDecision::SendClientUdp {
             to: src,
             datagram: ReaskAck {
-                part_status: Some(PartBitmap::complete_source_sentinel()),
+                part_status: Some(WireStatus::complete_source()),
                 rank: 1,
             }
             .encode_udp(),
@@ -99,7 +100,7 @@ fn an_unknown_pinger_is_answered_by_the_queues_own_room() {
     // Nearly-full queue (cap 8): 0 waiting + 50 > 8 → OP_QUEUEFULL.
     let mut nearly_full = serving_state(1, vec![entry(file, 4096, "served.bin")]);
     assert_eq!(
-        nearly_full.on_reask_ping(t, src, &reask_ping(file)),
+        nearly_full.on_reask_ping(t, src, &reask_ping(file), &no_modifiers()),
         vec![ServeDecision::SendClientUdp {
             to: src,
             datagram: queue_full_datagram(),
@@ -117,7 +118,10 @@ fn an_unknown_pinger_is_answered_by_the_queues_own_room() {
         std::time::Instant::now(),
         &std::collections::HashMap::new(),
     );
-    assert_eq!(roomy.on_reask_ping(t, src, &reask_ping(file)), Vec::new());
+    assert_eq!(
+        roomy.on_reask_ping(t, src, &reask_ping(file), &no_modifiers()),
+        Vec::new()
+    );
 }
 
 /// Several waiters behind one IP on different UDP ports make a ping from a
@@ -134,14 +138,14 @@ fn a_ping_from_an_ip_several_waiters_share_resolves_to_no_one() {
     );
     let t = Instant::now();
     let _ = slot_request(&mut state, peer_at([10, 0, 0, 1], 4000), served, t);
-    for (tcp, udp_port) in [(4000, 6001), (4001, 6002)] {
+    for (tcp, udp_port, client) in [(4000, 6001, 0x0B), (4001, 6002, 0x0C)] {
         let p = peer_at([10, 0, 0, 3], tcp);
-        identify_udp(&mut state, p, user(0x0B), udp_port, 4, t);
+        identify_udp(&mut state, p, user(client), udp_port, 4, t);
         let _ = slot_request(&mut state, p, served, t);
     }
     let ambiguous = udp([10, 0, 0, 3], 6999);
     assert_eq!(
-        state.on_reask_ping(t, ambiguous, &reask_ping(served)),
+        state.on_reask_ping(t, ambiguous, &reask_ping(served), &no_modifiers()),
         Vec::new()
     );
 }
@@ -163,47 +167,16 @@ fn a_waiting_peer_keeps_its_position_across_disconnect_and_still_reasks() {
     // and so did its crypt target (a waiter keeping standing keeps both).
     let src = udp([10, 0, 0, 2], 6000);
     assert_eq!(
-        state.on_reask_ping(t, src, &reask_ping(file)),
+        state.on_reask_ping(t, src, &reask_ping(file), &no_modifiers()),
         vec![ServeDecision::SendClientUdp {
             to: src,
             datagram: ReaskAck {
-                part_status: Some(PartBitmap::complete_source_sentinel()),
+                part_status: Some(WireStatus::complete_source()),
                 rank: 1,
             }
             .encode_udp(),
             crypt_target: target_of(user(0x0A)),
         }],
-    );
-}
-
-#[test]
-fn promoting_a_disconnected_waiter_dials_back_rather_than_granting_over_a_dead_socket() {
-    let file = hash(0x11);
-    let waiter = peer_at([10, 0, 0, 2], 4000);
-    let holder = peer_at([10, 0, 0, 1], 4000);
-    let t = Instant::now();
-    let mut state = one_waiter_state(file, 4096, waiter, 6000, 4, t);
-
-    // The waiter loses its socket (keeps standing), then the holder frees
-    // the slot: the sole waiter is promoted, but with no live connection it
-    // is a dial-back grant, not a GrantSlot over a dead socket.
-    let _ = state.on_conn_event(t, waiter, disconnected(), &no_modifiers());
-    assert_eq!(
-        state.on_conn_event(t, holder, disconnected(), &no_modifiers()),
-        vec![
-            ServeDecision::DialBackGrant {
-                peer: waiter,
-                file_hash: file,
-            },
-            ServeDecision::Emit(ServeEvent::UploadSlotGranted {
-                peer: waiter,
-                file_hash: file,
-                // The waiter hung up, but its hello's identification waited
-                // with it: the grant still names its client.
-                software: Some(nameless_software()),
-            }),
-            ServeDecision::Emit(ServeEvent::UploadSlotReleased { peer: holder }),
-        ],
     );
 }
 
@@ -233,11 +206,11 @@ fn a_reask_from_a_promoted_dial_back_grant_answers_rank_with_part_status() {
     // the (empty) waiting list, and answers rank 1 rather than dropping.
     let src = udp([10, 0, 0, 2], 6000);
     assert_eq!(
-        state.on_reask_ping(t, src, &reask_ping(file)),
+        state.on_reask_ping(t, src, &reask_ping(file), &no_modifiers()),
         vec![ServeDecision::SendClientUdp {
             to: src,
             datagram: ReaskAck {
-                part_status: Some(PartBitmap::complete_source_sentinel()),
+                part_status: Some(WireStatus::complete_source()),
                 rank: 1,
             }
             .encode_udp(),
@@ -262,7 +235,7 @@ fn purge_reaps_a_silent_waiter_but_a_reask_heartbeat_saves_it() {
     );
     assert!(matches!(
         state
-            .on_reask_ping(t0 + after, src, &reask_ping(file))
+            .on_reask_ping(t0 + after, src, &reask_ping(file), &no_modifiers())
             .as_slice(),
         [ServeDecision::SendClientUdp { .. }]
     ));
@@ -270,13 +243,15 @@ fn purge_reaps_a_silent_waiter_but_a_reask_heartbeat_saves_it() {
     // A reask at t0+30min refreshes the heartbeat, so a purge one hour + 1s
     // after t0 (only 30min past the last reask) keeps it.
     let mid = t0 + Duration::from_secs(1800);
-    let _ = state.on_reask_ping(mid, src, &reask_ping(file));
+    let _ = state.on_reask_ping(mid, src, &reask_ping(file), &no_modifiers());
     assert_eq!(
         state.on_purge(t0 + after + Duration::from_secs(1), after, &no_modifiers()),
         Vec::new(),
     );
     assert!(matches!(
-        state.on_reask_ping(mid, src, &reask_ping(file)).as_slice(),
+        state
+            .on_reask_ping(mid, src, &reask_ping(file), &no_modifiers())
+            .as_slice(),
         [ServeDecision::SendClientUdp { .. }]
     ));
 
@@ -286,7 +261,7 @@ fn purge_reaps_a_silent_waiter_but_a_reask_heartbeat_saves_it() {
     let expired = mid + after + Duration::from_secs(1);
     let _ = state.on_purge(expired, after, &no_modifiers());
     assert_eq!(
-        state.on_reask_ping(expired, src, &reask_ping(file)),
+        state.on_reask_ping(expired, src, &reask_ping(file), &no_modifiers()),
         vec![ServeDecision::SendClientUdp {
             to: src,
             datagram: queue_full_datagram(),
@@ -341,7 +316,7 @@ fn purge_drops_a_waiter_whose_file_stopped_being_shared() {
     // an unknown pinger, not rank 1).
     let src = udp([10, 0, 0, 2], 6000);
     assert_eq!(
-        state.on_reask_ping(t, src, &reask_ping(file)),
+        state.on_reask_ping(t, src, &reask_ping(file), &no_modifiers()),
         vec![ServeDecision::SendClientUdp {
             to: src,
             datagram: file_not_found_datagram(),
@@ -355,7 +330,7 @@ fn purge_drops_a_waiter_whose_file_stopped_being_shared() {
         &std::collections::HashMap::new(),
     );
     assert_eq!(
-        state.on_reask_ping(t, src, &reask_ping(file)),
+        state.on_reask_ping(t, src, &reask_ping(file), &no_modifiers()),
         vec![ServeDecision::SendClientUdp {
             to: src,
             datagram: queue_full_datagram(),
@@ -392,11 +367,11 @@ fn an_ipv6_waiter_is_resolved_on_all_128_bits_and_answered_over_ipv6() {
 
     let src = v6_peer(0x0002, 6000);
     assert_eq!(
-        state.on_reask_ping(t, src, &reask_ping(file)),
+        state.on_reask_ping(t, src, &reask_ping(file), &no_modifiers()),
         vec![ServeDecision::SendClientUdp {
             to: src,
             datagram: ReaskAck {
-                part_status: Some(PartBitmap::complete_source_sentinel()),
+                part_status: Some(WireStatus::complete_source()),
                 rank: 2,
             }
             .encode_udp(),
@@ -429,8 +404,14 @@ fn a_waiters_standing_follows_the_file_it_last_asked_about() {
     let _ = slot_request(&mut state, peer_at([10, 0, 0, 1], 4000), first, t);
     identify_udp(&mut state, waiter, user(0x0A), 6000, 3, t);
     let _ = slot_request(&mut state, waiter, first, t);
-    let acked =
-        |state: &mut ServeState, file| !state.on_reask_ping(t, src, &reask_ping(file)).is_empty();
+    // Each ping a polite ten minutes on, or the Ask Pace would end the test.
+    let clock = std::cell::Cell::new(t);
+    let acked = |state: &mut ServeState, file| {
+        clock.set(clock.get() + Duration::from_secs(600));
+        !state
+            .on_reask_ping(clock.get(), src, &reask_ping(file), &no_modifiers())
+            .is_empty()
+    };
     assert!(acked(&mut state, first) && !acked(&mut state, second));
 
     // A status ask for the second file moves the standing to it.
@@ -477,11 +458,11 @@ fn an_emule_info_reask_contact_reaches_a_waiter_its_hello_named_none() {
     assert_eq!(state.identities().get(&waiter), Some(&identity));
     let src = udp([10, 0, 0, 2], 6000);
     assert_eq!(
-        state.on_reask_ping(t, src, &reask_ping(file)),
+        state.on_reask_ping(t, src, &reask_ping(file), &no_modifiers()),
         vec![ServeDecision::SendClientUdp {
             to: src,
             datagram: ReaskAck {
-                part_status: Some(PartBitmap::complete_source_sentinel()),
+                part_status: Some(WireStatus::complete_source()),
                 rank: 1,
             }
             .encode_udp(),
@@ -506,7 +487,7 @@ fn a_readopted_peers_udp_contact_is_not_stamped_on_a_later_waiter() {
 
     let src = udp([10, 0, 0, 3], 6000);
     assert_eq!(
-        state.on_reask_ping(t, src, &reask_ping(file)),
+        state.on_reask_ping(t, src, &reask_ping(file), &no_modifiers()),
         vec![ServeDecision::SendClientUdp {
             to: src,
             datagram: ReaskAck {
@@ -517,4 +498,112 @@ fn a_readopted_peers_udp_contact_is_not_stamped_on_a_later_waiter() {
             crypt_target: None,
         }],
     );
+}
+
+/// The client on an IPv6 link pings from the IPv4 its hello names, on the
+/// client-UDP port that hello advertised: one client, whichever family the
+/// ping left from (ADR-0107). The same address on another port, or an address
+/// the hello never named, is nobody the queue knows.
+#[test]
+fn a_ping_from_the_address_the_standing_hello_names_is_the_waiters() {
+    let file = hash(0x16);
+    let t = Instant::now();
+    let client_v4 = [45, 55, 200, 3];
+    let waiter = v6_peer(3, 58334);
+    let mut state = serving_state(1, vec![entry(file, 4096, "served.bin")]);
+    let _ = slot_request(&mut state, peer_at([10, 0, 0, 1], 4000), file, t);
+    let hello = HelloFacts {
+        client_id: rmule_primitives::ClientId::from_u32(u32::from_le_bytes(client_v4)),
+        ..hello_facts(user(0x0A), 6000, 4, 2)
+    };
+    let _ = state.on_conn_event(t, waiter, hello.identified(), &no_modifiers());
+    let _ = slot_request(&mut state, waiter, file, t);
+
+    let ack = ReaskAck {
+        part_status: Some(WireStatus::complete_source()),
+        rank: 1,
+    }
+    .encode_udp();
+    let mut answered = |from| {
+        state
+            .on_reask_ping(t, from, &reask_ping(file), &no_modifiers())
+            .iter()
+            .any(|decision| {
+                matches!(decision, ServeDecision::SendClientUdp { to, datagram, .. }
+                if *to == from && *datagram == ack)
+            })
+    };
+    assert!(answered(udp(client_v4, 6000)));
+    assert!(!answered(udp(client_v4, 7000)));
+    assert!(!answered(udp([45, 55, 200, 4], 6000)));
+}
+
+/// Forged reasks that scored on the same table would leave a waiter's next
+/// TCP ask to cross the line and bring the ban the datagrams could not earn.
+#[test]
+fn fast_reasks_bring_no_later_tcp_ask_closer_to_a_ban() {
+    let file_hash = hash(0x71);
+    let t = Instant::now();
+    let mut state = serving_state(1, vec![entry(file_hash, 4096, "served.bin")]);
+    let (holder, waiter) = (peer_at([10, 0, 0, 1], 4662), peer_at([10, 0, 0, 2], 4662));
+    identify(&mut state, holder, user(1), t);
+    identify_udp(&mut state, waiter, user(2), 6000, 4, t);
+    let _ = slot_request(&mut state, holder, file_hash, t);
+    let _ = slot_request(&mut state, waiter, file_hash, t);
+    let ping = reask_ping(file_hash);
+    let src = udp([10, 0, 0, 2], 6000);
+    for n in 1..=4 {
+        let at = t + Duration::from_secs(n);
+        let _ = state.on_reask_ping(at, src, &ping, &no_modifiers());
+    }
+
+    let asked = slot_request(&mut state, waiter, file_hash, t + Duration::from_secs(5));
+
+    assert!(!asked.contains(&ServeDecision::Ban { peer: waiter }));
+    assert!(state.queue.contains(waiter));
+}
+
+/// A known waiter's reask is an ask on the **Ask Pace**: the fifth fast one
+/// goes unanswered (`ClientUDPSocket.cpp:440-452`), and a reask inside stock's
+/// cadence never scores. A datagram proves no sender, so it earns the Hush, the
+/// waiter's place kept (ADR-0064): any stranger could have sent these five.
+#[test]
+fn a_fifth_fast_reask_hushes_the_address_and_keeps_the_waiters_place() {
+    let file_hash = hash(0x71);
+    let t = Instant::now();
+    let mut state = serving_state(1, vec![entry(file_hash, 4096, "served.bin")]);
+    let (holder, waiter) = (peer_at([10, 0, 0, 1], 4662), peer_at([10, 0, 0, 2], 4662));
+    identify(&mut state, holder, user(1), t);
+    identify_udp(&mut state, waiter, user(2), 6000, 4, t);
+    let _ = slot_request(&mut state, holder, file_hash, t);
+    let _ = slot_request(&mut state, waiter, file_hash, t);
+    let ping = reask_ping(file_hash);
+    let src = udp([10, 0, 0, 2], 6000);
+
+    for n in 1..=4 {
+        let at = t + Duration::from_secs(n);
+        let answered = state.on_reask_ping(at, src, &ping, &no_modifiers());
+        assert!(matches!(
+            answered.as_slice(),
+            [ServeDecision::SendClientUdp { .. }]
+        ));
+    }
+    let fifth = state.on_reask_ping(t + Duration::from_secs(5), src, &ping, &no_modifiers());
+
+    assert_eq!(fifth, [ServeDecision::Hush { peer: src }]);
+    assert!(state.queue.contains(waiter));
+
+    let mut polite = serving_state(1, vec![entry(file_hash, 4096, "served.bin")]);
+    identify(&mut polite, holder, user(1), t);
+    identify_udp(&mut polite, waiter, user(2), 6000, 4, t);
+    let _ = slot_request(&mut polite, holder, file_hash, t);
+    let _ = slot_request(&mut polite, waiter, file_hash, t);
+    for n in 1..=8 {
+        let at = t + Duration::from_secs(n * 29 * 60);
+        let answered = polite.on_reask_ping(at, src, &ping, &no_modifiers());
+        assert!(matches!(
+            answered.as_slice(),
+            [ServeDecision::SendClientUdp { .. }]
+        ));
+    }
 }

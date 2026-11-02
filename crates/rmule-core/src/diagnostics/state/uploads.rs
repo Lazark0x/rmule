@@ -8,7 +8,7 @@ impl DiagnosticsState {
     /// live row only re-points its file (a peer re-granted for a second file
     /// keeps its running `bytes_sent`, aMule's per-client total).
     pub fn open_upload(&self, peer: PeerEndpoint, file_hash: FileHash) {
-        let mut inner = self.inner.lock().expect("diagnostics mutex poisoned");
+        let mut inner = self.inner.lock();
         inner
             .uploads
             .entry(peer)
@@ -25,7 +25,7 @@ impl DiagnosticsState {
     /// (ADR-0077). Opens the row when the grant was never observed, so no
     /// served byte is dropped for want of a row.
     pub fn add_sent_bytes(&self, peer: PeerEndpoint, file_hash: FileHash, bytes: u64) {
-        let mut inner = self.inner.lock().expect("diagnostics mutex poisoned");
+        let mut inner = self.inner.lock();
         inner.session.up_bytes_total = inner.session.up_bytes_total.saturating_add(bytes);
         let row = inner
             .uploads
@@ -51,7 +51,7 @@ impl DiagnosticsState {
     /// peer not already waiting asked for a slot and passed the per-address
     /// cap.
     pub fn count_upload_request(&self, file_hash: FileHash) {
-        let mut inner = self.inner.lock().expect("diagnostics mutex poisoned");
+        let mut inner = self.inner.lock();
         let request = ShareTotals {
             requests: 1,
             ..ShareTotals::default()
@@ -61,7 +61,7 @@ impl DiagnosticsState {
 
     /// Count one upload slot granted for `file_hash` (aMule's `AddAccepted`).
     pub fn count_upload_accept(&self, file_hash: FileHash) {
-        let mut inner = self.inner.lock().expect("diagnostics mutex poisoned");
+        let mut inner = self.inner.lock();
         let accept = ShareTotals {
             accepted: 1,
             ..ShareTotals::default()
@@ -73,27 +73,39 @@ impl DiagnosticsState {
     /// Once per core, before any serving: the all-time figure is always the
     /// stored one plus this run's.
     pub(crate) fn seed_share_totals(&self, stored: BTreeMap<FileHash, ShareTotals>) {
-        let mut inner = self.inner.lock().expect("diagnostics mutex poisoned");
+        let mut inner = self.inner.lock();
         inner.shared_files.seed(stored);
     }
 
     /// The all-time figures of every file whose counters moved since the
     /// last take — what a flush writes to the store.
     pub(crate) fn take_share_flush(&self) -> Vec<(FileHash, ShareTotals)> {
-        let mut inner = self.inner.lock().expect("diagnostics mutex poisoned");
+        let mut inner = self.inner.lock();
         inner.shared_files.take_moved()
     }
 
     /// Hand back a flush the store refused, so the next one writes it.
     pub(crate) fn restore_share_flush(&self, files: impl IntoIterator<Item = FileHash>) {
-        let mut inner = self.inner.lock().expect("diagnostics mutex poisoned");
+        let mut inner = self.inner.lock();
         inner.shared_files.restore_moved(files);
+    }
+
+    /// Move `from`'s upload row to `to`, the link its client came back on
+    /// with its slot (ADR-0057): the row, its start and its bytes ride on.
+    /// Nothing moves for a client that held no slot.
+    pub fn move_upload(&self, from: PeerEndpoint, to: PeerEndpoint) {
+        let mut inner = self.inner.lock();
+        if let Some(row) = inner.uploads.remove(&from) {
+            inner
+                .uploads
+                .insert(to, UploadDiagnostics { peer: to, ..row });
+        }
     }
 
     /// Retire `peer`'s upload row when its slot is released. The bytes it
     /// carried stay counted in [`SessionCounters::up_bytes_total`].
     pub fn close_upload(&self, peer: PeerEndpoint) {
-        let mut inner = self.inner.lock().expect("diagnostics mutex poisoned");
+        let mut inner = self.inner.lock();
         inner.uploads.remove(&peer);
     }
 
@@ -113,7 +125,7 @@ impl DiagnosticsState {
     /// map, like any other close): it names the sweep in the one trace a
     /// consumer who was watching bytes climb on these peers gets.
     pub fn close_all_uploads(&self, reason: ServeStopReason) {
-        let mut inner = self.inner.lock().expect("diagnostics mutex poisoned");
+        let mut inner = self.inner.lock();
         if inner.uploads.is_empty() {
             return;
         }

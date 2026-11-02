@@ -10,7 +10,7 @@
 //! addresses (the `same-port` leg and the `other-port` control): what it sends
 //! is Stimulus; whether aMule closed each socket, and aMule's own debug log
 //! (`amule/diagnostics`), are the evidence. One `leg=… first_socket_closed=…`
-//! line per leg lands in `two-hellos/verdict.txt`.
+//! line per leg lands in `two-hellos/two-hellos-verdict.toml`.
 
 use std::fs;
 use std::time::Duration;
@@ -22,6 +22,7 @@ use crate::docker::RunContainer;
 use crate::flow::bench::{Bench, run_checked};
 use crate::flow::ed2k_server::search_wire::SUBNET;
 use crate::flow::logs::collect_amule_diagnostics;
+use crate::verdict::{self, Verdict};
 
 /// The probe, written into the run dir and mounted.
 const HELLO_TWICE: &str = include_str!("two_hellos/hello_twice.py");
@@ -128,7 +129,8 @@ pub fn run_two_hellos(options: TwoHellosOptions<'_>) -> Result<()> {
     }
     bench.cleanup_best_effort();
     let verdicts = result?;
-    fs::write(root.join("verdict.txt"), verdicts.join("\n") + "\n").context("write verdict")?;
+    let report = verdicts.join("\n") + "\n";
+    verdict::write_report(&root, "two-hellos", Verdict::Observed, &report)?;
     for line in &verdicts {
         println!("{line}");
     }

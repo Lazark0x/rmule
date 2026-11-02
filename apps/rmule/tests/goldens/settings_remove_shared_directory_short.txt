@@ -1,0 +1,6 @@
+┌ Stop sharing? ───────────────────────────────────────────┐
+│ Stop sharing /srv/media? 1 file, 700.0 MB.              ▲│
+│                                                         █│
+│ They leave the offer at once: servers and Kad stop       │
+│ hearing of them, and an upload in progress ends. The    ▼│
+└─────────────────────────────────────────────────── 4 / 8 ┘

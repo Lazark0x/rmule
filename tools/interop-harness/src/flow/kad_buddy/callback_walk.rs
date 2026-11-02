@@ -43,6 +43,7 @@ use crate::flow::gate::wait_for_host_file;
 use crate::flow::identity::hex_lower;
 use crate::flow::kad_buddy::callback::lift;
 use crate::flow::wire_filter::{OP_EMULEPROT, WireFilter};
+use crate::verdict::Verdict;
 
 /// The walker's Kad ID: far from aMule's, so the walk's convergence on aMule
 /// is the keyspace's doing.
@@ -218,7 +219,7 @@ impl WalkLeg {
             ),
         ];
         let pass = claims.iter().all(|(_, holds)| *holds);
-        let verdict = if pass { "PASS" } else { "FAIL" };
+        let verdict = if pass { Verdict::Pass } else { Verdict::Fail };
         let mut out = String::from(
             "# The buddy-callback leg's ID-only fold-in: a Callback Walk's 0x52 delivered to the firewalled\n\
              # aMule, which relays OP_CALLBACK over its own held buddy link (the\n\
@@ -247,7 +248,7 @@ impl WalkLeg {
             .layout
             .kad_dir()
             .join("kad-buddy-callback-walk-verdict.toml");
-        fs::write(&path, &out).with_context(|| format!("write {}", path.display()))?;
+        crate::verdict::write(&path, &out)?;
         println!("kad-buddy-callback-walk verdict={verdict} {ended}");
         if !pass {
             let failing: Vec<&str> = claims

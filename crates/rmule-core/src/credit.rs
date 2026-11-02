@@ -4,6 +4,7 @@
 //! [`KeyBinding`] ties a peer's totals to the identity that earned them — so a
 //! peer that proves the same secure identity keeps its standing across sessions.
 
+use std::net::IpAddr;
 use std::sync::Arc;
 
 use rmule_primitives::UserHash;
@@ -64,6 +65,9 @@ pub struct PeerCredit {
     pub totals: CreditTotals,
     /// The peer's bound SUI public key, or `None` if it never proved one.
     pub public_key: Option<Vec<u8>>,
+    /// When the peer last accrued or proved its key, in Unix seconds; `0` for
+    /// a peer the ring holds no such record of.
+    pub last_seen: u64,
 }
 
 /// Outcome of binding a peer's Secure User Identification public key to its
@@ -78,6 +82,29 @@ pub enum KeyBinding {
     /// The record holds a *different* key — identity theft. The stored key is
     /// left unchanged and the claimant is denied the secured credit.
     Mismatch,
+}
+
+/// What a client at one address has shown a ledger row (ADR-0041): aMule's
+/// `GetCurrentIdentState` (`ClientCredits.cpp:258-268`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CreditProof {
+    /// The row holds no key, so it is open to whoever names it
+    /// (`IS_NOTAVAILABLE`).
+    Open,
+    /// The row's key was proved from this address (`IS_IDENTIFIED`).
+    Proved,
+    /// The row holds a key nobody proved this run (`IS_IDNEEDED`).
+    Owed,
+    /// The row's key was proved, from another address (`IS_IDBADGUY`).
+    Elsewhere,
+}
+
+impl CreditProof {
+    /// Whether the row pays, and accrues, for this client.
+    #[must_use]
+    pub const fn pays(self) -> bool {
+        matches!(self, Self::Open | Self::Proved)
+    }
 }
 
 /// The durable, `UserHash`-keyed credit ledger (ADR-0031: a new abstraction,
@@ -110,14 +137,51 @@ pub trait CreditStore: Send + Sync + 'static {
     /// Lets a peer session choose `IS_SIGNATURENEEDED` vs `IS_KEYANDSIGNEEDED`.
     fn public_key(&self, peer: UserHash) -> Result<Option<Vec<u8>>, CoreError>;
 
+    /// What a client at `at` has shown `peer`'s row. A memory read.
+    fn proof(&self, peer: UserHash, at: IpAddr) -> CreditProof;
+
+    /// A link at `at` proved the key `peer`'s row holds: the row pays there
+    /// from now on, and nowhere else, until a proof from another address.
+    /// Rides out a link's end; a process restart owes it again.
+    fn prove(&self, peer: UserHash, at: IpAddr);
+
+    /// Add `bytes` we served `peer` at `at`, if its row accrues for it
+    /// (`ClientCredits.cpp:83-102`).
+    fn credit_upload(&self, peer: UserHash, at: IpAddr, bytes: u64) -> Result<(), CoreError> {
+        if self.proof(peer, at).pays() {
+            self.record_upload(peer, bytes)?;
+        }
+        Ok(())
+    }
+
+    /// Add `bytes` `peer` at `at` served us, if its row accrues for it
+    /// (`ClientCredits.cpp:68-81`).
+    fn credit_download(&self, peer: UserHash, at: IpAddr, bytes: u64) -> Result<(), CoreError> {
+        if self.proof(peer, at).pays() {
+            self.record_download(peer, bytes)?;
+        }
+        Ok(())
+    }
+
+    /// The modifier a client at `at` is ranked by: what its row earned when
+    /// the row pays it, `1` while a proof is owed, and `0` for a client whose
+    /// row was proved elsewhere, which is aMule's bad guy
+    /// (`ClientCredits.cpp:114-131`, `UploadClient.cpp:97`).
+    fn score_modifier(&self, peer: UserHash, at: IpAddr) -> Result<f64, CoreError> {
+        match self.proof(peer, at) {
+            CreditProof::Open | CreditProof::Proved => self.modifier(peer),
+            CreditProof::Owed => Ok(1.0),
+            CreditProof::Elsewhere => Ok(0.0),
+        }
+    }
+
     /// Make everything accrued since the last checkpoint durable.
     ///
     /// `record_upload`/`record_download` are called once per transferred
-    /// block, so they do not pay a device flush each (ADR-0083); the ring is
-    /// flushed here instead, on the same cadence its `clients.met` copy is
-    /// written. A crash between two checkpoints loses at most that window of
-    /// accrual — which is what `clients.met` alone lost before the ring was
-    /// durable at all.
+    /// block by loops that must not wait on the store, so they land in memory
+    /// (ADR-0083, ADR-0031) and the ring is written here instead, once a
+    /// minute and at shutdown. A crash between two checkpoints loses at most
+    /// that window of accrual.
     ///
     /// # Errors
     /// [`CoreError::Repository`] when the store will not commit.

@@ -2,33 +2,32 @@
 
 use super::*;
 use crate::fixture::press;
-use crate::golden::assert_golden;
+use crate::golden::{assert_golden, assert_golden_caret};
+use rmule_core::{CoreSettings, FlagTable};
 
 fn state() -> UiState {
+    let mut flags = rmule_core::Flags::default();
+    flags.set(AppFlag::ConnectAtStart, false);
     UiState {
         preferences: Preferences {
-            download_dir: Some(std::path::PathBuf::from("/home/u/Downloads")),
+            core: CoreSettings {
+                download_dir: Some(std::path::PathBuf::from("/home/u/Downloads")),
+                nickname: "rmule".to_string(),
+                tcp_port: 4662,
+                udp_port: 4672,
+                obfuscation: ObfuscationChoice::Requested.policy(),
+                ..CoreSettings::default()
+            },
+            flags,
             data_dir: Some(crate::args::DataDir {
                 path: std::path::PathBuf::from("/home/u/.local/share/rmule"),
                 source: crate::args::DataDirSource::Home,
             }),
-            nickname: "rmule".to_string(),
-            tcp_port: 4662,
-            udp_port: 4672,
-            server_met_url: rmule_bootstrap::DEFAULT_SERVER_MET_URL.to_string(),
-            auto_fetch_server_met: true,
-            nodes_dat_url: rmule_bootstrap::DEFAULT_NODES_DAT_URL.to_string(),
-            auto_fetch_nodes_dat: true,
             theme: ThemeChoice::Auto,
-            obfuscation: ObfuscationChoice::Requested,
-            port_mapping: true,
             table_sorts: crate::table_sort::TableSorts::default(),
-            connect_at_start: false,
-            run_log_full: false,
             last_server: None,
-            dead_server_retries: 3,
-            withhold_shares: false,
-            remember_peers: rmule_core::RememberPeers::DEFAULT,
+            player_command: None,
+            last_tab: crate::view::ViewId::default(),
             user_hash: Some(rmule_primitives::UserHash::from_bytes([0x2a; 16])),
             kad_node_id: Some(rmule_core::KadId::from_bytes([0x77; 16])),
         },
@@ -41,7 +40,7 @@ fn state() -> UiState {
 /// Windows refuses it before any warning.
 fn state_with_a_rooted_download_dir() -> UiState {
     let mut state = state();
-    state.preferences.download_dir = Some(crate::fixture::rooted("home/u/Downloads"));
+    state.preferences.core.download_dir = Some(crate::fixture::rooted("home/u/Downloads"));
     state
 }
 
@@ -78,7 +77,7 @@ fn a_text_field_needs_an_edit_mode_and_a_selector_does_not() {
     // A selector commits where it is stepped, with no mode at all.
     focus_on(&mut view, Row::Theme);
     match view.handle_key(press(KeyCode::Right), &state) {
-        ViewOutcome::Emit(Action::Preference(PrefEdit::Theme(choice))) => {
+        ViewOutcome::Emit(Action::SettingsEdit(PrefEdit::Theme(choice))) => {
             assert_eq!(choice, ThemeChoice::Dark);
         }
         other => panic!("expected a theme edit, got {other:?}"),
@@ -143,8 +142,174 @@ fn a_download_directory_commit_warns_before_it_lands() {
     );
     assert!(matches!(
         view.handle_key(press(KeyCode::Enter), &state),
-        ViewOutcome::Emit(Action::Preference(PrefEdit::DownloadDir(_)))
+        ViewOutcome::Emit(Action::SettingsEdit(PrefEdit::Core(
+            Setting::DownloadDir { .. }
+        )))
     ));
+}
+
+/// A flag is its table row and its words: each has its place in the form, and
+/// stepping that row hands the app the edit of that flag and no other.
+#[test]
+fn every_flag_has_a_row_that_steps_it() {
+    let state = state();
+    let prefs = &state.preferences;
+    let core = Flag::ALL.iter().map(|flag| {
+        let on = !prefs.core.flags.is_on(*flag);
+        (Row::Flag(*flag), PrefEdit::Core(Setting::Flag(*flag, on)))
+    });
+    let app = AppFlag::ALL.iter().map(|flag| {
+        let on = !prefs.flags.is_on(*flag);
+        (Row::AppFlag(*flag), PrefEdit::Flag(*flag, on))
+    });
+    let mut view = SettingsView::new();
+    view.sync(&state);
+    for (row, edit) in core.chain(app) {
+        assert!(Row::ALL.contains(&row), "{row:?} has no place in the form");
+        focus_on(&mut view, row);
+        match view.handle_key(press(KeyCode::Enter), &state) {
+            ViewOutcome::Emit(Action::SettingsEdit(stepped)) => assert_eq!(stepped, edit),
+            _ => panic!("{row:?} handed the app no edit"),
+        }
+    }
+}
+
+/// Nothing under the Temp Directory is offered, so its commit asks no guard
+/// and warns of nothing: the `Enter` that ends the typing hands the app the
+/// edit, and core judges where it lies at the set.
+#[test]
+fn a_temp_directory_commit_lands_without_a_share_warning() {
+    let mut view = SettingsView::new();
+    let state = state();
+    let parts = tempfile::tempdir().expect("a directory");
+    focus_on(&mut view, Row::TempDir);
+    view.handle_key(press(KeyCode::Enter), &state);
+    for c in parts.path().display().to_string().chars() {
+        view.handle_key(press(KeyCode::Char(c)), &state);
+    }
+    let ViewOutcome::Emit(Action::SettingsEdit(PrefEdit::Core(Setting::TempDir(dir)))) =
+        view.handle_key(press(KeyCode::Enter), &state)
+    else {
+        panic!("the commit is the edit");
+    };
+    assert_eq!(dir.as_deref(), Some(parts.path()));
+    assert_eq!(view.form.error, None);
+}
+
+#[test]
+fn a_temp_directory_that_is_not_there_is_said_before_it_is_made() {
+    let mut view = SettingsView::new();
+    let state = state();
+    let parts = crate::fixture::rooted("srv/no-such-parts");
+    focus_on(&mut view, Row::TempDir);
+    view.handle_key(press(KeyCode::Enter), &state);
+    for c in parts.display().to_string().chars() {
+        view.handle_key(press(KeyCode::Char(c)), &state);
+    }
+    assert!(matches!(
+        view.handle_key(press(KeyCode::Enter), &state),
+        ViewOutcome::Redraw
+    ));
+    let warning = view.form.error.as_deref().expect("the warning");
+    assert!(warning.contains("does not exist"), "{warning}");
+    let ViewOutcome::Emit(Action::SettingsEdit(PrefEdit::Core(Setting::TempDir(dir)))) =
+        view.handle_key(press(KeyCode::Enter), &state)
+    else {
+        panic!("the second Enter confirms");
+    };
+    assert_eq!(dir, Some(parts));
+}
+
+#[test]
+fn a_download_directory_that_is_not_there_says_so_with_the_disclosure() {
+    let mut view = SettingsView::new();
+    let dir = crate::fixture::rooted("srv/no-such-downloads");
+    view.warn_share(dir);
+    let warning = view.form.error.as_deref().expect("the warning");
+    assert!(warning.contains("does not exist"), "{warning}");
+    assert!(warning.contains("offered to the network"), "{warning}");
+}
+
+/// An open field keeps what was typed however the operator tries to leave it.
+#[test]
+fn no_key_but_esc_and_enter_leaves_an_open_field() {
+    let mut view = SettingsView::new();
+    let state = state();
+    focus_on(&mut view, Row::Nickname);
+    let focus = view.form.focus;
+    view.handle_key(press(KeyCode::Enter), &state);
+    view.handle_key(press(KeyCode::Char('Z')), &state);
+    for code in [KeyCode::Tab, KeyCode::BackTab, KeyCode::Up, KeyCode::Down] {
+        view.handle_key(press(code), &state);
+        assert_eq!(view.form.focus, focus, "{code:?} left the field");
+        assert!(view.editing);
+    }
+    assert!(view.form.text(focus).ends_with('Z'));
+}
+
+/// The store refusing a value keeps the field open, its typing in it.
+#[test]
+fn a_value_the_store_refuses_stays_in_the_field_with_the_reason() {
+    let mut view = SettingsView::new();
+    let state = state();
+    focus_on(&mut view, Row::Nickname);
+    let focus = view.form.focus;
+    view.handle_key(press(KeyCode::Enter), &state);
+    view.handle_key(press(KeyCode::Char('Z')), &state);
+    let ViewOutcome::Emit(Action::SettingsEdit(_)) = view.handle_key(press(KeyCode::Enter), &state)
+    else {
+        panic!("the commit is the edit");
+    };
+    assert!(view.editing, "open until the store answers");
+    view.refused(crate::words::store::NOT_SAVED);
+    view.sync(&state);
+    assert!(view.editing);
+    assert!(view.form.text(focus).ends_with('Z'), "the typing stays");
+    assert_eq!(
+        view.form.error.as_deref(),
+        Some(crate::words::store::NOT_SAVED.as_str())
+    );
+    view.saved();
+    assert!(!view.editing, "the store took it");
+}
+
+#[test]
+fn the_caret_of_an_open_field_is_where_the_cursor_goes() {
+    let mut view = SettingsView::new();
+    let state = state();
+    focus_on(&mut view, Row::Nickname);
+    let closed = crate::golden::render_with_caret(78, 30, |frame| {
+        view.draw(
+            frame,
+            frame.area(),
+            &state,
+            &Theme::default_dark(),
+            Instant::now(),
+        )
+    });
+    assert!(!closed.contains(crate::golden::CARET), "nothing open");
+    view.handle_key(press(KeyCode::Enter), &state);
+    assert!(view.text_open(&state));
+    view.handle_key(press(KeyCode::Home), &state);
+    let open = crate::golden::render_with_caret(78, 30, |frame| {
+        view.draw(
+            frame,
+            frame.area(),
+            &state,
+            &Theme::default_dark(),
+            Instant::now(),
+        )
+    });
+    let line = open
+        .lines()
+        .find(|line| line.contains("Nickname"))
+        .expect("the row");
+    assert_eq!(
+        line.find(crate::golden::CARET)
+            .map(|at| line[..at].chars().count()),
+        Some(1 + 16),
+        "{line}"
+    );
 }
 
 #[test]
@@ -168,29 +333,30 @@ fn a_cancelled_download_directory_warning_asks_again() {
 }
 
 /// The two ports must not collide: aMule binds them separately and a
-/// shared number silently costs the operator one of the two surfaces.
+/// shared number silently costs the operator one of the two surfaces. The
+/// refusal names the row that was being edited against the one it met.
 #[test]
 fn the_two_listen_ports_may_not_be_set_to_each_other() {
-    let mut view = SettingsView::new();
+    use crate::words::app::{PortClash, port_clash};
+
     let state = state();
-    focus_on(&mut view, Row::UdpPort);
-    view.handle_key(press(KeyCode::Enter), &state);
-    for _ in 0..4 {
-        view.handle_key(press(KeyCode::Backspace), &state);
+    let prefs = &state.preferences;
+    for (row, other, clash) in [
+        (Row::UdpPort, prefs.core.tcp_port, PortClash::UdpAgainstTcp),
+        (Row::TcpPort, prefs.core.udp_port, PortClash::TcpAgainstUdp),
+    ] {
+        let mut view = SettingsView::new();
+        focus_on(&mut view, row);
+        view.handle_key(press(KeyCode::Enter), &state);
+        for _ in 0..6 {
+            view.handle_key(press(KeyCode::Backspace), &state);
+        }
+        for c in other.to_string().chars() {
+            view.handle_key(press(KeyCode::Char(c)), &state);
+        }
+        view.handle_key(press(KeyCode::Enter), &state);
+        assert_eq!(view.form.error, Some(port_clash(clash)));
     }
-    for c in "4662".chars() {
-        view.handle_key(press(KeyCode::Char(c)), &state);
-    }
-    view.handle_key(press(KeyCode::Enter), &state);
-    assert!(
-        view.form
-            .error
-            .as_deref()
-            .unwrap_or_default()
-            .contains("must differ"),
-        "{:?}",
-        view.form.error
-    );
 }
 
 /// The dead-server limit takes aMule's range and nothing else, and a kept
@@ -214,7 +380,9 @@ fn the_dead_server_limit_takes_one_to_ten_tries() {
     };
     assert!(matches!(
         typed("5"),
-        ViewOutcome::Emit(Action::Preference(PrefEdit::DeadServerRetries(5)))
+        ViewOutcome::Emit(Action::SettingsEdit(PrefEdit::Core(
+            Setting::DeadServerRetries(5)
+        )))
     ));
     for refused in ["0", "11", "x"] {
         assert!(
@@ -222,6 +390,42 @@ fn the_dead_server_limit_takes_one_to_ten_tries() {
             "{refused} was taken"
         );
     }
+}
+
+/// The auto-update addresses are typed on one line, a space between: each
+/// must be an `http` or `https` URL, and an empty line sets none.
+#[test]
+fn the_auto_update_addresses_split_on_spaces_and_each_must_be_a_url() {
+    let mut view = SettingsView::new();
+    let state = state();
+    let mut typed = |text: &str| {
+        focus_on(&mut view, Row::ServerMetAutoUpdateUrls);
+        view.handle_key(press(KeyCode::Enter), &state);
+        for c in text.chars() {
+            view.handle_key(press(KeyCode::Char(c)), &state);
+        }
+        let outcome = view.handle_key(press(KeyCode::Enter), &state);
+        view.handle_key(press(KeyCode::Esc), &state);
+        outcome
+    };
+    let urls = vec![
+        "http://one.example/server.met".to_owned(),
+        "https://two.example/server.met".to_owned(),
+    ];
+    assert!(matches!(
+        typed(" http://one.example/server.met  https://two.example/server.met "),
+        ViewOutcome::Emit(Action::SettingsEdit(PrefEdit::Core(Setting::ServerMetAutoUpdateUrls(typed))))
+            if typed == urls
+    ));
+    assert!(matches!(
+        typed(""),
+        ViewOutcome::Emit(Action::SettingsEdit(PrefEdit::Core(Setting::ServerMetAutoUpdateUrls(typed))))
+            if typed.is_empty()
+    ));
+    assert!(matches!(
+        typed("http://one.example/server.met ftp://two.example/server.met"),
+        ViewOutcome::Redraw
+    ));
 }
 
 /// `Remember peers` takes 1 to 255; a refusal says the range.
@@ -246,7 +450,7 @@ fn remember_peers_takes_one_to_255() {
     let (outcome, _) = typed("255");
     assert!(matches!(
         outcome,
-        ViewOutcome::Emit(Action::Preference(PrefEdit::RememberPeers(peers))) if peers.get().get() == 255
+        ViewOutcome::Emit(Action::SettingsEdit(PrefEdit::Core(Setting::RememberPeers(peers)))) if peers.get().get() == 255
     ));
     for refused in ["0", "256", "x"] {
         let (outcome, refusal) = typed(refused);
@@ -261,17 +465,86 @@ fn remember_peers_takes_one_to_255() {
     }
 }
 
+/// The Player Command is split as it is typed (ADR-0114): an open quote, a
+/// first word holding the file and a first word naming a folder are refused
+/// under the field with nothing emitted, empty text clears it, and a command
+/// that splits is kept as typed.
+#[test]
+fn a_player_command_is_refused_unless_its_words_split_into_a_player() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let folder = dir.path().to_str().expect("a temp path is UTF-8");
+    let folder = format!("{} --fs", shlex::try_quote(folder).expect("quotes"));
+    let mut view = SettingsView::new();
+    let state = state();
+    let mut typed = |text: &str| {
+        focus_on(&mut view, Row::PlayerCommand);
+        view.handle_key(press(KeyCode::Enter), &state);
+        for c in text.chars() {
+            view.handle_key(press(KeyCode::Char(c)), &state);
+        }
+        let outcome = view.handle_key(press(KeyCode::Enter), &state);
+        let refusal = view.form.error.clone();
+        view.handle_key(press(KeyCode::Esc), &state);
+        (outcome, refusal)
+    };
+    for (refused, why) in [
+        ("mpv '--title=a b", crate::player::Unsplittable::OpenQuote),
+        ("%PARTFILE --fs", crate::player::Unsplittable::NoProgram),
+        (&folder, crate::player::Unsplittable::Folder),
+    ] {
+        let (outcome, refusal) = typed(refused);
+        assert!(
+            matches!(outcome, ViewOutcome::Redraw),
+            "{refused} was taken"
+        );
+        assert_eq!(
+            refusal.as_deref(),
+            Some(crate::words::player::field_refusal(why).as_str())
+        );
+    }
+    let (outcome, _) = typed("  mpv --fs  ");
+    assert!(matches!(
+        outcome,
+        ViewOutcome::Emit(Action::SettingsEdit(PrefEdit::PlayerCommand(Some(command))))
+            if command == "mpv --fs"
+    ));
+    let (outcome, _) = typed("   ");
+    assert!(matches!(
+        outcome,
+        ViewOutcome::Emit(Action::SettingsEdit(PrefEdit::PlayerCommand(None)))
+    ));
+}
+
+#[test]
+fn golden_settings_an_unset_player_says_preview_opens_the_default_app() {
+    let mut view = SettingsView::new();
+    let state = state();
+    focus_on(&mut view, Row::PlayerCommand);
+    assert_golden("settings_player_unset", 78, 8, |frame| {
+        view.draw(
+            frame,
+            frame.area(),
+            &state,
+            &Theme::default_dark(),
+            Instant::now(),
+        );
+    });
+}
+
 /// The minted identity is on screen and out of reach: focus steps straight
 /// past both rows, in either direction.
 #[test]
 fn the_full_run_log_row_is_a_selector_that_commits_its_choice() {
     let mut view = SettingsView::new();
     let state = state();
-    focus_on(&mut view, Row::RunLogFull);
+    focus_on(&mut view, Row::AppFlag(AppFlag::RunLogFull));
     view.handle_key(press(KeyCode::Char('l')), &state);
     assert!(matches!(
         view.handle_key(press(KeyCode::Enter), &state),
-        ViewOutcome::Emit(Action::Preference(PrefEdit::RunLogFull(true)))
+        ViewOutcome::Emit(Action::SettingsEdit(PrefEdit::Flag(
+            AppFlag::RunLogFull,
+            true
+        )))
     ));
 }
 
@@ -338,14 +611,14 @@ fn golden_settings_editing_a_field_shows_the_caret_and_a_rejection() {
     // own fixed 7-line box (a short message plus its reserved blank
     // padding) below it — 22 cropped both the Identity rows and most of
     // the error box unseen.
-    assert_golden("settings_editing", 78, 30, |frame| {
+    assert_golden_caret("settings_editing", 78, 30, |frame| {
         view.draw(
             frame,
             frame.area(),
             &state,
             &Theme::default_dark(),
             Instant::now(),
-        );
+        )
     });
 }
 
@@ -400,4 +673,74 @@ fn the_data_directory_note_names_the_rule_that_picked_it() {
             .expect("the data directory row");
         assert!(row.contains(note), "{row}");
     }
+}
+
+/// A pane tall enough for the whole form draws no bar, and still counts the
+/// row the cursor is on.
+#[test]
+fn golden_settings_fits_a_tall_pane() {
+    let mut view = SettingsView::new();
+    let state = state();
+    assert_golden("settings_fits", 78, 60, |frame| {
+        view.draw(
+            frame,
+            frame.area(),
+            &state,
+            &Theme::default_dark(),
+            Instant::now(),
+        );
+    });
+}
+
+/// On a selector `h` / `l` step it, as `←` / `→` do, rather than leaving the
+/// tab under the operator.
+#[test]
+fn h_and_l_step_a_selector_and_leave_the_tab_alone() {
+    let state = state();
+    let mut view = SettingsView::new();
+    view.handle_key(press(KeyCode::Char('G')), &state);
+    focus_on(&mut view, Row::Theme);
+    let stepped = view.handle_key(press(KeyCode::Char('l')), &state);
+    assert!(matches!(stepped, ViewOutcome::Emit(_)), "{stepped:?}");
+    let back = view.handle_key(press(KeyCode::Char('h')), &state);
+    assert!(matches!(back, ViewOutcome::Emit(_)), "{back:?}");
+}
+
+/// `/` narrows the rows, by label or value, and the cursor rests on one that
+/// stands; a filter that keeps nothing leaves no field to act on.
+#[test]
+fn slash_filters_the_rows_and_esc_brings_them_back() {
+    let state = state();
+    let mut view = SettingsView::new();
+    let shown = |view: &mut SettingsView| {
+        crate::golden::render_to_lines(90, 30, |frame| {
+            let area = frame.area();
+            view.draw(frame, area, &state, &Theme::default_dark(), Instant::now());
+        })
+    };
+    view.handle_key(press(KeyCode::Char('/')), &state);
+    for letter in "mouse".chars() {
+        view.handle_key(press(KeyCode::Char(letter)), &state);
+    }
+    assert!(view.text_open(&state));
+    let narrowed = shown(&mut view);
+    assert!(narrowed.contains("Mouse"), "{narrowed}");
+    assert!(!narrowed.contains("Nickname"), "{narrowed}");
+    assert!(!narrowed.contains("Theme"), "{narrowed}");
+    assert!(matches!(
+        view.slots.get(view.form.focus),
+        Some(Slot::Row(Row::AppFlag(AppFlag::Mouse)))
+    ));
+    view.handle_key(press(KeyCode::Esc), &state);
+    assert!(shown(&mut view).contains("Theme"));
+    view.handle_key(press(KeyCode::Char('/')), &state);
+    for letter in "zzzz".chars() {
+        view.handle_key(press(KeyCode::Char(letter)), &state);
+    }
+    view.handle_key(press(KeyCode::Enter), &state);
+    assert!(matches!(
+        view.handle_key(press(KeyCode::Enter), &state),
+        ViewOutcome::Ignored
+    ));
+    assert!(!view.editing);
 }

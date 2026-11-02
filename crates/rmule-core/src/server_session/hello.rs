@@ -199,7 +199,7 @@ mod tests {
     }
 
     fn high_id(address: Ipv4Addr) -> ClientId {
-        ClientId::from_u32(u32::from_le_bytes(address.octets()))
+        ClientId::from_ipv4(address)
     }
 
     /// aMule's `GetID` arm 1 (`amule.cpp:2046-2048`): an open Kad node names

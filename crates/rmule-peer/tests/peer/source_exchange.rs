@@ -8,7 +8,7 @@ use rmule_peer::{
 };
 use rmule_primitives::{
     ClientId, CryptStance, FileHash, OutboundCrypt, Packet, PacketProtocol, PeerSource,
-    SourceCryptOptions, SourceSighting, UserHash,
+    SourceClaim, SourceCryptOptions, UserHash,
 };
 
 /// Our own stance for these codec tests: supports and requests obfuscation
@@ -326,7 +326,7 @@ fn answer_sources_rejects_trailing_bytes() {
 fn answer_sources_encode_v3_swaps_high_id_on_the_wire() {
     let fh = FileHash::from_bytes([0x51; 16]);
     let id = u32::from_le_bytes([1, 2, 3, 4]); // HighID 1.2.3.4
-    let source = SourceSighting::plain(PeerSource::new(ClientId::from_u32(id), 4662));
+    let source = SourceClaim::plain(PeerSource::new(ClientId::from_u32(id), 4662));
     let answer = AnswerSources {
         file_hash: fh,
         sources: vec![SourceExchangeEntry::plain(source)],
@@ -345,7 +345,7 @@ fn answer_sources_encode_v3_swaps_high_id_on_the_wire() {
 #[test]
 fn answer_sources_encode_v3_low_id_is_not_swapped() {
     let fh = FileHash::from_bytes([0x52; 16]);
-    let source = SourceSighting::plain(PeerSource::new(ClientId::from_u32(5000), 4662));
+    let source = SourceClaim::plain(PeerSource::new(ClientId::from_u32(5000), 4662));
     let answer = AnswerSources {
         file_hash: fh,
         sources: vec![SourceExchangeEntry::plain(source)],
@@ -363,7 +363,7 @@ fn answer_sources_encode_v3_low_id_is_not_swapped() {
 fn answer_sources_round_trip_v3_preserves_high_id() {
     let fh = FileHash::from_bytes([0x59; 16]);
     let id = u32::from_le_bytes([11, 22, 33, 44]);
-    let source = SourceSighting::plain(PeerSource::new(ClientId::from_u32(id), 4662));
+    let source = SourceClaim::plain(PeerSource::new(ClientId::from_u32(id), 4662));
     let answer = AnswerSources {
         file_hash: fh,
         sources: vec![SourceExchangeEntry::plain(source)],
@@ -379,7 +379,7 @@ fn answer_sources_round_trip_v4_preserves_hash_and_crypt() {
     let id = u32::from_le_bytes([1, 2, 3, 4]);
     let hash = UserHash::from_bytes([0x77; 16]);
     let crypt = SourceCryptOptions::from_byte(0b101);
-    let source = SourceSighting::new(
+    let source = SourceClaim::new(
         PeerSource::new(ClientId::from_u32(id), 4662),
         Some(hash),
         Some(crypt),
@@ -400,7 +400,7 @@ fn answer_sources_round_trip_v4_preserves_hash_and_crypt() {
 fn answer_sources2_round_trip_v1_plain_source() {
     let fh = FileHash::from_bytes([0x60; 16]);
     let id = u32::from_le_bytes([1, 2, 3, 4]);
-    let source = SourceSighting::plain(PeerSource::new(ClientId::from_u32(id), 4662));
+    let source = SourceClaim::plain(PeerSource::new(ClientId::from_u32(id), 4662));
     let answer = AnswerSources2 {
         version: SourceExchangeVersion::V1,
         file_hash: fh,
@@ -423,12 +423,12 @@ fn answer_sources2_round_trip_v4_mixes_high_and_low_id() {
     let high_id = u32::from_le_bytes([5, 6, 7, 8]);
     let hash = UserHash::from_bytes([0x22; 16]);
     let crypt = SourceCryptOptions::from_byte(0b011);
-    let high = SourceSighting::new(
+    let high = SourceClaim::new(
         PeerSource::new(ClientId::from_u32(high_id), 111),
         Some(hash),
         Some(crypt),
     );
-    let low = SourceSighting::new(
+    let low = SourceClaim::new(
         PeerSource::new(ClientId::from_u32(42), 222),
         Some(hash),
         Some(crypt),
@@ -462,7 +462,7 @@ fn answer_sources2_encode_v4_pins_the_byte_exact_wire_with_hybrid_high_id() {
     let ed2k_id = u32::from_le_bytes([1, 2, 3, 4]); // HighID 1.2.3.4, ed2k order
     let user_hash = UserHash::from_bytes([0x9A; 16]);
     let crypt = SourceCryptOptions::from_byte(0b0000_0101); // supports + requires
-    let source = SourceSighting::new(
+    let source = SourceClaim::new(
         PeerSource::new(ClientId::from_u32(ed2k_id), 4662),
         Some(user_hash),
         Some(crypt),

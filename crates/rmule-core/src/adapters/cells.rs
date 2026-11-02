@@ -1,4 +1,4 @@
-//! The **Adapter Cells** (ADR-0048 "Identity ownership"):
+//! The **Adapter Cells** (ADR-0048 "One identity per node, owned by the core"):
 //! every shared cell `Core::builder` creates once and every runtime adapter
 //! must hold the *same* instance of — the server session, the ban store, the
 //! IP filter, Address Learning (through the session's own-identity cell), the
@@ -48,7 +48,7 @@ pub struct AdapterCells {
     pub(crate) kad_bootstrap: SharedKadBootstrap,
     /// The out-of-band Kad signal sink (ADR-0058/0086).
     pub(crate) kad_pump: SharedKadPump,
-    /// The Peer Roster (ADR-0059 "Roster relations").
+    /// The Peer Roster (ADR-0059).
     pub(crate) peer_roster: SharedPeerRoster,
     /// What every hello states about this node, SUI key included.
     pub(crate) hello_adverts: HelloAdverts,
@@ -60,17 +60,25 @@ pub struct AdapterCells {
     pub(crate) firewalled_front: crate::firewalled::front::SharedFirewalledFront,
     /// The file-known predicate.
     pub(crate) file_known: crate::known_files::SharedFileKnown,
+    /// The Served Downloads (ADR-0113).
+    pub(crate) served_downloads: crate::served_downloads::ServedDownloads,
     /// Where a risen NAT-T Tunnel enters the serve pipeline (ADR-0091).
     pub(crate) tunnel_admit: SharedTunnelAdmit,
     /// `CoreConfig::address_families` (ADR-0085).
     pub(crate) address_families: FamilySelection,
     /// Where a refused peer hello is counted and raised (ADR-0050).
     pub(crate) hello_refusals: crate::hello_refusals::SharedHelloRefusals,
+    /// The **Served Links** (ADR-0107): the accept path files each served
+    /// link, the dial path joins one rather than dial its peer again.
+    pub(crate) peer_links: super::SharedPeerLinks,
+    /// Where a link binds the Secure User Identification its session
+    /// verified (ADR-0041).
+    pub(crate) secured_identities: crate::secured_identity::SharedSecuredIdentities,
 }
 
 impl AdapterCells {
     /// The node's own-identity cell: its user hash, fixed at build (ADR-0048
-    /// "Identity ownership"), and its live session facts.
+    /// "One identity per node, owned by the core"), and its live session facts.
     pub(crate) fn own_identity(&self) -> &SharedOwnIdentity {
         self.session.own_identity()
     }
@@ -98,9 +106,12 @@ impl AdapterCells {
             ip_filter: SharedIpFilter::default(),
             firewalled_front: crate::firewalled::front::SharedFirewalledFront::default(),
             file_known: crate::known_files::SharedFileKnown::default(),
+            served_downloads: crate::served_downloads::ServedDownloads::default(),
             tunnel_admit: SharedTunnelAdmit::default(),
             address_families: FamilySelection::default(),
             hello_refusals: crate::hello_refusals::SharedHelloRefusals::default(),
+            peer_links: super::SharedPeerLinks::default(),
+            secured_identities: crate::secured_identity::SharedSecuredIdentities::default(),
         }
     }
 }

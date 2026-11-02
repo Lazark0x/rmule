@@ -1,27 +1,35 @@
 //! Generic Tokio driver harness and capture engine shared by the per-protocol
 //! runtime modules (`ed2k`, `peer`; `kad` shares only the capture engine).
 
+use std::collections::VecDeque;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 
+use rmule_primitives::SessionOutput;
 use thiserror::Error;
-use tokio::io::{AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use tokio::io::AsyncReadExt;
+use tokio::sync::mpsc::error::TrySendError;
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 
 mod capture;
 mod crypt;
+mod outgoing;
 
 pub use capture::{
-    CaptureFormat, CaptureHandle, FrameWrite, OverflowPolicy, RowsFile, run_capture, spawn_capture,
-    toml_basic_string,
+    CaptureFormat, CaptureHandle, FrameWrite, OverflowPolicy, RowsFile, row_to_toml, run_capture,
+    spawn_capture, toml_basic_string,
 };
 pub use crypt::{
     CryptStream, HandshakeProgress, ObfuscationConfig, ObfuscationPolicy, ObfuscationTransport,
-    random_marker, random_padding,
+    StreamCipher, random_marker, random_padding,
 };
+
+use outgoing::Outgoing;
+pub use outgoing::{SendSide, WRITE_STALL_BOUND};
+pub use rmule_os::tcp_send::SendProgress;
 
 /// Read buffer size; matches Tokio's default `BufReader` capacity.
 const READ_BUF_LEN: usize = 8192;
@@ -54,27 +62,6 @@ pub enum DriverError {
     Io(#[from] std::io::Error),
 }
 
-/// One effect drained from a [`DrivenSession`] — the runtime-owned mirror
-/// of each protocol's native `Output`/`PeerOutput`. The session adapter maps
-/// its native outputs onto this in [`DrivenSession::poll_output`].
-#[derive(Debug)]
-pub enum DriverOutput<E, C> {
-    /// Framed bytes to write to the socket. `Arc<[u8]>` so the capture tap
-    /// fans the buffer to the socket *and* the writer task with a refcount
-    /// bump, not a byte-copy.
-    Write(Arc<[u8]>),
-    /// Domain event to forward to the consumer.
-    Event(E),
-    /// Terminal close from the session. The session emits its own paired
-    /// `Disconnected` event immediately before this `Close` on every close
-    /// path, so the driver forwards that event normally and does not
-    /// synthesize one here. (Driver-originated closes — clean EOF and socket
-    /// I/O errors — never reach this variant: [`run_driver`] synthesizes
-    /// their `Disconnected` directly, since the sans-I/O session cannot
-    /// observe them.)
-    Close(C),
-}
-
 /// The runtime adapter [`run_driver`] drives. One impl per concrete session
 /// lives in that session's protocol module, on a **local newtype** around
 /// the sans-I/O session, keeping the runtime adaptation out of the sans-I/O
@@ -85,6 +72,8 @@ pub enum DriverOutput<E, C> {
 /// [`deadline_elapsed`](Self::deadline_elapsed). The driver owns only the
 /// socket, the channels, and one optional startup deadline.
 pub trait DrivenSession {
+    /// Which link this is, in the driver's byte trace.
+    const LINK: &'static str;
     /// What a caller sends in, forwarded verbatim off the command channel.
     type Command;
     /// What the session reports out — forwarded to the consumer, tapped for
@@ -104,7 +93,11 @@ pub trait DrivenSession {
     fn handle_bytes(&mut self, bytes: &[u8]);
     /// Take the next pending effect; the driver drains to `None` after every
     /// other call on this trait.
-    fn poll_output(&mut self) -> Option<DriverOutput<Self::Event, Self::CloseReason>>;
+    fn poll_output(&mut self) -> Option<SessionOutput<Self::Event, Self::CloseReason>>;
+    /// Every byte the session has handed over is in the kernel. The driver
+    /// takes no command while any is not, so what the last command wrote has
+    /// left by now.
+    fn written(&mut self) {}
 
     /// Command meaning "disconnect", fed when the command channel closes
     /// (cooperative `shutdown`).
@@ -178,11 +171,30 @@ pub struct Capture<E> {
     event_toml: fn(&E) -> String,
 }
 
+/// How a driver's run ended, once what it owed has gone.
+enum Ending {
+    /// The session closed; its paired `Disconnected` has gone out.
+    Closed { label: &'static str },
+    /// The peer closed its end; nothing has said so yet.
+    PeerClosed,
+    /// The socket failed; nothing has said so yet.
+    Failed(std::io::Error),
+}
+
 /// Drive one [`DrivenSession`] against an async byte stream until it
 /// closes, returning the I/O error that ended it (if any) — the caller
 /// maps it onto [`DriverError::Io`]. On every terminal path the
 /// consumer observes exactly one `Disconnected` event, and, when capture
 /// is enabled, exactly one finalize.
+///
+/// Reads, writes and events run side by side (ADR-0031): a socket the peer
+/// stopped reading holds up neither what the peer says nor what the consumer
+/// hears, and a consumer that stops listening holds up no write. A command
+/// is taken once the last one's bytes are in the kernel. Reading pauses while
+/// an event waits for room or too much is unwritten, which is how a peer's
+/// asks are braked by what it leaves unread.
+/// A socket owed bytes that moves none for [`WRITE_STALL_BOUND`] ends the
+/// connection: neither a write taken nor its [`SendSide`] past the last reading.
 ///
 /// The `Send` bounds encode the harness's contract: it is meant to run
 /// inside a spawned task (`tokio::spawn`), so the session, the commands and
@@ -191,7 +203,7 @@ pub struct Capture<E> {
 /// opaque error at a downstream spawn site.
 pub async fn run_driver<S, IO>(
     mut session: S,
-    mut io: IO,
+    io: IO,
     mut cmd_rx: mpsc::Receiver<S::Command>,
     evt_tx: mpsc::Sender<S::Event>,
     deadline: Option<Duration>,
@@ -201,55 +213,95 @@ where
     S: DrivenSession + Send,
     S::Command: Send,
     S::Event: Send,
-    IO: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send,
+    IO: tokio::io::AsyncRead + tokio::io::AsyncWrite + SendSide + Unpin + Send,
 {
     let start = tokio::time::Instant::now();
     let started_unix = now_unix_secs();
     let deadline_at = deadline.map(|d| tokio::time::Instant::now() + d);
-    let mut pending = true;
+    let mut deadline_pending = true;
 
     session.start();
-    match drain(&mut session, &mut io, &evt_tx, capture.as_ref()).await {
-        Ok(DrainStatus::Closed { label }) => {
-            finalize::<S>(capture, started_unix, start, label);
-            return Ok(());
-        }
-        Ok(DrainStatus::Resolved) => pending = false,
-        Ok(DrainStatus::Continue) => {}
-        Err(err) => {
-            // Handshake write failed before the loop ran. Synthesize the
-            // terminal Disconnected{Io} and finalize so consumers always
-            // see one terminal event and captures never mis-record.
-            let reason = S::io_close_reason(err.kind());
-            let label = S::close_label(&reason);
-            synthesize::<S>(&evt_tx, reason, capture.as_ref()).await;
-            finalize::<S>(capture, started_unix, start, label);
-            return Err(err);
-        }
-    }
 
+    let (mut reader, mut writer) = tokio::io::split(io);
+    let mut outgoing = Outgoing::default();
+    // Events the consumer has no room for yet, oldest first. Reading stops
+    // while any wait, so this holds what one read or command said.
+    let mut unsent: VecDeque<S::Event> = VecDeque::new();
+    // Set once nothing more comes in: what is owed still goes out.
+    let mut ending: Option<Ending> = None;
     let mut buf = vec![0u8; READ_BUF_LEN];
-    let outcome_label: &'static str;
-    let mut returned_error: Option<std::io::Error> = None;
-    'main: loop {
+    let ending = loop {
+        // The session's effects, in its order: no wait for the consumer holds
+        // a byte back, and no wait for the socket holds an event back.
+        while ending.is_none() {
+            let Some(output) = session.poll_output() else {
+                break;
+            };
+            match output {
+                SessionOutput::Write(bytes) => {
+                    if tracing::enabled!(tracing::Level::TRACE) {
+                        let hex: String = bytes.iter().map(|byte| format!("{byte:02x}")).collect();
+                        tracing::trace!(len = bytes.len(), frame = %hex, "{} driver write", S::LINK);
+                    }
+                    if let Some(c) = capture.as_ref() {
+                        let _ = c
+                            .frames
+                            .send(StreamTap {
+                                outbound: true,
+                                bytes: Arc::clone(&bytes),
+                            })
+                            .await;
+                    }
+                    outgoing.push(bytes);
+                }
+                SessionOutput::Event(event) => {
+                    if S::resolves_deadline(&event) {
+                        deadline_pending = false;
+                    }
+                    if let Some(c) = capture.as_ref() {
+                        let _ = c.events.send((c.event_toml)(&event)).await;
+                    }
+                    S::trace_event(&event);
+                    if unsent.is_empty() {
+                        if let Err(TrySendError::Full(event)) = evt_tx.try_send(event) {
+                            unsent.push_back(event);
+                        }
+                    } else {
+                        unsent.push_back(event);
+                    }
+                }
+                SessionOutput::Close(reason) => {
+                    // The session emits its own paired `Disconnected` (forwarded
+                    // through the `Event` arm above) immediately before every
+                    // `Close`, so the driver just records the label and winds
+                    // down — it never synthesizes a `Disconnected` here.
+                    let label = S::close_label(&reason);
+                    S::trace_close(&reason);
+                    ending = Some(Ending::Closed { label });
+                }
+            }
+        }
+        if unsent.is_empty()
+            && outgoing.is_idle()
+            && let Some(ending) = ending.take()
+        {
+            break ending;
+        }
+
+        let look_at = outgoing.look_at();
         tokio::select! {
-            cmd = cmd_rx.recv() => match cmd {
+            cmd = cmd_rx.recv(), if ending.is_none() && outgoing.is_idle() => match cmd {
                 Some(command) => session.handle_command(command),
                 None => session.handle_command(S::disconnect_command()),
             },
-            _ = sleep_until_opt(deadline_at), if pending && deadline_at.is_some() => {
+            () = sleep_until_opt(deadline_at), if ending.is_none() && deadline_pending && deadline_at.is_some() => {
                 // Uniform timeout: notify the session, which emits its own
-                // Close on the next drain (login/hello timeout). Spent.
+                // Close on the next pass (login/hello timeout). Spent.
                 session.deadline_elapsed();
-                pending = false;
+                deadline_pending = false;
             }
-            read = io.read(&mut buf) => match read {
-                Ok(0) => {
-                    let reason = S::eof_close_reason();
-                    outcome_label = S::close_label(&reason);
-                    synthesize::<S>(&evt_tx, reason, capture.as_ref()).await;
-                    break 'main;
-                }
+            read = reader.read(&mut buf), if ending.is_none() && unsent.is_empty() && outgoing.has_room() => match read {
+                Ok(0) => ending = Some(Ending::PeerClosed),
                 Ok(n) => {
                     if let Some(c) = capture.as_ref() {
                         let _ = c
@@ -262,35 +314,61 @@ where
                     }
                     session.handle_bytes(&buf[..n]);
                 }
-                Err(e) => {
-                    let reason = S::io_close_reason(e.kind());
-                    outcome_label = S::close_label(&reason);
-                    synthesize::<S>(&evt_tx, reason, capture.as_ref()).await;
-                    returned_error = Some(e);
-                    break 'main;
+                Err(error) => break Ending::Failed(error),
+            },
+            moved = outgoing.advance(&mut writer), if !outgoing.is_idle() => match moved {
+                Ok(()) => {
+                    if outgoing.is_idle() {
+                        session.written();
+                    }
+                }
+                // What ended the run stands; a failed goodbye adds nothing.
+                Err(error) => break ending.take().unwrap_or(Ending::Failed(error)),
+            },
+            () = sleep_until_opt(look_at), if look_at.is_some() => {
+                // No half is in use while a branch's handler runs, so the
+                // stream is whole for the one call a stalled socket pays for.
+                let stream = reader.unsplit(writer);
+                let reading = stream.send_progress();
+                (reader, writer) = tokio::io::split(stream);
+                if outgoing.is_stuck(reading) {
+                    let stalled = std::io::Error::new(
+                        std::io::ErrorKind::TimedOut,
+                        "the peer took no byte within the write bound",
+                    );
+                    break ending.take().unwrap_or(Ending::Failed(stalled));
+                }
+            }
+            permit = evt_tx.reserve(), if !unsent.is_empty() => {
+                if let (Ok(permit), Some(event)) = (permit, unsent.pop_front()) {
+                    permit.send(event);
                 }
             }
         }
-        match drain(&mut session, &mut io, &evt_tx, capture.as_ref()).await {
-            Ok(DrainStatus::Closed { label }) => {
-                outcome_label = label;
-                break 'main;
-            }
-            Ok(DrainStatus::Resolved) => pending = false,
-            Ok(DrainStatus::Continue) => {}
-            Err(e) => {
-                let reason = S::io_close_reason(e.kind());
-                outcome_label = S::close_label(&reason);
-                synthesize::<S>(&evt_tx, reason, capture.as_ref()).await;
-                returned_error = Some(e);
-                break 'main;
-            }
-        }
-    }
+    };
 
-    finalize::<S>(capture.take(), started_unix, start, outcome_label);
-    match returned_error {
-        Some(err) => Err(err),
+    // What the session said before the end reaches the consumer ahead of it.
+    for event in unsent {
+        let _ = evt_tx.send(event).await;
+    }
+    let (label, error) = match ending {
+        Ending::Closed { label } => (label, None),
+        Ending::Failed(error) => {
+            let reason = S::io_close_reason(error.kind());
+            let label = S::close_label(&reason);
+            synthesize::<S>(&evt_tx, reason, capture.as_ref()).await;
+            (label, Some(error))
+        }
+        Ending::PeerClosed => {
+            let reason = S::eof_close_reason();
+            let label = S::close_label(&reason);
+            synthesize::<S>(&evt_tx, reason, capture.as_ref()).await;
+            (label, None)
+        }
+    };
+    finalize::<S>(capture.take(), started_unix, start, label);
+    match error {
+        Some(error) => Err(error),
         None => Ok(()),
     }
 }
@@ -426,7 +504,7 @@ where
     // The harness holds the close reason and a `&Capture` across `.await`
     // points; spawning the driver future needs both to cross threads.
     S::CloseReason: Send,
-    IO: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
+    IO: tokio::io::AsyncRead + tokio::io::AsyncWrite + SendSide + Unpin + Send + 'static,
     E: Send + 'static,
     D: FnOnce(BoxFuture<Result<(), std::io::Error>>) -> F,
     F: Future<Output = Result<(), E>> + Send + 'static,
@@ -465,65 +543,6 @@ where
         events: evt_rx,
         driver: Some(driver),
         capture: capture_handle,
-    }
-}
-
-enum DrainStatus {
-    Closed { label: &'static str },
-    Resolved,
-    Continue,
-}
-
-async fn drain<S, IO>(
-    session: &mut S,
-    io: &mut IO,
-    evt_tx: &mpsc::Sender<S::Event>,
-    capture: Option<&Capture<S::Event>>,
-) -> Result<DrainStatus, std::io::Error>
-where
-    S: DrivenSession,
-    IO: AsyncWrite + Unpin,
-{
-    let mut resolved = false;
-    while let Some(output) = session.poll_output() {
-        match output {
-            DriverOutput::Write(bytes) => {
-                if let Some(c) = capture {
-                    let _ = c
-                        .frames
-                        .send(StreamTap {
-                            outbound: true,
-                            bytes: Arc::clone(&bytes),
-                        })
-                        .await;
-                }
-                io.write_all(&bytes).await?;
-            }
-            DriverOutput::Event(event) => {
-                if S::resolves_deadline(&event) {
-                    resolved = true;
-                }
-                if let Some(c) = capture {
-                    let _ = c.events.send((c.event_toml)(&event)).await;
-                }
-                S::trace_event(&event);
-                let _ = evt_tx.send(event).await;
-            }
-            DriverOutput::Close(reason) => {
-                // The session emits its own paired `Disconnected` (forwarded
-                // through the `Event` arm above) immediately before every
-                // `Close`, so the driver just records the label and ends the
-                // drain — it never synthesizes a `Disconnected` here.
-                let label = S::close_label(&reason);
-                S::trace_close(&reason);
-                return Ok(DrainStatus::Closed { label });
-            }
-        }
-    }
-    if resolved {
-        Ok(DrainStatus::Resolved)
-    } else {
-        Ok(DrainStatus::Continue)
     }
 }
 

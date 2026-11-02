@@ -13,7 +13,7 @@ use std::num::NonZeroU8;
 use std::time::Duration;
 
 use rmule_primitives::{
-    CryptStance, PeerEndpoint, PeerSource, SourceCryptOptions, SourceSighting, UserHash,
+    CryptStance, Informant, PeerEndpoint, PeerSource, SourceCryptOptions, SourceSighting, UserHash,
 };
 use serde::{Deserialize, Serialize};
 
@@ -60,13 +60,19 @@ pub struct SourceSeed {
 
 impl SourceSeed {
     /// The seed as the candidate record a source of the run's first snapshot
-    /// is made of, carrying its hash the way a `0x44` row does.
+    /// is made of, carrying its hash the way a `0x44` row does. A seed is
+    /// rmule's own word (ADR-0085).
     pub(crate) const fn as_source(self) -> SourceSighting {
         let source = match self.endpoint {
             PeerEndpoint::V4(endpoint) => PeerSource::HighId(endpoint),
             PeerEndpoint::V6(endpoint) => PeerSource::Ipv6(endpoint),
         };
-        SourceSighting::new(source, self.user_hash, crypt_options(self.crypt))
+        SourceSighting::new(
+            source,
+            self.user_hash,
+            crypt_options(self.crypt),
+            Informant::Own,
+        )
     }
 }
 

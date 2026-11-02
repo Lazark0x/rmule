@@ -97,7 +97,10 @@ fn release_promotes_the_highest_score_waiter_not_the_fifo_head() {
     // Slot frees at t+30s. score(2) = 30, score(3) = 40 -> peer 3 promoted.
     let m = modifiers(&[(peer(2), 1.0), (peer(3), 2.0)]);
     let promotion = q.release(peer(1), t0 + Duration::from_secs(30), &m);
-    assert_eq!(promotion.granted, Some((peer(3), file())));
+    assert_eq!(
+        promotion.granted.map(|g| (g.peer, g.file_hash)),
+        Some((peer(3), file()))
+    );
     // peer 2 is now the sole waiter; its rank was already 1, so nothing re-emits.
     assert!(promotion.reranked.is_empty());
 }
@@ -142,10 +145,13 @@ fn purge_reclaims_a_dial_back_grant_whose_dial_never_connected() {
     let _ = q.on_disconnect(waiter, t0, &HashMap::new());
     let disconnect = q.on_disconnect(holder, t0, &HashMap::new());
     assert!(
-        disconnect.promotion.dial_back,
+        disconnect.promotion.granted.is_some_and(|g| g.dial_back),
         "promoted over a dead socket -> dial-back"
     );
-    assert_eq!(disconnect.promotion.granted, Some((waiter, file())));
+    assert_eq!(
+        disconnect.promotion.granted.map(|g| (g.peer, g.file_hash)),
+        Some((waiter, file()))
+    );
     assert!(q.is_granted(waiter), "the dial-back grant holds the slot");
 
     // The outbound serve-dial never connects. One hour on, purge reclaims the
@@ -208,7 +214,10 @@ fn equal_score_release_promotes_the_oldest_waiter() {
     // The tie breaks to the oldest enqueue, so peer 2 is promoted.
     let m = modifiers(&[(peer(2), 2.0), (peer(3), 3.0)]);
     let promotion = q.release(peer(1), t0 + Duration::from_secs(30), &m);
-    assert_eq!(promotion.granted, Some((peer(2), file())));
+    assert_eq!(
+        promotion.granted.map(|g| (g.peer, g.file_hash)),
+        Some((peer(2), file()))
+    );
 }
 
 /// Reask attribution compares the whole 128-bit address (ADR-0087). Two peers
@@ -225,8 +234,14 @@ fn an_ipv6_reask_is_attributed_by_the_full_address_not_a_projection() {
     let second = v6_peer("2001:db8:0:1::b");
     let _ = q.admit(first, file(), t0);
     let _ = q.admit(second, file(), t0);
-    q.set_udp_contact(first, Some(6000), 4);
-    q.set_udp_contact(second, Some(6001), 4);
+    for (waiter, udp_port) in [(first, 6000), (second, 6001)] {
+        let contact = rmule_core::WaiterContact {
+            udp_port: Some(udp_port),
+            udp_version: 4,
+            dialable: true,
+        };
+        q.set_contact(waiter, contact);
+    }
 
     let resolved = |peer: PeerEndpoint, port: u16| match q.resolve_reask(peer.with_port(port)) {
         rmule_core::ReaskResolution::Known { peer, .. } => Some(peer),

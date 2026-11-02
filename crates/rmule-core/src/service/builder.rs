@@ -25,7 +25,7 @@ use crate::ban_store::SharedBanStore;
 use crate::buddy_link::SharedBuddySlot;
 use crate::credit::SharedCreditStore;
 use crate::ip_filter::{IpFilter, SharedIpFilter};
-use crate::server_list::{ServerListFetcher, SharedServerListStore};
+use crate::server_list::SharedServerListStore;
 use crate::server_session::SharedServerSession;
 use crate::store::DurableStore;
 use crate::store::app_config::DurableAppConfig;
@@ -42,7 +42,7 @@ use crate::CoreSettings;
 /// constructor telescope. Start it with [`Core::builder`], override any slot
 /// with the matching setter, and [`build`](Self::build) spawns the actor.
 ///
-/// The builder is the one wiring point (ADR-0048 "Identity ownership"):
+/// The builder is the one wiring point (ADR-0048 "One identity per node, owned by the core"):
 /// every shared cell it owns lives in one `AdapterCells`, and
 /// its own default adapters and any adapter a caller injects adopt that one
 /// set through the same `adopt_cells` trait method — so a core with custom
@@ -81,7 +81,8 @@ struct NodeParts {
     kad_cells: KadCells,
     /// A Kad level stated in place of the verdicts a pump publishes.
     kad_reach: Option<crate::KadReachLevel>,
-    /// The node's **User Hash**, fixed here at build time (ADR-0048 "Identity ownership"):
+    /// The node's **User Hash**, fixed here at build time (ADR-0048 "One identity per node, owned
+    /// by the core"):
     /// [`Core::builder`] reads it from the store it
     /// is given — the same generate-once row a front-end's
     /// [`AppConfigStore::ensure_identity`] reads — and a tool that names its
@@ -115,11 +116,12 @@ struct NodeParts {
     /// Whether attach listens and starts again the downloads the last process
     /// left running (ADR-0094); off, attach starts none.
     restore_at_attach: bool,
+    run_log: crate::run_log::LevelHandle,
     /// The managed server list the actor owns (ADR-0080), type-erased.
     server_list: SharedServerListStore,
     /// The one URL-acquisition capability core is given (ADR-0080), or `None`
     /// — the default, since core links no HTTP client.
-    server_list_fetcher: Option<Arc<dyn ServerListFetcher>>,
+    server_list_fetcher: Option<Arc<dyn rmule_bootstrap::Fetcher>>,
 }
 
 impl<S, P, L, K> CoreBuilder<S, P, L, K>
@@ -218,7 +220,7 @@ where
         &self.node.kad_cells
     }
 
-    /// Fix the node's **User Hash** (ADR-0048 "Identity ownership")
+    /// Fix the node's **User Hash** (ADR-0048 "One identity per node, owned by the core")
     /// in place of the one [`Core::builder`] read from the store — for a
     /// tool or a test that names its hash. Build time is the only time a hash
     /// is chosen: no command carries one.
@@ -314,7 +316,7 @@ where
     /// [`CoreCommandRejectReason::ServerListFetchUnavailable`](crate::CoreCommandRejectReason::ServerListFetchUnavailable) rather than
     /// silently doing nothing.
     #[must_use]
-    pub fn server_list_fetcher(mut self, fetcher: impl ServerListFetcher + 'static) -> Self {
+    pub fn server_list_fetcher(mut self, fetcher: impl rmule_bootstrap::Fetcher + 'static) -> Self {
         self.node.server_list_fetcher = Some(Arc::new(fetcher));
         self
     }
@@ -384,6 +386,15 @@ where
         self.node.cells.session.clone()
     }
 
+    /// The Run Log level every event is written at, shared with the front
+    /// end that changes it: core writes the log itself, so it outlives any
+    /// reader of the event stream (ADR-0069, "The Run Log is written in core").
+    #[must_use]
+    pub fn run_log(mut self, level: crate::run_log::LevelHandle) -> Self {
+        self.node.run_log = level;
+        self
+    }
+
     /// Run as the operator's node from attach (ADR-0093, ADR-0094): bind the
     /// eD2k listener on the Core Settings' TCP port (the Serve activity, so
     /// the port mapping starts too) and start again every download the last
@@ -422,7 +433,10 @@ where
         // The one obfuscation policy every hello and login states (ADR-0046),
         // settled before anything can send one; the actor alone writes it
         // after, and keeps no start copy of it.
-        let (settings, obfuscation) = super::actor::StartSettings::split(settings);
+        let (settings, obfuscation) = super::actor::StartSettings::split(
+            settings,
+            self.node.share_guards.data_dir.as_deref(),
+        );
         self.node.cells.hello_adverts.obfuscation.set(obfuscation);
         self.source_lookup.adopt_cells(&self.node.cells);
         self.peer_transfer.adopt_cells(&self.node.cells);
@@ -436,13 +450,7 @@ where
         // filter-not-ready-blocks-everything branch. The adapters already
         // hold clones of the handle, so the swap is visible everywhere.
         if let Some(dir) = node.ip_filter_dir.as_deref() {
-            let loaded = IpFilter::load_dir(
-                dir,
-                node.config.ip_filter_level,
-                node.config.ip_filter_clients,
-                node.config.ip_filter_servers,
-            );
-            *node.cells.ip_filter.write().expect("ip filter lock") = loaded;
+            *node.cells.ip_filter.write() = IpFilter::load_dir(dir);
         }
         // The node's hash, fixed before anything can read it:
         // every reader — the peer-UDP crypt layer, NAT-T, the Kad node, each
@@ -471,12 +479,15 @@ where
                 shared_server_session: cells.session,
                 dialed_serve_sink: cells.dialed_serve_sink,
                 awaited_inbound: cells.awaited_inbound,
+                peer_links: cells.peer_links,
                 buddy_slot: cells.buddy_slot,
                 hello_adverts: cells.hello_adverts,
                 firewalled_front: cells.firewalled_front,
                 file_known: cells.file_known,
+                served_downloads: cells.served_downloads,
                 tunnel_admit: cells.tunnel_admit,
                 hello_refusals: cells.hello_refusals,
+                secured_identities: cells.secured_identities,
                 ip_filter: cells.ip_filter,
                 interface_source: node.interface_source,
                 gateway_source: node.gateway_source,
@@ -487,6 +498,7 @@ where
                 clients_met_dir: node.clients_met_dir,
                 share_guards: node.share_guards,
                 restore_at_attach: node.restore_at_attach,
+                run_log: node.run_log,
                 kad_id: node.kad_id,
                 kad_udp_key: node.kad_udp_key,
                 server_list: node.server_list,
@@ -559,14 +571,11 @@ impl Core {
         // One core-owned IP filter (aMule `CIPFilter` parity),
         // shared by the accept, dial, server-dial, source-ingest, and
         // server-list gates — the same create-once-clone-into-every-adapter
-        // pattern as `ban_store`. Created empty with the config's gates;
+        // pattern as `ban_store`. Created empty, both gates on;
         // `CoreBuilder::build` loads the dat files into it (before the actor
         // spawns, so no connection can ever precede the loaded table) when
         // `ip_filter_dir` names a directory.
-        let ip_filter: SharedIpFilter = Arc::new(std::sync::RwLock::new(IpFilter::empty(
-            config.ip_filter_clients,
-            config.ip_filter_servers,
-        )));
+        let ip_filter: SharedIpFilter = SharedIpFilter::default();
         // One core-owned enacted buddy slot (socket unification, ADR-0061),
         // shared by the Kad factory (0x51 recruit + 0x52 relay), the accept
         // path (holds the buddy's persistent inbound link, routes ping/close),
@@ -585,7 +594,7 @@ impl Core {
         // name for it.
         let app_config = Arc::new(DurableAppConfig::new(Arc::clone(&store)));
         // The node's Secure User Identification keypair (ADR-0041), loaded
-        // once, here, and never replaced (ADR-0048 "Identity ownership"):
+        // once, here, and never replaced (ADR-0048 "One identity per node, owned by the core"):
         // aMule's `CClientCreditsList` loads `cryptkey.dat` once
         // at construction and a failed load leaves crypto unavailable rather
         // than failing start (`ClientCreditsList.cpp:49-54`, `:282-323`).
@@ -621,6 +630,9 @@ impl Core {
         // punched path meets the IP filter, the ban gate and the inbound
         // triage exactly as a TCP accept does.
         let tunnel_admit = crate::adapters::SharedTunnelAdmit::default();
+        // A server-relayed callback's dial-back enters by the same seam
+        // (ADR-0061), so the requester meets the gates an accept does.
+        session.dial_backs().install_admit(tunnel_admit.clone());
         // The **Awaited Inbound** registry (ADR-0039, ADR-0091): every
         // download files the roads its pending callbacks may be answered on,
         // and the serve adapter's triage asks it who gets a connection. One
@@ -640,7 +652,7 @@ impl Core {
         // (whose requester gate reads it before dialling a helper) — the
         // same create-once-clone-into-every-adapter pattern as `ban_store`.
         let peer_roster = crate::peer_roster::SharedPeerRoster::default();
-        // The node's User Hash (ADR-0048 "Identity ownership"):
+        // The node's User Hash (ADR-0048 "One identity per node, owned by the core"):
         // the store's generate-once identity row, the one a front-end reads
         // for its nickname and ports — so the hash and the SUI key loaded
         // above come from one place. A failed read mints a fresh hash for
@@ -686,11 +698,23 @@ impl Core {
             ip_filter,
             firewalled_front,
             file_known,
+            // The Served Downloads (ADR-0113): one cell the actor and every
+            // run write under its lease, for the serve side to read.
+            served_downloads: crate::served_downloads::ServedDownloads::default(),
             tunnel_admit,
             address_families: config.address_families,
             // One cell every peer connection's first reader reports a refused
             // hello to (ADR-0050); the actor's prologue installs its bus.
             hello_refusals: crate::hello_refusals::SharedHelloRefusals::default(),
+            // A changed Low ID is checked against the managed server list
+            // before a link is found under it (ADR-0107).
+            peer_links: crate::adapters::SharedPeerLinks::knowing(
+                app_config.clone(),
+                config.peer_connections.max_connections.max(1),
+            ),
+            // One cell every link binds its verified identity through
+            // (ADR-0041); the actor's prologue installs the ledger and bus.
+            secured_identities: crate::secured_identity::SharedSecuredIdentities::default(),
         };
         // One wiring path: the default adapters adopt the cells
         // exactly as an injected one does.
@@ -744,6 +768,7 @@ impl Core {
                 clients_met_dir: None,
                 share_guards: crate::ShareGuards::default(),
                 restore_at_attach: false,
+                run_log: crate::run_log::LevelHandle::default(),
                 server_list: app_config,
                 server_list_fetcher: None,
             },

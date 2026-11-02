@@ -1,6 +1,6 @@
-┌ Downloads (1) ────────────────────────────── s sort  S reverse  L add link ┐
-│  File ▲      Size       Done Progress   Speed      ETA    Src   Status     │
-│▸ early.iso   27.8 MB    0%   ░░░░░░░░░░ —          —      0     Paused     │
+┌ Downloads (1) ─── p pause  m menu  / filter  L add  Tab sources  Space tag ┐
+│  File ▲                              Size Progress        Speed Status     │
+│▸ early.iso                        27.8 MB ░░░░░░░░░░   0.0 KB/s Paused     │
 │                                                                            │
 │                                                                            │
 │                                                                            │
@@ -10,12 +10,12 @@
 │                                                                            │
 │                                                                            │
 │                                                                            │
-└────────────────────────────────────────────────────────────────────────────┘
+│                                                                            │
+│                                                                            │
+│                                                                            │
+│                                                                            │
+│Off-screen: Done 0% · ETA unknown · Src 0                                   │
+└ too narrow to show: Done, ETA, Src ───────────────────────────────── 1 / 1 ┘
 ┌ Sources · early.iso ───────────────────────────────────────────────────────┐
-│                                                                            │
-│                                                                            │
 │                              no active sources                             │
-│                                                                            │
-│                                                                            │
-│                                                                            │
 └────────────────────────────────────────────────────────────────────────────┘

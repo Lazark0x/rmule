@@ -23,7 +23,8 @@ use rmule_ed2k::{
     natt_keepalive_datagram, natt_keepalive_port,
 };
 use rmule_peer::natt::is_public_punch_address;
-use rmule_primitives::{AccountingKey, ClientId, Ipv4Endpoint, PeerEndpoint, UserHash};
+use rmule_peer::peer_udp::crypt::PeerUdpCryptTarget;
+use rmule_primitives::{ClientId, Ipv4Endpoint, PeerEndpoint, UserHash};
 
 use super::acting::{ACTING_MIN_INTERVAL, ACTING_TRACKED_MAX};
 use crate::client_udp::ClientUdpSend;
@@ -38,14 +39,13 @@ pub(crate) const SERVER_KEEPALIVE_INTERVAL: Duration = Duration::from_secs(60);
 
 /// How often the session re-reads the introduction clock. Finer than
 /// [`INTRODUCTION_TIMEOUT`] by an order of magnitude, and one wake-up a second
-/// on a connected session costs nothing — silence is the *only* signal a
-/// server that does not speak the punch gives, so the whole fall-through to
-/// the buddy hangs off this tick.
+/// on a connected session costs nothing — silence is the *only* signal a lost
+/// frame gives, so the fall-through to the buddy hangs off this tick.
 pub(crate) const INTRODUCTION_POLL: Duration = Duration::from_secs(1);
 
-/// How long a `0x60` waits for either answer. A server that does not speak
-/// the punch ignores the opcode entirely, so this silence is the *only*
-/// signal there — and the cue to fall back to the buddy coordinator. The same
+/// How long a `0x60` waits for either answer. Only a server that set
+/// `0x20000` gets one, so this silence is a lost frame or a server that broke
+/// its word, and the cue to fall back to the buddy coordinator. The same
 /// fifteen seconds the buddy path gives its hint.
 pub(crate) const INTRODUCTION_TIMEOUT: Duration = super::requester::HINT_TIMEOUT;
 
@@ -114,9 +114,7 @@ pub(crate) enum IntroductionFailure {
         reason: HolepunchFailReason,
         permanent: bool,
     },
-    /// Nothing came back in [`INTRODUCTION_TIMEOUT`] — a server that does not
-    /// speak the punch, or a lost frame. Indistinguishable, and treated the
-    /// same: move on.
+    /// Nothing came back in [`INTRODUCTION_TIMEOUT`]: move on.
     Silence,
 }
 
@@ -126,8 +124,9 @@ pub(crate) struct ServerPunch {
     /// Requests sent and not yet answered, by the Low-ID they named.
     pending: HashMap<ClientId, Instant>,
     /// One burst per destination per window. Its own table — never the relay
-    /// service's — for the reason the acting path keeps its own.
-    destinations: IntervalLimiter,
+    /// service's — for the reason the acting path keeps its own. Keyed on
+    /// the endpoint: two targets behind one address are two mappings.
+    destinations: IntervalLimiter<Ipv4Endpoint>,
 }
 
 impl Default for ServerPunch {
@@ -148,10 +147,12 @@ impl ServerPunch {
     /// An `OP_LOWID_HOLEPUNCH_INFO` arrived — asked for or not; the server
     /// sends it to both sides and the target's copy is unsolicited by design.
     ///
-    /// INFO names no target ID, so it cannot be matched to a request by
-    /// anything it carries. It settles a pending request only when exactly
-    /// one is outstanding; with several, each is left to its own timeout
-    /// rather than guessed at.
+    /// `peer_id` names the peer described, which to a requester is the target
+    /// its `0x60` named, so it settles exactly that request; on the target's
+    /// copy it names nothing pending. A server before v0.9.84 sends no
+    /// `peer_id`: its INFO settles a pending request only when exactly one is
+    /// outstanding, and with several each is left to its own timeout rather
+    /// than guessed at.
     pub(crate) fn on_info(
         &mut self,
         info: &HolepunchInfo,
@@ -165,14 +166,15 @@ impl ServerPunch {
         if is_own_interface(IpAddr::V4(target.ip)) {
             return IntroductionVerdict::Refuse(IntroductionRefusal::SelfPunch);
         }
-        if !self
-            .destinations
-            .admit(AccountingKey::of(target.ip.into()), now)
-        {
+        if !self.destinations.admit(target, now) {
             return IntroductionVerdict::Refuse(IntroductionRefusal::Repeat);
         }
-        if self.pending.len() == 1 {
-            self.pending.clear();
+        match info.peer_id {
+            Some(peer_id) => {
+                self.pending.remove(&peer_id);
+            }
+            None if self.pending.len() == 1 => self.pending.clear(),
+            None => {}
         }
         IntroductionVerdict::Punch {
             peer_hash: info.peer_hash,
@@ -239,7 +241,7 @@ pub(crate) struct SharedServerPunch {
 
 #[derive(Debug, Default)]
 struct SharedInner {
-    ledger: std::sync::Mutex<ServerPunch>,
+    ledger: parking_lot::Mutex<ServerPunch>,
     client_udp: std::sync::OnceLock<tokio::sync::mpsc::Sender<ClientUdpSend>>,
     /// The session an introduction is asked through, while it can be.
     session: CoordinatorSession,
@@ -321,8 +323,8 @@ impl SharedServerPunch {
         }
     }
 
-    pub(crate) fn ledger(&self) -> std::sync::MutexGuard<'_, ServerPunch> {
-        self.inner.ledger.lock().expect("server punch ledger")
+    pub(crate) fn ledger(&self) -> parking_lot::MutexGuard<'_, ServerPunch> {
+        self.inner.ledger.lock()
     }
 
     /// Decide one introduction and, on a punch, put the whole burst on the
@@ -342,10 +344,18 @@ impl SharedServerPunch {
             if let Some(diagnostics) = self.inner.diagnostics.get() {
                 diagnostics.count_natt_server_punch();
             }
+            // The server states the peer's crypt stance (byte 29): the send
+            // gate obfuscates the punch for a peer that requires the layer and
+            // follows our own stance for one that only supports it. A body
+            // without the byte keeps the plain punch.
+            let crypt_target = info
+                .peer_crypt
+                .map(|crypt| PeerUdpCryptTarget::new(info.peer_hash, crypt.crypt_stance()));
             for endpoint in rmule_peer::natt::punch_burst(target) {
-                let send = ClientUdpSend::plaintext(
+                let send = ClientUdpSend::to_peer(
                     PeerEndpoint::V4(endpoint),
                     rmule_peer::natt::holepunch_datagram(),
+                    crypt_target,
                 );
                 if tx.try_send(send).is_err() {
                     break;
@@ -376,6 +386,7 @@ impl SharedServerPunch {
                     burst: false,
                     // The server saw the peer's UDP source itself.
                     source: rmule_peer::natt::PunchTargetSource::Observed,
+                    crypt: info.peer_crypt.map(|crypt| crypt.crypt_stance()),
                 })
             });
             if !taken {
@@ -408,8 +419,8 @@ impl Default for CoordinatorSession {
 }
 
 impl CoordinatorSession {
-    /// Whether a session that advertised `0xF9` holds the cell and still
-    /// runs.
+    /// Whether a session that advertised `0xF9`, on a server that said it
+    /// coordinates, holds the cell and still runs.
     pub(crate) fn is_live(&self) -> bool {
         self.0
             .borrow()
@@ -505,6 +516,8 @@ mod tests {
             peer_tcp_port: 4662,
             peer_hash: UserHash::from_bytes([0x44; 16]),
             role: HolepunchRole::Responder,
+            peer_id: None,
+            peer_crypt: None,
         }
     }
 
@@ -535,6 +548,66 @@ mod tests {
             punch.on_info(&info, |_| false, t0 + ACTING_MIN_INTERVAL),
             IntroductionVerdict::Punch { .. }
         ));
+    }
+
+    /// Two Low-ID clients behind one public address are two mappings, and the
+    /// server hands each its own port (`holepunch.rs:80-112`). The second
+    /// introduction is news, not a repeat, and it settles its own request.
+    #[test]
+    fn two_targets_behind_one_address_are_both_punched() {
+        let mut punch = ServerPunch::default();
+        let t0 = Instant::now();
+        let (first, second) = (ClientId::from_u32(1337), ClientId::from_u32(1338));
+        punch.on_request(first, t0);
+        punch.on_request(second, t0);
+
+        let to_first = HolepunchInfo {
+            peer_id: Some(first),
+            ..info_at([45, 55, 200, 7], 31999)
+        };
+        let to_second = HolepunchInfo {
+            peer_id: Some(second),
+            ..info_at([45, 55, 200, 7], 32000)
+        };
+        assert!(matches!(
+            punch.on_info(&to_first, |_| false, t0),
+            IntroductionVerdict::Punch { .. }
+        ));
+        assert!(matches!(
+            punch.on_info(&to_second, |_| false, t0 + Duration::from_secs(1)),
+            IntroductionVerdict::Punch { .. }
+        ));
+        assert!(punch.pending.is_empty(), "each settled its own request");
+    }
+
+    /// With two requests out, a `0x61` that names its peer settles that one
+    /// and leaves the other on its clock; a copy naming a peer we never asked
+    /// about, the target's side of someone else's request, settles nothing.
+    #[test]
+    fn an_introduction_settles_only_the_request_that_names_its_peer() {
+        let mut punch = ServerPunch::default();
+        let t0 = Instant::now();
+        let (first, second) = (ClientId::from_u32(1337), ClientId::from_u32(1338));
+        punch.on_request(first, t0);
+        punch.on_request(second, t0);
+
+        let unasked = HolepunchInfo {
+            peer_id: Some(ClientId::from_u32(9)),
+            ..info_at([45, 55, 200, 8], 31999)
+        };
+        punch.on_info(&unasked, |_| false, t0);
+        let answer = HolepunchInfo {
+            peer_id: Some(first),
+            ..info_at([45, 55, 200, 7], 31999)
+        };
+        assert!(matches!(
+            punch.on_info(&answer, |_| false, t0),
+            IntroductionVerdict::Punch { .. }
+        ));
+
+        let overdue = punch.overdue(t0 + INTRODUCTION_TIMEOUT);
+        assert_eq!(overdue.len(), 1, "only the unanswered request is overdue");
+        assert_eq!(overdue[0].0, second);
     }
 
     /// The server observed it, so there is no claim to judge — but "observed"
@@ -671,7 +744,10 @@ mod tests {
         let mut ports = Vec::new();
         while let Ok(send) = rx.try_recv() {
             assert_eq!(send.datagram, [0xC5, 0xA1]);
-            assert!(send.crypt_target.is_none());
+            assert!(
+                send.crypt_target.is_none(),
+                "a 29-byte form states no stance, so the punch stays plain"
+            );
             ports.push(send.to.port());
         }
         assert_eq!(ports.len(), 6 + 32);
@@ -712,5 +788,28 @@ mod tests {
             4661,
         ));
         assert!(keepalive_send(v6, &hash).is_none());
+    }
+
+    /// ed2k-server v0.9.86 `0x61` byte 29 is the peer's crypt stance. A peer
+    /// that requires the layer refuses a plain punch, so the burst carries it
+    /// as the crypt target; the send gate then obfuscates every datagram.
+    #[tokio::test]
+    async fn a_peer_that_requires_crypt_is_punched_with_its_crypt_target() {
+        let shared = SharedServerPunch::default();
+        let (tx, mut rx) = tokio::sync::mpsc::channel(64);
+        shared.install_client_udp(tx);
+        let info = HolepunchInfo {
+            peer_crypt: Some(rmule_primitives::SourceCryptOptions::from_byte(0b111)),
+            ..info_at([45, 55, 200, 7], 31999)
+        };
+        shared.on_info(&info, |_| false, Instant::now());
+        let mut sent = 0;
+        while let Ok(send) = rx.try_recv() {
+            let target = send.crypt_target.expect("the stance rides on every punch");
+            assert_eq!(target.user_hash, UserHash::from_bytes([0x44; 16]));
+            assert!(target.stance.requires());
+            sent += 1;
+        }
+        assert_eq!(sent, 6 + 32);
     }
 }

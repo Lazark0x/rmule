@@ -13,6 +13,7 @@
 //! block, the same **Fake-Public v6 Plan** `ipv6-net-accept` measures.
 
 use std::fmt::Write as _;
+use std::net::{Ipv4Addr, Ipv6Addr};
 
 /// The bench `/24`: the first fake-public prefix.
 pub(crate) const BENCH_SUBNET: &str = "203.0.113.0/24";
@@ -71,8 +72,9 @@ impl Record {
 
 /// The `OP_FOUNDSOURCES` list the TCP leg emits: a plain record, a **Sentinel
 /// Source**, and a plain record *after* it. The third record is the whole
-/// point — a reader that walked the sentinel's sixteen tail bytes inline would
-/// decode it at the wrong offset and dial something else.
+/// point — the sixteen address bytes sit inline in the sentinel's record, so a
+/// reader that walks six bytes a record meets them where the third record
+/// should be (see [`inline_misread`]).
 pub(crate) const TCP_RECORDS: [Record; 3] = [
     Record {
         label: "before_sentinel",
@@ -143,6 +145,18 @@ pub(crate) const CONTROL_SECOND_RECORDS: [Record; 1] = [Record {
     sentinel: false,
 }];
 
+/// The endpoint a six-byte-stride reader takes the **Sentinel Source**'s inline
+/// address for: the next record it reads is that address's first six bytes, an
+/// id in wire order and a little-endian port.
+pub(crate) fn inline_misread(sentinel: &Record) -> (Ipv4Addr, u16) {
+    let address: Ipv6Addr = sentinel
+        .host
+        .parse()
+        .expect("a sentinel record names an IPv6 address");
+    let [a, b, c, d, low, high, ..] = address.octets();
+    (Ipv4Addr::new(a, b, c, d), u16::from_le_bytes([low, high]))
+}
+
 /// Every record the plan emits, in emission order.
 pub(crate) fn all_records() -> impl Iterator<Item = &'static Record> {
     TCP_RECORDS
@@ -192,6 +206,17 @@ pub(crate) fn list_spec(file_hash_hex: &str, records: &[Record]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The endpoint stock aMule 2.3.3 dialled in run `1793352976`: these six
+    /// bytes are the whole of what the legacy reader took for a record.
+    #[test]
+    fn a_six_byte_reader_takes_the_sentinels_address_for_the_endpoint_amule_dialled() {
+        let (address, port) = inline_misread(&TCP_RECORDS[1]);
+        assert_eq!(
+            (address.to_string().as_str(), port),
+            ("63.255.171.205", 256)
+        );
+    }
 
     #[test]
     fn a_sentinel_record_is_bracketed_and_holds_no_sink() {

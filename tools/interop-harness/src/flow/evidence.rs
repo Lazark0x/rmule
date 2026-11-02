@@ -34,6 +34,13 @@ pub(crate) fn read_verdict_log(path: &Path) -> Result<String> {
     fs::read_to_string(path).with_context(|| format!("read {}", path.display()))
 }
 
+/// A TOML record a flow's runner left beside the run, read and parsed; the
+/// error names the file, so a record the run lost is never an empty default.
+pub(crate) fn read_toml<T: serde::de::DeserializeOwned>(path: &Path) -> Result<T> {
+    toml::from_str(&fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?)
+        .with_context(|| format!("parse {}", path.display()))
+}
+
 /// One `rmule-obfuscation-flip` marker line an rmule printed
 /// (`--peer-crypt-flip`).
 #[derive(Debug, Clone, PartialEq, Eq)]

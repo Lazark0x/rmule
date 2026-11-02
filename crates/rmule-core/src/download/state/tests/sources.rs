@@ -1,11 +1,11 @@
 //! Discovered sources joining the candidate pool: server-UDP global sources
-//! (ADR-0051) dialing High-ID and holding a per-server callback for Low-ID,
-//! and Kad sources (ADR-0043), which carry no callback route at all.
+//! (ADR-0051) dialing High-ID and holding a remote server's Low-ID without a
+//! road, and Kad sources (ADR-0043), which carry no callback route at all.
 
 use super::*;
 
 #[test]
-fn global_sightings_dial_high_id_and_holds_low_id_for_a_per_server_callback() {
+fn global_sightings_dial_high_id_and_open_no_road_for_a_remote_servers_low_id() {
     use rmule_primitives::{ClientId, PeerSource};
     // Callback-capable, empty pools, room for two workers.
     let server = source_server(9);
@@ -22,22 +22,12 @@ fn global_sightings_dial_high_id_and_holds_low_id_for_a_per_server_callback() {
             .any(|d| matches!(d, Decision::Spawn { peer: p, .. } if *p == peer(5))),
         "High-ID global source must be dialed: {decisions:?}"
     );
-    // ADR-0051: the Low-ID global source is usable — held as a callback candidate
-    // tagged with *its own* source-server, requesting a per-server callback
-    // (not the connected-server `RequestCallback`, which would mis-route).
-    assert!(
-        decisions.iter().any(|d| matches!(d,
-            Decision::RequestGlobalCallback { low_id, source_server, .. }
-                if *low_id == low(7) && *source_server == server)),
-        "Low-ID global source must request a per-server callback: {decisions:?}"
-    );
-    // Its slot-release deadline is the brain's next wake.
-    assert_eq!(state.next_wake(), Some(t0() + CALLBACK_TIMEOUT));
+    // No client asks a server it is not logged into (ADR-0051).
     assert!(
         !decisions
             .iter()
             .any(|d| matches!(d, Decision::RequestCallback { .. })),
-        "a global Low-ID source must not use the connected-server callback"
+        "a global Low-ID source has no callback: {decisions:?}"
     );
 }
 
@@ -47,7 +37,10 @@ fn kad_sightings_dial_direct_high_id_sources() {
     let mut state = callback_state(Vec::new(), Vec::new(), true, 2);
     let direct = PeerSource::new(ClientId::from_u32(u32::from_le_bytes([10, 0, 0, 5])), 4662);
 
-    let decisions = via_kad(&mut state, vec![SourceSighting::plain(direct)]);
+    let decisions = via_kad(
+        &mut state,
+        vec![SourceSighting::plain(direct, Informant::Own)],
+    );
 
     assert!(
         decisions
@@ -71,6 +64,7 @@ fn a_direct_kad_rows_crypt_side_reaches_its_dial() {
         direct,
         Some(UserHash::from_bytes([0x5A; 16])),
         Some(SourceCryptOptions::from_byte(0x07)),
+        Informant::Own,
     );
 
     let _ = via_kad(&mut state, vec![row]);
@@ -102,6 +96,7 @@ fn a_retired_hellos_required_crypt_does_not_outlive_its_worker() {
             direct,
             Some(UserHash::from_bytes([0x5A; 16])),
             Some(SourceCryptOptions::from_byte(0x01)),
+            Informant::Own,
         )
     };
 
@@ -143,6 +138,7 @@ fn a_retired_hellos_disabled_crypt_does_not_outlive_its_worker() {
         direct,
         Some(hash),
         Some(SourceCryptOptions::from_byte(0x03)),
+        Informant::Own,
     );
 
     let _ = via_kad(&mut state, vec![requesting_row]);
@@ -213,7 +209,10 @@ fn kad_sightings_drop_a_low_id_row_entirely() {
         tcp_port: 4662,
     });
 
-    let decisions = via_kad(&mut state, row.sighting().into_iter().collect());
+    let decisions = via_kad(
+        &mut state,
+        row.sighting(Informant::Own).into_iter().collect(),
+    );
 
     assert!(
         decisions.is_empty(),
@@ -234,10 +233,9 @@ fn a_kad_buddy_row_becomes_a_punchable_candidate_and_never_a_server_callback() {
     let decisions = via_kad(&mut state, vec![kad_buddy_row(0x81)]);
 
     assert!(
-        !decisions.iter().any(|d| matches!(
-            d,
-            Decision::RequestCallback { .. } | Decision::RequestGlobalCallback { .. }
-        )),
+        !decisions
+            .iter()
+            .any(|d| matches!(d, Decision::RequestCallback { .. })),
         "no server can be asked to relay for a Kad row: {decisions:?}"
     );
     assert!(
@@ -264,7 +262,6 @@ fn a_kad_buddy_row_without_the_natt_bit_opens_no_road_for_a_low_id_downloader() 
         !decisions.iter().any(|d| matches!(
             d,
             Decision::RequestCallback { .. }
-                | Decision::RequestGlobalCallback { .. }
                 | Decision::RequestBuddyCallback { .. }
                 | Decision::FallToNatTraversal { .. }
         )),
@@ -300,9 +297,7 @@ fn global_sightings_open_no_road_for_a_bare_low_id_global_without_callback_capab
     assert!(
         !decisions.iter().any(|d| matches!(
             d,
-            Decision::RequestGlobalCallback { .. }
-                | Decision::RequestCallback { .. }
-                | Decision::FallToNatTraversal { .. }
+            Decision::RequestCallback { .. } | Decision::FallToNatTraversal { .. }
         )),
         "a Low-ID global source stays unusable when rmule cannot be called back: {decisions:?}"
     );
@@ -345,10 +340,9 @@ fn a_sentinel_ipv6_source_is_pooled_and_dialed_rather_than_called_back() {
         "the IPv6 source must be dialed in its own family: {decisions:?}"
     );
     assert!(
-        !decisions.iter().any(|d| matches!(
-            d,
-            Decision::RequestCallback { .. } | Decision::RequestGlobalCallback { .. }
-        )),
+        !decisions
+            .iter()
+            .any(|d| matches!(d, Decision::RequestCallback { .. })),
         "an IPv6 source needs no broker: {decisions:?}"
     );
 }
@@ -358,8 +352,8 @@ fn a_sentinel_ipv6_source_is_pooled_and_dialed_rather_than_called_back() {
 mod crypt_stance {
     use super::*;
     use rmule_primitives::{
-        ClientId, CryptStance, OutboundCrypt, PeerSource, SourceCryptOptions, SourceSighting,
-        UserHash,
+        ClientId, CryptStance, Informant, OutboundCrypt, PeerSource, SourceCryptOptions,
+        SourceSighting, UserHash,
     };
 
     const HASH: UserHash = UserHash::from_bytes([0x5A; 16]);
@@ -371,6 +365,7 @@ mod crypt_stance {
             direct,
             Some(hash),
             options.map(SourceCryptOptions::from_byte),
+            Informant::Own,
         )
     }
 
@@ -382,6 +377,7 @@ mod crypt_stance {
             PeerSource::HighId(v4),
             Some(hash),
             options.map(SourceCryptOptions::from_byte),
+            Informant::Own,
         );
         let _ = via_exchange(state, peer(1), vec![source]);
     }
@@ -494,7 +490,7 @@ fn known_sources_count_the_slots_and_the_pools_and_drop_a_retired_source() {
 fn known_sources_count_a_source_that_queued_us_once() {
     let mut state = callback_state(vec![peer(1)], Vec::new(), true, 1);
     let _ = state.start(t0());
-    let _ = state.on_worker_event(t0(), peer(1), PeerWorkerEvent::Connected);
+    let _ = connect(&mut state, t0(), peer(1));
     let _ = state.on_worker_event(t0(), peer(1), PeerWorkerEvent::Queued { rank: 3 });
     assert_eq!(state.known_sources(), 1, "held by its worker and the queue");
 

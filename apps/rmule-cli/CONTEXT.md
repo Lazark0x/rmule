@@ -26,8 +26,8 @@ _Avoid_: workspace, home, profile dir
 **Run Log**:
 Core's `rmule.log` in the **Data Directory** (ADR-0075), opened by a command
 that runs a core (`add`) at the level the *Full run log* preference
-(`run_log_full`, shared with `rmule`) sets: the records of the events the
-command receives, and the reachability trail core writes itself. With the
+(`run_log_full`, shared with `rmule`) sets: core writes the record of every
+event it sends and the reachability trail. With the
 global `--verbose` flag every record is also written to stderr as the file
 holds it; stderr otherwise carries only the command's own lines.
 _Avoid_: debug output, trace, verbose log
@@ -40,6 +40,10 @@ deliberate exception, documented with ADR-0043's live smoke run — the core's K
 download-coupled, and a join-only diagnostic does not fit it. Any *product* Kad
 behaviour still goes through the core.
 _Avoid_: kad daemon, node command
+
+**Exit code**:
+The one way a script reads how a run ended: 0 done, 1 anything else, 2 unreadable command line or link, 3 refused by the engine, 4 failed or cancelled, 5 nothing to reach, 6 `--timeout` ran out, 7 stopped by a signal. `--help` lists them.
+_Avoid_: status, return value
 
 ## Relationships
 

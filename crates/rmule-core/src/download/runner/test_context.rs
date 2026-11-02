@@ -59,9 +59,12 @@ impl PeerTransferService for NeverTransfers {
 pub(in crate::download) struct Held {
     pub(in crate::download) download_reach_rx: mpsc::Receiver<DownloadReach>,
     /// Every event the run sends.
-    pub(in crate::download) evt_rx: mpsc::Receiver<crate::service::CoreEvent>,
+    pub(in crate::download) evt_rx: crate::service::EventStream,
     /// Held, never sent on: dropping it is what would stop the run.
     pub(in crate::download) _stop_tx: watch::Sender<StopReason>,
+    /// Where the run's in-place reports arrive: the test answers as the
+    /// actor would.
+    pub(in crate::download) in_place_rx: mpsc::Receiver<crate::download::FinalFileInPlace>,
 }
 
 /// Build the context around `source_lookup` and `peer_transfer`.
@@ -71,30 +74,40 @@ pub(in crate::download) fn runner_context<S, P>(
     diagnostics: crate::diagnostics::DiagnosticsState,
 ) -> (RunnerContext<S, P>, Held) {
     let store = rmule_testkit::memory_store();
-    let (evt_tx, evt_rx) = mpsc::channel(8);
+    let (evt_tx, evt_rx) = crate::service::outbox(Default::default());
     let (stop_tx, stop_rx) = watch::channel(StopReason::Active);
-    let (global_callback_tx, _global_callback_rx) = mpsc::channel(4);
     let (download_reach_tx, download_reach_rx) = mpsc::channel(4);
+    let (in_place_tx, in_place_rx) = mpsc::channel(4);
     let rt = Arc::new(SharedRuntime {
+        write_cache: crate::download::write_cache::WriteCache::default(),
         store: Arc::new(crate::store::download::DurableDownloadRepository::new(
             store.clone(),
         )),
         source_lookup: Arc::new(Mutex::new(source_lookup)),
         source_asks: Arc::default(),
+        connection_budget: crate::download::connection_budget::ConnectionBudget::shared(
+            crate::PeerConnections::default(),
+        ),
+        queue_standings: crate::download::queue_standings::QueueStandings::shared(),
+        spent_names: crate::download::spent_names::SpentNames::shared(),
+        held_places: crate::held_places::SharedHeldPlaces::default(),
         peer_transfer: Arc::new(Mutex::new(peer_transfer)),
         credit: Arc::new(crate::store::credit::DurableCreditStore::new(store)),
         evt_tx,
         diagnostics,
         server_session: crate::server_session::SharedServerSession::default(),
         awaited_inbound: crate::adapters::AwaitedInbound::default(),
+        peer_links: crate::adapters::SharedPeerLinks::default(),
+        hash_turn: crate::directory_scan::HashTurn::default(),
         source_lookup_timeout: Duration::from_secs(5),
         callback_timeout: Duration::from_secs(30),
-        global_source_registry: Arc::new(std::sync::Mutex::new(HashMap::new())),
-        global_callback_tx,
-        kad_source_registry: Arc::new(std::sync::Mutex::new(HashMap::new())),
+        global_source_registry: Arc::new(parking_lot::Mutex::new(HashMap::new())),
+        kad_source_registry: Arc::new(parking_lot::Mutex::new(HashMap::new())),
         reask_reply_sink: Arc::default(),
         client_udp_tx: None,
-        ip_filter: Arc::new(std::sync::RwLock::new(crate::ip_filter::IpFilter::default())),
+        ip_filter: Arc::new(parking_lot::RwLock::new(
+            crate::ip_filter::IpFilter::default(),
+        )),
         ipv6_advert: crate::adapters::SharedIpv6Advert::default(),
         reach: crate::reachability::SharedSelfReach::new(
             crate::KadReachLevel::fixed(false),
@@ -103,7 +116,11 @@ pub(in crate::download) fn runner_context<S, P>(
         ),
         download_reach_tx,
         peer_roster: crate::peer_roster::SharedPeerRoster::default(),
+        bans: crate::ban_store::SharedBanStore::default(),
         resolver: crate::name_resolver::FakeNameResolver::knowing(&[]),
+        completion_fs: Arc::new(crate::download::OsCompletionFs),
+        copy_turn: Arc::new(tokio::sync::Semaphore::new(1)),
+        in_place_tx,
     });
     let runner = RunnerContext {
         rt,
@@ -111,7 +128,12 @@ pub(in crate::download) fn runner_context<S, P>(
         part_file: Mutex::new(None),
         later_links: Mutex::new(mpsc::unbounded_channel().1),
         repair: std::sync::atomic::AtomicBool::new(false),
+        volume_stop: parking_lot::Mutex::new(None),
+        hole_probed: std::sync::atomic::AtomicBool::new(false),
         seeds_tx: watch::channel(Vec::new()).0,
+        served: None,
+        run: crate::download::RunNumber::default(),
+        completion: Arc::new(crate::download::CompletionGate::open()),
     };
     (
         runner,
@@ -119,20 +141,61 @@ pub(in crate::download) fn runner_context<S, P>(
             download_reach_rx,
             evt_rx,
             _stop_tx: stop_tx,
+            in_place_rx,
         },
     )
 }
 
 /// The loop context of download 1 over `runner` for `file`, its brain
 /// `state`: no worker live, no callback filed, nobody reachable.
+/// A one-part, callback-capable download state, started: the brain half of a
+/// harness that drives the drain.
+pub(super) fn one_part_state() -> DownloadState {
+    let mut state = DownloadState::new(
+        DownloadId::from_u64(1),
+        crate::download::state::ContentFacts {
+            file_hash: rmule_primitives::FileHash::from_bytes([0; 16]),
+            file_size: 1_000,
+            link_part_hash_set: None,
+            resolved: crate::hashing::ResolvedHashSet {
+                authority: crate::VerificationAuthority::FileHashOnly,
+                hashes: Vec::new(),
+            },
+            aich_root: crate::download::state::AichRootAuthority::Rootless,
+            verified_parts: Vec::new(),
+            arrived: Vec::new(),
+            order: crate::scheduler::PartOrder::Rarest,
+        },
+        crate::download::state::StartingFacts {
+            distrusted: std::collections::HashSet::new(),
+            seeds_written: 0,
+        },
+        crate::download::state::SourcingPosture {
+            callback_capability: crate::download::state::CallbackCapability::server_high_id(),
+            dial: crate::dialable::DialPosition::default(),
+            discovery_active: false,
+            client_udp: false,
+        },
+        std::time::Duration::from_secs(30),
+        crate::download::connection_budget::BudgetSeat::ceiling(1),
+    );
+    let _ = state.start(std::time::Instant::now());
+    state
+}
+
 pub(super) fn loop_ctx<'a, S, P>(
     runner: &'a RunnerContext<S, P>,
     file: &'a Ed2kFileLink,
     state: DownloadState,
-) -> LoopCtx<'a, S, P> {
+) -> LoopCtx<'a, S, P>
+where
+    S: Send,
+    P: Send,
+{
     let (fact_tx, fact_rx) = mpsc::channel(8);
     let (adopt_tx, _adopt_rx) = mpsc::channel(4);
     let (retire_tx, _retire_rx) = mpsc::channel(4);
+    let (held_tx, _held_rx) = mpsc::channel(4);
     LoopCtx {
         state,
         runner,
@@ -166,12 +229,16 @@ pub(super) fn loop_ctx<'a, S, P>(
                     crate::own_identity::SharedOwnIdentity::default(),
                     crate::natt::front::SharedNattFront::default(),
                 ),
-                our_tcp_port: 4662,
             },
             adopt_tx,
             retire_tx,
+            held_tx,
             runner.rt.awaited_inbound.clone(),
         ),
         queued_relations: std::collections::HashSet::new(),
+        awaited_grants: super::awaited_grants::AwaitedGrants::new(runner.rt.peer_links.clone()),
+        held_places: runner.rt.held_places.seat(DownloadId::from_u64(1)),
+        persist: super::persist_lane::PersistLane::new(runner, DownloadId::from_u64(1), file),
+        republished: None,
     }
 }

@@ -60,6 +60,7 @@ use crate::flow::logs::{collect_amule_logfile, collect_kad_logs};
 use crate::flow::mesh::{KAD_TCP_PORT, KadCaptureOptions, KadNodeSpec, start_kad_node};
 use crate::flow::wire_filter::{OP_EDONKEYPROT, OP_EMULEPROT, WireFilter};
 use crate::kad_seed::KadContact;
+use crate::verdict::Verdict;
 
 mod firewall_check_client;
 use firewall_check_client::ReleaseGate;
@@ -449,7 +450,7 @@ impl AmuleRequesterLeg {
             ));
         }
         let pass = claims.iter().all(|(_, holds)| *holds);
-        let verdict = if pass { "PASS" } else { "FAIL" };
+        let verdict = if pass { Verdict::Pass } else { Verdict::Fail };
 
         let mut out = String::from(
             "# Flow M's stock aMule requester (kad-core-buddy --amule-requester): aMule's own 0x52 to\n\
@@ -494,7 +495,7 @@ impl AmuleRequesterLeg {
             .layout
             .kad_dir()
             .join("kad-amule-requester-verdict.toml");
-        fs::write(&path, &out).with_context(|| format!("write {}", path.display()))?;
+        crate::verdict::write(&path, &out)?;
         println!("kad-amule-requester verdict={verdict}");
         if !pass {
             let failing: Vec<&str> = claims
@@ -658,7 +659,7 @@ fn adopted_id_only_row(body: &[u8]) -> Option<String> {
     let id_only = first.source_type == 3
         && first.buddy.is_some_and(|buddy| {
             buddy.buddy_udp.is_none()
-                && *buddy.buddy_id.as_bytes()
+                && *buddy.buddy_id.word_swapped().as_bytes()
                     == crate::flow::kad_buddy::core::KAD_CORE_BUDDY_RMULE_KAD_ID
         });
     let one_source = facts.iter().all(|row| row.user_hash == first.user_hash);
@@ -810,7 +811,7 @@ mod tests {
             udp_port: 4672,
             encryption: None,
             buddy: Some(KadBuddyContact {
-                buddy_id: KadId::from_bytes(id),
+                buddy_id: KadId::from_bytes(kad_wire_id(id)),
                 buddy_udp,
                 buddy_ipv6: None,
                 buddy_udp_ipv6: None,

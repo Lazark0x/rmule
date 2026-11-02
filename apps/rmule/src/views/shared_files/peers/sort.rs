@@ -7,9 +7,15 @@
 //! rank — a slot-holder first, then the queue in its own order — never by the
 //! words either renders.
 
+use crate::stored_keys as column_keys;
+use crate::words::columns;
 use std::borrow::Cow;
+use std::sync::Arc;
+use std::time::Instant;
 
 use rmule_primitives::PeerEndpoint;
+
+use crate::row_filter::keeps_row;
 
 use super::super::SharedView;
 use super::file_label;
@@ -44,18 +50,22 @@ pub(in crate::views::shared_files) struct PeerLine {
     file: Option<String>,
 }
 
-/// A slot-holder first, then the queue by its rank: the State column's rank.
+/// A slot-holder first, then a waiter dialled back to its held slot, then
+/// the queue by its rank: the State column's rank.
 fn state_rank(state: UploadState) -> u64 {
     match state {
         UploadState::Uploading { .. } => 0,
-        UploadState::Queued { rank, .. } => 1 + u64::from(rank),
+        UploadState::DialingBack { .. } => 1,
+        UploadState::Queued { rank, .. } => 2 + u64::from(rank),
     }
 }
 
 impl PeerLine {
     fn new(peer: &UploadPeer, state: &UiState, ranks: &SoftwareRanks) -> Self {
         let file = match peer.state {
-            UploadState::Uploading { file } | UploadState::Queued { file, .. } => file,
+            UploadState::Uploading { file }
+            | UploadState::DialingBack { file }
+            | UploadState::Queued { file, .. } => file,
         };
         let (name, named) = file_label(state, file);
         let bps = state
@@ -79,18 +89,38 @@ impl SortedTable for PeersTable {
     type Row = PeerLine;
     type Column = PeerColumn;
     type Identity = PeerEndpoint;
-    const TABLE: &'static str = "upload_peers";
+    const TABLE: &'static str = column_keys::TABLE_UPLOAD_PEERS;
     const COLUMNS: &'static [ColumnSpec<PeerColumn>] = &[
-        ColumnSpec::new(PeerColumn::Peer, "peer", "Peer", ColumnKind::Text),
+        ColumnSpec::new(
+            PeerColumn::Peer,
+            column_keys::PEER,
+            columns::PEER,
+            ColumnKind::Text,
+        ),
         ColumnSpec::new(
             PeerColumn::Software,
-            "software",
-            "Software",
+            column_keys::SOFTWARE,
+            columns::SOFTWARE,
             ColumnKind::Rank,
         ),
-        ColumnSpec::new(PeerColumn::State, "state", "State", ColumnKind::Rank),
-        ColumnSpec::new(PeerColumn::Speed, "speed", "Speed", ColumnKind::Quantity),
-        ColumnSpec::new(PeerColumn::File, "file", "File", ColumnKind::Text),
+        ColumnSpec::new(
+            PeerColumn::State,
+            column_keys::STATE,
+            columns::STATE,
+            ColumnKind::Rank,
+        ),
+        ColumnSpec::new(
+            PeerColumn::Speed,
+            column_keys::SPEED,
+            columns::SPEED,
+            ColumnKind::Quantity,
+        ),
+        ColumnSpec::new(
+            PeerColumn::File,
+            column_keys::FILE,
+            columns::FILE,
+            ColumnKind::Text,
+        ),
     ];
     const NAME: PeerColumn = PeerColumn::Peer;
 
@@ -112,32 +142,71 @@ impl SortedTable for PeersTable {
     }
 }
 
+/// What the pane's order stands on: the peers, the files they name, the
+/// tick's rates (which a stopped core clears), the sort and the filters.
+#[derive(PartialEq)]
+pub(in crate::views::shared_files) struct OrderKey {
+    peers: u64,
+    tick: Option<Instant>,
+    core_alive: bool,
+    shared: u64,
+    partial_shares: u64,
+    downloads: u64,
+    active_only: bool,
+    sort: TableSort<PeersTable>,
+    typed: u64,
+}
+
 impl SharedView {
     /// The peers the pane shows, in display order.
     pub(in crate::views::shared_files) fn ordered_peers<'a>(
         &self,
         state: &'a UiState,
     ) -> Vec<&'a UploadPeer> {
-        let visible = self.visible_peers(state);
-        let ranks = SoftwareRanks::new(visible.iter().filter_map(|peer| peer.software.as_ref()));
-        let lines: Vec<PeerLine> = visible
+        self.peer_order(state)
             .iter()
-            .map(|peer| PeerLine::new(peer, state, &ranks))
-            .collect();
-        self.peer_sort
-            .order(&lines)
-            .into_iter()
-            .map(|at| visible[at])
+            .filter_map(|peer| state.upload_peers.get(peer))
             .collect()
     }
 
     /// The shown peers' endpoints in display order — what the cursor is
     /// placed against.
     pub(in crate::views::shared_files) fn peer_ids(&self, state: &UiState) -> Vec<PeerEndpoint> {
-        self.ordered_peers(state)
-            .into_iter()
-            .map(|peer| peer.peer)
-            .collect()
+        self.peer_order(state).to_vec()
+    }
+
+    /// What the pane's order and widths stand on now.
+    pub(in crate::views::shared_files) fn peer_key(&self, state: &UiState) -> OrderKey {
+        OrderKey {
+            peers: state.upload_peers.revision(),
+            tick: state.last_snapshot_at,
+            core_alive: state.core_alive,
+            shared: state.shared.revision(),
+            partial_shares: state.partial_shares.revision(),
+            downloads: state.downloads.revision(),
+            active_only: self.active_only,
+            sort: self.peer_sort,
+            typed: self.peer_filter.generation(),
+        }
+    }
+
+    /// A frame asks more than once, and the queue can hold thousands.
+    fn peer_order(&self, state: &UiState) -> Arc<[PeerEndpoint]> {
+        self.peers_memo.get(self.peer_key(state), || {
+            let visible = self.visible_peers(state);
+            let ranks =
+                SoftwareRanks::new(visible.iter().filter_map(|peer| peer.software.as_ref()));
+            let lines: Vec<PeerLine> = visible
+                .iter()
+                .map(|peer| PeerLine::new(peer, state, &ranks))
+                .collect();
+            self.peer_sort
+                .order(&lines)
+                .into_iter()
+                .filter(|at| keeps_row::<PeersTable>(&self.peer_filter, &lines[*at]))
+                .map(|at| lines[at].peer)
+                .collect()
+        })
     }
 
     /// Take up the peers pane's sort as the durable preferences kept it.
@@ -152,13 +221,9 @@ impl SharedView {
         column: u16,
         row: u16,
     ) -> Option<ViewOutcome> {
-        self.peer_sort.header_click(
-            self.peer_header_area,
-            &self.peer_header_cols,
-            1,
-            column,
-            row,
-        )
+        let (area, widths) = self.drawn_peers.header();
+        self.peer_sort
+            .header_click(area, widths, crate::table::GAP, column, row)
     }
 }
 
@@ -238,6 +303,17 @@ mod tests {
         state
     }
 
+    #[test]
+    fn what_the_pane_does_not_read_rebuilds_nothing() {
+        let mut state = four_peers();
+        let view = SharedView::default();
+        let order = view.peer_order(&state);
+
+        state.log_flash(crate::words::Sentence::for_test("elsewhere"), now());
+
+        assert!(Arc::ptr_eq(&order, &view.peer_order(&state)));
+    }
+
     fn octets(view: &SharedView, state: &UiState) -> Vec<u8> {
         view.ordered_peers(state)
             .iter()
@@ -253,7 +329,7 @@ mod tests {
     fn every_peer_column_orders_by_its_value_with_the_pane_focused() {
         let state = four_peers();
         let mut view = SharedView::default();
-        view.handle_key(press(KeyCode::Char('a')), &state); // every peer
+        view.handle_key(press(KeyCode::Char('f')), &state); // every peer
         view.handle_key(press(KeyCode::Tab), &state);
         assert_eq!(octets(&view, &state), [2, 3, 9, 10]);
         let expect = [
@@ -293,7 +369,7 @@ mod tests {
     fn the_peer_cursor_follows_its_peer_as_the_queue_moves() {
         let mut state = four_peers();
         let mut view = SharedView::default();
-        view.handle_key(press(KeyCode::Char('a')), &state);
+        view.handle_key(press(KeyCode::Char('f')), &state);
         view.handle_key(press(KeyCode::Tab), &state);
         while view.peer_sort.column() != PeerColumn::State {
             view.handle_key(press(KeyCode::Char('s')), &state);

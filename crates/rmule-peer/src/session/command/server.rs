@@ -3,16 +3,20 @@
 //! sources, the slot grant, the queue rank and the blocks on a granted slot.
 //! Who gets a slot is core's decision; these only carry it out.
 
-use rmule_primitives::{AichRootHash, Ed2kText, FileHash, PartHash, SourceSighting};
+use rmule_primitives::{AichRootHash, Ed2kText, FileHash, PartHashList, SourceSighting};
 
-use crate::file::PartBitmap;
 use crate::hash_set::HashSetAnswer;
+use crate::wire_status::WireStatus;
 
 use super::super::PeerSession;
+use crate::source_exchange::ServedSourcesVersion;
 
 /// What we answer the peer.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ServerCommand {
+    /// The upload session on this link is over and the peer waits again:
+    /// clears the served slot and frames `OP_OUTOFPARTREQS`.
+    EndUploadSession,
     /// Answer an inbound `RequestFileName` (the peer
     /// asked the file's name). Core looks the file up in the Shared File
     /// Registry and supplies the name, or sends `AnswerFileNotFound`.
@@ -34,7 +38,7 @@ pub enum ServerCommand {
         /// The file the bitmap describes.
         file_hash: FileHash,
         /// Which parts we hold.
-        bitmap: PartBitmap,
+        bitmap: WireStatus,
     },
     /// Answer an inbound `HashSetRequest` with the
     /// part-hash set (`OP_HASHSETANSWER`).
@@ -42,7 +46,7 @@ pub enum ServerCommand {
         /// The file the set belongs to.
         file_hash: FileHash,
         /// One hash per part, in part order.
-        part_hashes: Vec<PartHash>,
+        part_hashes: PartHashList,
     },
     /// Answer an inbound `OP_AICHREQUEST` with a part's AICH
     /// recovery data (`OP_AICHANSWER`, ADR-0038). Core builds the tree for the
@@ -57,10 +61,18 @@ pub enum ServerCommand {
         /// The branch itself, built by core from the file's tree.
         recovery_data: Vec<u8>,
     },
+    /// Refuse an inbound `OP_AICHREQUEST`: `OP_AICHANSWER` with the file hash
+    /// alone, so the asker tries another source at once (ADR-0038).
+    RefuseAich {
+        /// The file the ask was about.
+        file_hash: FileHash,
+    },
     /// Answer an inbound `OP_AICHFILEHASHREQ` with our AICH
     /// master `root` for the file (`OP_AICHFILEHASHANS`, ADR-0038).
     AnswerAichFileHash {
-        /// Our master root for the connection's file — the wire carries no file hash here.
+        /// The file asked about: the answer may land long after the ask.
+        file_hash: FileHash,
+        /// Our master root for it.
         root: AichRootHash,
     },
     /// Grant the remote peer an upload slot for
@@ -77,23 +89,38 @@ pub enum ServerCommand {
         /// Places ahead of the peer in our queue.
         rank: u16,
     },
-    /// Push one block of part bytes to the granted
-    /// peer (`OP_SENDINGPART`). Core reads `bytes` from the Content Store;
-    /// the session frames it only when `served_slot` matches
+    /// Push one block of part bytes to the granted peer, cut into packets
+    /// of about 10 KiB as aMule's uploader does (`OP_SENDINGPART`, or a run
+    /// of `OP_COMPRESSEDPART`, ADR-0031). Core reads `bytes` from the Content
+    /// Store; the session frames it only when `served_slot` matches
     /// `file_hash`.
     SendBlock {
         /// The file the bytes come from.
         file_hash: FileHash,
         /// Absolute offset of the first byte.
         start: u64,
-        /// Absolute offset one past the last.
+        /// Absolute offset one past the last. Core reads exactly
+        /// `start..end`; the frames name the range `bytes` spans from `start`.
         end: u64,
         /// The block, read by core from the content store.
         bytes: Vec<u8>,
     },
+    /// Send one block as a run of `OP_COMPRESSEDPART`. Core deflates it, off
+    /// the async runtime, for a peer that inflates (ADR-0031); the session
+    /// only frames the stream.
+    SendDeflatedBlock {
+        /// The file the bytes belong to.
+        file_hash: FileHash,
+        /// Absolute offset of the block's first byte.
+        start: u64,
+        /// Absolute offset one past the block's last byte.
+        end: u64,
+        /// The block's zlib stream, shorter than the block and named by a `u32`.
+        stream: Vec<u8>,
+    },
     /// Answer a peer's source-exchange request (ADR-0055) with the
     /// filtered, capped `sources` core picked from its pools. The session
-    /// frames them in the wire form it chose when the ask arrived:
+    /// frames them in `form`, the wire form it chose when the ask arrived:
     /// `OP_ANSWERSOURCES` (`0x82`) or `OP_ANSWERSOURCES2` (`0x84`), classic
     /// entries or ExtSX records, pack-attempted above `PEER_PACK_THRESHOLD`
     /// (354 bytes, ADR-0053). A classic answer leaves out every source with
@@ -102,6 +129,8 @@ pub enum ServerCommand {
     AnswerSources {
         /// The file the sources are for.
         file_hash: FileHash,
+        /// The wire form the ask carried, echoed.
+        form: ServedSourcesVersion,
         /// The rows to answer with, already filtered and capped by core.
         sources: Vec<SourceSighting>,
     },
@@ -160,22 +189,39 @@ impl PeerSession {
                     );
                 }
             }
-            ServerCommand::AnswerAichFileHash { root } => {
+            ServerCommand::RefuseAich { file_hash } => {
                 if self.require_identified() {
-                    self.answer_aich_file_hash(root);
+                    let file_hash = Some(file_hash);
+                    self.write_packet(crate::aich::AichRefused { file_hash }.encode_packet());
+                }
+            }
+            ServerCommand::AnswerAichFileHash { file_hash, root } => {
+                if self.require_identified() {
+                    self.answer_aich_file_hash(file_hash, root);
                 }
             }
             ServerCommand::GrantSlot { file_hash } => self.grant_slot(file_hash),
+            ServerCommand::EndUploadSession => self.end_upload_session(),
             ServerCommand::SetQueueRank { rank } => self.set_queue_rank(rank),
             ServerCommand::SendBlock {
                 file_hash,
                 start,
-                end,
+                end: _,
                 bytes,
-            } => self.send_block(file_hash, start, end, bytes),
-            ServerCommand::AnswerSources { file_hash, sources } => {
+            } => self.send_block(file_hash, start, bytes),
+            ServerCommand::SendDeflatedBlock {
+                file_hash,
+                start,
+                end,
+                stream,
+            } => self.send_deflated_block(file_hash, start, end, stream),
+            ServerCommand::AnswerSources {
+                file_hash,
+                form,
+                sources,
+            } => {
                 if self.require_identified() {
-                    self.answer_sources(file_hash, sources);
+                    self.answer_sources(file_hash, form, sources);
                 }
             }
         }

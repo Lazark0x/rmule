@@ -22,7 +22,7 @@
 //! answered and would shift every later place, so until an answer arrives with
 //! nothing outstanding to pay it back, or [`OWED_LAPSE`] passes and the server
 //! is taken to have dropped it, answers have no owner and their rows go only
-//! where they prove a query (ADR-0034, "Owed answers lapse").
+//! where they prove a query (ADR-0034).
 //!
 //! The session keeps its own copy of the server's related-search grant, moved
 //! by each `OP_IDCHANGE`: a **Related-Files Search** goes on the link only under

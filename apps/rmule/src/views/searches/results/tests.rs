@@ -1,4 +1,4 @@
-//! Unit tests for the results table: columns, tints, wrapping and goldens.
+//! Unit tests for the results table: columns, tints, the cut and goldens.
 
 use ratatui::crossterm::event::KeyCode;
 use std::time::Instant;
@@ -21,15 +21,6 @@ fn source_tint_matches_the_inventory_thresholds() {
     assert_eq!(source_tint(99, &theme), theme.fg);
     assert_eq!(source_tint(100, &theme), theme.good);
     assert_eq!(source_tint(1234, &theme), theme.good);
-}
-
-#[test]
-fn file_size_renders_binary_units() {
-    assert_eq!(format_size(0), "0 B");
-    assert_eq!(format_size(1000), "1000 B");
-    assert_eq!(format_size(4_194_304), "4.0 MB");
-    assert_eq!(format_size(734_003_200), "700.0 MB");
-    assert_eq!(format_size(3_221_225_472), "3.0 GB");
 }
 
 #[test]
@@ -82,7 +73,7 @@ fn type_cell_classifies_by_name_then_tag_then_falls_back_to_an_em_dash() {
     );
     assert_eq!(
         result_type_text(&server_result(0x11, "payload", 10, 1, 0)),
-        "—"
+        "unknown"
     );
 }
 
@@ -90,7 +81,7 @@ fn type_cell_classifies_by_name_then_tag_then_falls_back_to_an_em_dash() {
 fn result_rows_are_tinted_by_their_source_count() {
     let theme = Theme::default_dark();
     let state = state_with(three_tier_results(), SearchStatus::Completed { total: 3 });
-    let mut view = SearchesView::new();
+    let mut view = SearchesView::by_name();
     let buffer = draw_golden(&mut view, &state);
     let area = buffer.area;
     // Find each row by its unique name, then read the first content cell's
@@ -104,7 +95,7 @@ fn result_rows_are_tinted_by_their_source_count() {
                 for x in (area.left() + 1)..(area.right() - 1) {
                     let cell = buffer.cell((x, y))?;
                     let symbol = cell.symbol();
-                    if symbol != " " && symbol != "│" {
+                    if symbol != " " && symbol != "│" && symbol != "▸" {
                         return cell.style().fg;
                     }
                 }
@@ -121,7 +112,7 @@ fn result_rows_are_tinted_by_their_source_count() {
 fn golden_searches_results() {
     let state = state_with(three_tier_results(), SearchStatus::Completed { total: 3 });
     let theme = Theme::default_dark();
-    let mut view = SearchesView::new().having_sent("ubuntu");
+    let mut view = SearchesView::by_name().having_sent("ubuntu");
     view.handle_key(press(KeyCode::Char('g')), &state); // select the first row
     assert_golden("searches_results", 78, 21, |frame| {
         view.draw(frame, frame.area(), &state, &theme, Instant::now());
@@ -134,7 +125,7 @@ fn golden_searches_results() {
 fn golden_searches_narrow_headers_whole() {
     let state = state_with(three_tier_results(), SearchStatus::Completed { total: 3 });
     let theme = Theme::default_dark();
-    let mut view = SearchesView::new().having_sent("ubuntu");
+    let mut view = SearchesView::by_name().having_sent("ubuntu");
     view.handle_key(press(KeyCode::Char('g')), &state);
     assert_golden("searches_narrow_headers", 26, 21, |frame| {
         view.draw(frame, frame.area(), &state, &theme, Instant::now());
@@ -142,7 +133,7 @@ fn golden_searches_narrow_headers_whole() {
 }
 
 #[test]
-fn golden_wrap_overlong_result_name() {
+fn golden_cut_overlong_result_name() {
     let state = state_with(
         vec![
             server_result(0x44, &long_name(), 1_073_741_824, 250, 12),
@@ -151,37 +142,44 @@ fn golden_wrap_overlong_result_name() {
         SearchStatus::Completed { total: 2 },
     );
     let theme = Theme::default_dark();
-    let mut view = SearchesView::new().having_sent("ubuntu");
+    let mut view = SearchesView::by_name().having_sent("ubuntu");
     view.handle_key(press(KeyCode::Char('g')), &state);
-    assert_golden("searches_wrap_long_name", 80, 24, |frame| {
+    assert_golden("searches_cut_long_name", 80, 24, |frame| {
         view.draw(frame, frame.area(), &state, &theme, Instant::now());
     });
 }
 
+/// One line for a 200-character name, and a list of 426 results all at one
+/// line each: the rows the report counted at 80x24.
 #[test]
-fn an_overlong_result_name_wraps_whole_instead_of_being_cut() {
+fn an_overlong_result_name_is_cut_and_every_row_keeps_one_line() {
     let name = long_name();
-    assert_eq!(name.chars().count(), 200);
-    let state = state_with(
-        vec![server_result(0x44, &name, 1_073_741_824, 250, 12)],
-        SearchStatus::Completed { total: 1 },
-    );
-    let mut view = SearchesView::new();
+    let results = (0..40)
+        .map(|n| server_result(0x44 + n, &name, 1_073_741_824, 250, 12))
+        .collect();
+    let state = state_with(results, SearchStatus::Completed { total: 40 });
+    let mut view = SearchesView::by_name();
     let rows = screen_lines(&draw_searches(&mut view, &state, 80, 24));
-    // The name's tail reaches the screen, and no line carries a
-    // truncation ellipsis.
+    let cut = rows.iter().filter(|row| row.contains('…')).count();
     assert!(
-        rows.iter().any(|row| row.contains("END-OF-NAME.iso")),
-        "the 200-char name was cut:\n{}",
+        cut >= 10,
+        "ten rows at least at 80x24:\n{}",
         rows.join("\n")
     );
     assert!(
-        !rows.iter().any(|row| row.contains('…')),
-        "an ellipsis crept back in"
+        rows.iter()
+            .any(|row| row.contains('…') && row.contains(".iso")),
+        "the extension stays:\n{}",
+        rows.join("\n")
     );
-    // Its 200 characters occupy several rows of the one result row.
-    let name_rows = rows.iter().filter(|row| row.contains("long-long")).count();
-    assert!(name_rows >= 4, "the name wrapped over {name_rows} rows");
+    let said: String = rows
+        .iter()
+        .map(|row| row.trim_matches(|c| c == '│' || c == ' '))
+        .collect();
+    assert!(
+        said.contains("END-OF-NAME.iso"),
+        "the full name rides the Off-screen line"
+    );
 }
 
 /// A search held back by the search spacing says so on its status
@@ -272,8 +270,7 @@ fn a_search_completed_without_kad_says_so() {
 }
 
 /// A Kad-only search with no server to send to completes on Kad, and its
-/// entry says the server legs were not sent (ADR-0034, "A server leg's
-/// states").
+/// entry says the server legs were not sent (ADR-0034, "Legs").
 #[test]
 fn a_search_completed_with_no_server_says_its_server_legs_were_not_sent() {
     use rmule_core::{LegNotSent, SearchLegState as L, SearchLegs};
@@ -310,13 +307,33 @@ fn a_search_completed_with_no_server_says_its_server_legs_were_not_sent() {
 fn golden_searches_legs_counted() {
     let state = swept_state();
     let theme = Theme::default_dark();
-    let mut view = SearchesView::new().having_sent("ubuntu");
+    let mut view = SearchesView::by_name().having_sent("ubuntu");
     view.handle_key(press(KeyCode::Char('g')), &state);
     assert!(
         results_title(state.searches.get(&search_id(1)), None, true, false, false)
             .contains("other servers: 12 asked, 7 answered"),
     );
     assert_golden("searches_legs_counted", 110, 14, |frame| {
+        view.draw(frame, frame.area(), &state, &theme, Instant::now());
+    });
+}
+
+/// More results than the pane has lines (ADR-0072, "Viewport"): the bar
+/// takes the right column, its thumb part-way down, and the border counts
+/// the cursor's row; every column keeps its width less the bar's one.
+#[test]
+fn golden_searches_results_overflow() {
+    let results = (1..=40u8)
+        .map(|n| server_result(n, &format!("episode_{n:02}.mkv"), u64::from(n) << 20, 3, 0))
+        .collect();
+    let state = state_with(results, SearchStatus::Completed { total: 40 });
+    let theme = Theme::default_dark();
+    let mut view = SearchesView::by_name().having_sent("episode");
+    view.handle_key(press(KeyCode::Char('g')), &state);
+    for _ in 0..20 {
+        view.handle_key(press(KeyCode::Char('j')), &state);
+    }
+    assert_golden("searches_results_overflow", 78, 21, |frame| {
         view.draw(frame, frame.area(), &state, &theme, Instant::now());
     });
 }

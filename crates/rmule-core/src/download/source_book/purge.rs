@@ -5,16 +5,24 @@
 //! waits its own spacing since the last purge of *any* kind: one clock per
 //! file (`lastpurgetime`), the run's start counting as the last (`:3644`).
 //! Only a record no worker holds is let go: a pooled Low-ID candidate, or a
-//! standing in the RemoteQueued stage.
+//! standing in the RemoteQueued stage, and of those only one its download
+//! still holds: a record waiting on another download's standing is aMule's
+//! A4AF entry, which no purge walks.
+//!
+//! The same clock paces the **Source Handover** (ADR-0090): a no-needed-parts
+//! source another download has taken is noted [`NO_NEEDED_PARTS_PURGE_SPACING`]
+//! after the last purge whatever the file's count, and restarts the clock
+//! (`PartFile.cpp:1424-1437`).
 
 use std::time::{Duration, Instant};
 
 use rmule_primitives::PeerEndpoint;
 
 use super::SourceBook;
-use super::record::{Lane, RecordId, Stage};
+use super::record::{Lane, Record, RecordId, Stage};
 use crate::adapters::CallbackKey;
 use crate::dialable::DialPosition;
+use crate::download::queue_standings::StandingSeat;
 use crate::download::state::CallbackCapability;
 
 /// How many sources a file holds before any is let go: 80 % of aMule's
@@ -43,9 +51,8 @@ pub(crate) enum PurgeKind {
     /// re-promotes the moment a callback becomes possible, as the book's next
     /// fill does.
     LowToLow,
-    /// A standing whose source holds no part we lack (`DS_NONEEDEDPARTS`).
-    /// aMule first offers it to another download (`SwapToAnotherFile`);
-    /// rmule's downloads share no source, so none takes it over.
+    /// A standing whose source holds no part we lack (`DS_NONEEDEDPARTS`) and
+    /// that no other download took ([`SourceBook::hand_over`]).
     NoNeededParts,
     /// A standing whose `0x93` stands (`IsRemoteQueueFull`).
     QueueFull,
@@ -104,6 +111,62 @@ impl SourceBook {
         Some((kind, purged))
     }
 
+    /// Note the **Source Handover** due at `now`, oldest record first: a
+    /// no-needed-parts record whose role reads as waiting on another download,
+    /// once the kind's spacing has passed since the last purge, whatever the
+    /// file's count. Its rank goes, the clock restarts and the record stays.
+    pub(crate) fn hand_over(
+        &mut self,
+        now: Instant,
+        standings: &StandingSeat,
+    ) -> Option<PeerEndpoint> {
+        let last = self.purged_at?;
+        let roles: Vec<_> = self
+            .no_needed_parts_records()
+            .filter_map(|(id, record)| Some((id, standings.role(&self.place(record)?))))
+            .collect();
+        let mut oldest = None;
+        for (id, role) in roles {
+            let standing = self.records.get_mut(&id)?.standing.as_mut()?;
+            if standing.read_at_purge(role) && oldest.is_none_or(|held| id < held) {
+                oldest = Some(id);
+            }
+        }
+        if now.saturating_duration_since(last) < NO_NEEDED_PARTS_PURGE_SPACING {
+            return None;
+        }
+        let record = self.records.get_mut(&oldest?)?;
+        let Stage::RemoteQueued(peer) = record.stage else {
+            return None;
+        };
+        record.standing.as_mut()?.hand_over();
+        self.purged_at = Some(now);
+        Some(peer)
+    }
+
+    /// When the next **Source Handover** is due, while one waits to be noted.
+    pub(crate) fn next_hand_over(&self, standings: &StandingSeat) -> Option<Instant> {
+        let last = self.purged_at?;
+        self.no_needed_parts_records()
+            .any(|(_, record)| {
+                record
+                    .standing
+                    .zip(self.place(record))
+                    .is_some_and(|(standing, place)| standing.hands_over(standings.role(&place)))
+            })
+            .then_some(last + NO_NEEDED_PARTS_PURGE_SPACING)
+    }
+
+    /// Every record standing in the RemoteQueued stage whose source holds no
+    /// part we lack.
+    fn no_needed_parts_records(&self) -> impl Iterator<Item = (RecordId, &Record)> {
+        self.records.iter().filter_map(|(&id, record)| {
+            let standing = record.standing?;
+            (matches!(record.stage, Stage::RemoteQueued(_)) && !standing.needs_parts())
+                .then_some((id, record))
+        })
+    }
+
     /// When the next source may be let go, while the file is at the threshold
     /// and a record a purge may take is held.
     pub(crate) fn next_purge(
@@ -128,7 +191,7 @@ impl SourceBook {
     ) -> impl Iterator<Item = (RecordId, PurgeKind)> + 'a {
         self.records.iter().filter_map(move |(&id, record)| {
             match (&record.stage, record.standing) {
-                (Stage::RemoteQueued(_), Some(standing)) => {
+                (Stage::RemoteQueued(_), Some(standing)) if standing.role.asks() => {
                     standing.purge_mark().map(|kind| (id, kind))
                 }
                 (Stage::Pooled(Lane::LowIdConnected | Lane::LowIdGlobal), _) => {

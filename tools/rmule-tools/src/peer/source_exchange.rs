@@ -6,9 +6,9 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use rmule_net::peer::{ConnectOptions as PeerConnectOptions, Connection as PeerConnection};
+use rmule_peer::WireStatus;
 use rmule_peer::{
-    ConnectionEvent, PartBitmap, PeerCommand, PeerEvent, PeerHandshakeContext, RequesterCommand,
-    RequesterEvent,
+    ConnectionEvent, PeerCommand, PeerEvent, PeerHandshakeContext, RequesterCommand, RequesterEvent,
 };
 
 use crate::peer::transfer::PeerTransferCaptureArgs;
@@ -61,8 +61,8 @@ pub(super) async fn source_exchange_capture(
                             // ask, aMule's own connect-time shape.
                             let _ = conn.send(PeerCommand::Requester(RequesterCommand::RequestFile {
                                 file_hash: file.file_hash,
-                                file_size: file.size,
-                                own_status: PartBitmap::downloader_empty(file.size),
+                                file_size: file.size(),
+                                own_status: WireStatus::downloader_empty(file.size()),
                                 want_sources: true,
                                 want_aich_root: false,
                             })).await;
@@ -71,8 +71,8 @@ pub(super) async fn source_exchange_capture(
                             let _ = conn
                                 .send(PeerCommand::Requester(RequesterCommand::ProbeFile {
                                     file_hash: file.file_hash,
-                                    file_size: file.size,
-                                    own_status: PartBitmap::downloader_empty(file.size),
+                                    file_size: file.size(),
+                                    own_status: WireStatus::downloader_empty(file.size()),
                                 }))
                                 .await;
                         }

@@ -26,6 +26,12 @@ invariant, edited in lockstep, had already diverged once.
   packet dispatch and frame-error mapping), output queueing and polling, and `close`.
 - `drain`, the helper tests use to collect a session's output.
 
+**Each protocol names its Frame Ceiling, and the spine holds it at the header.** A
+declared length past `FrameCeiling` closes the link before a byte of the body is held.
+A server link takes stock's reader limit (`EMSocket.cpp:41`, 2,000,000 bytes behind the
+opcode); a peer link takes 1 MiB, past the largest honest frame, a hash set, and small
+enough that 500 half-sent frames are not a process's memory.
+
 **The session owns the paired `Disconnected` on every close path.**
 `SessionCore::close` emits `Event(Disconnected { reason })` immediately before
 `Close(reason)`, whatever the reason. The harness does not compensate. The `rmule-net`

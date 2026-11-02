@@ -355,14 +355,13 @@ pub fn run_http_bootstrap_cold_start(options: HttpBootstrapColdStartOptions<'_>)
              kad_bootstrap_res_answers = {bootstrap_res}\nverdict = {}\n",
             if pass { "\"PASS\"" } else { "\"FAIL\"" },
         );
-        fs::write(
-            options
+        crate::verdict::write(
+            &options
                 .layout
                 .root()
                 .join("http-bootstrap-cold-start-verdict.toml"),
             &verdict,
-        )
-        .context("write cold-start verdict")?;
+        )?;
         println!("{verdict}");
 
         if !pass {

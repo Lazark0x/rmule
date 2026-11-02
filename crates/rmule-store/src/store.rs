@@ -2,23 +2,54 @@
 //! against a schema and a version ladder. `open` runs the ladder first, then
 //! creates every registered table in one write, so no read can find a table
 //! missing and no table is touched under the wrong version. A write commits
-//! with immediate durability, set explicitly, unless the caller asked for
-//! [`Store::begin_write_deferred`]. A store is `Send + Sync`; seams share one
-//! behind an `Arc` and take `&self`.
+//! with immediate durability, set explicitly. A store is `Send + Sync`; seams
+//! share one behind an `Arc` and take `&self`. A climb keeps a copy of the file
+//! it found, and a failed read or write leaves the store stopped, which it
+//! says (ADR-0083).
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use redb::backends::InMemoryBackend;
-use redb::{Database, Durability, ReadableDatabase, StorageBackend};
+use redb::{
+    Database, Durability, ReadOnlyDatabase, ReadableDatabase, RepairSession, StorageBackend,
+};
 
-use crate::ladder::{read_version, stamp};
+use crate::ladder::{read_version, stamp, stamp_home};
 use crate::sequence::SEQUENCES;
 use crate::{Ladder, ReadTransaction, Schema, StoreError, WriteTransaction};
+
+/// What a slow open is doing, told as it starts and as it goes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Opening {
+    /// The last run did not close the file, and the engine checks all of it.
+    Repairing {
+        /// How far through, of 100.
+        percent: u8,
+    },
+    /// The file is an older version and climbs to this build's.
+    Climbing {
+        /// The version found.
+        from: u32,
+        /// The version it climbs to.
+        to: u32,
+    },
+}
+
+/// Where an open tells what it is doing.
+pub type OpeningWatch = Arc<dyn Fn(Opening)>;
 
 /// One open store. Holds the engine's exclusive lock for the process's life.
 #[derive(Debug)]
 pub struct Store {
     db: Database,
+    /// The file, when there is one.
+    file: Option<PathBuf>,
+    /// Whether a failed read or write latched the engine.
+    stopped: AtomicBool,
+    /// Whether the stop has been handed to someone to tell.
+    stop_told: AtomicBool,
 }
 
 impl Store {
@@ -27,16 +58,66 @@ impl Store {
     ///
     /// # Errors
     /// [`StoreError::FutureVersion`] when the file is newer than `ladder`,
+    /// [`StoreError::TooOld`] when it is under the ladder's floor,
     /// [`StoreError::MissingStep`] when a rung has no step,
+    /// [`StoreError::NotCopied`] when a climb could not keep its copy,
     /// [`StoreError::TableTypeMismatch`] when a schema table exists under
     /// other types, or an engine error (including another process holding
-    /// the file).
+    /// the file). [`StoreError::open_refusal`] sorts them for the operator.
     pub fn open(
         path: impl AsRef<Path>,
         schema: &Schema,
         ladder: &Ladder,
     ) -> Result<Self, StoreError> {
-        Self::initialise(Database::create(path)?, schema, ladder)
+        let quiet: OpeningWatch = Arc::new(|_| {});
+        Self::open_watched(path, schema, ladder, &quiet)
+    }
+
+    /// [`Store::open`], telling `watch` what a slow open is doing.
+    ///
+    /// # Errors
+    /// As [`Store::open`].
+    pub fn open_watched(
+        path: impl AsRef<Path>,
+        schema: &Schema,
+        ladder: &Ladder,
+        watch: &OpeningWatch,
+    ) -> Result<Self, StoreError> {
+        let path = path.as_ref();
+        refuse_unwritten(path, ladder)?;
+        let mut store = Self::on_file(path, watch)?;
+        let found = store.stamp_when_new(ladder)?;
+        if let Some(found) = found.filter(|found| *found < ladder.current) {
+            // The engine's lock also keeps other handles from reading on
+            // Windows, so the copy is taken with the file closed.
+            drop(store);
+            keep_a_copy(path, found)?;
+            store = Self::on_file(path, watch)?;
+            watch(Opening::Climbing {
+                from: found,
+                to: ladder.current,
+            });
+        }
+        store.climb_and_create(found, schema, ladder)?;
+        Ok(store)
+    }
+
+    /// The engine on the file at `path`, a repair reported to `watch`. The
+    /// engine runs its repair over a file it has just made too; only a file
+    /// that held something before this open has a last run to recover from.
+    fn on_file(path: &Path, watch: &OpeningWatch) -> Result<Self, StoreError> {
+        let told = Arc::clone(watch);
+        let had_a_run = std::fs::metadata(path).is_ok_and(|file| file.len() > 0);
+        let mut builder = Database::builder();
+        builder.set_repair_callback(move |session: &mut RepairSession| {
+            // The ratio is in 0..=1, so the cast keeps every value.
+            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+            let percent = (session.progress() * 100.0) as u8;
+            if had_a_run {
+                told(Opening::Repairing { percent });
+            }
+        });
+        Ok(Self::over(builder.create(path)?, Some(path)))
     }
 
     /// The same store on the engine's in-memory backend: an isolation tool
@@ -59,19 +140,28 @@ impl Store {
         schema: &Schema,
         ladder: &Ladder,
     ) -> Result<Self, StoreError> {
-        Self::initialise(
-            Database::builder().create_with_backend(backend)?,
-            schema,
-            ladder,
-        )
+        let store = Self::over(Database::builder().create_with_backend(backend)?, None);
+        let found = store.stamp_when_new(ladder)?;
+        store.climb_and_create(found, schema, ladder)?;
+        Ok(store)
     }
 
-    fn initialise(db: Database, schema: &Schema, ladder: &Ladder) -> Result<Self, StoreError> {
-        let store = Self { db };
-        // The stamp is read on a write transaction, which creates the meta
-        // table when the file is new; a file nobody has stamped is this
-        // version by definition, and says so before anything else is written.
-        let found = store.write(|txn| {
+    fn over(db: Database, file: Option<&Path>) -> Self {
+        Self {
+            db,
+            file: file.map(Path::to_path_buf),
+            stopped: AtomicBool::new(false),
+            stop_told: AtomicBool::new(false),
+        }
+    }
+
+    /// The version the file was found at, `None` on a new one. The stamp is
+    /// read on a write transaction, which creates the meta table when the
+    /// file is new; a file nobody has stamped is this version by definition,
+    /// and says so before anything else is written. A file this build cannot
+    /// open is refused here, before anything is copied.
+    fn stamp_when_new(&self, ladder: &Ladder) -> Result<Option<u32>, StoreError> {
+        let found = self.write(|txn| {
             let found = read_version(txn)?;
             if found.is_none() {
                 stamp(txn, ladder.current)?;
@@ -79,27 +169,63 @@ impl Store {
             Ok::<_, StoreError>(found)
         })?;
         if let Some(found) = found {
-            if found > ladder.current {
-                return Err(StoreError::FutureVersion {
-                    found,
-                    current: ladder.current,
-                });
+            ladder.admit(found)?;
+        }
+        Ok(found)
+    }
+
+    fn climb_and_create(
+        &self,
+        found: Option<u32>,
+        schema: &Schema,
+        ladder: &Ladder,
+    ) -> Result<(), StoreError> {
+        if let Some(found) = found.filter(|found| *found < ladder.current) {
+            if let Some(home) = self.file.as_deref().and_then(Path::parent) {
+                self.write(|txn| stamp_home(txn, home))?;
             }
             // One transaction per rung, so a crash mid-climb resumes at the
             // rung it reached rather than replaying the ones below it.
             for from in found..ladder.current {
                 let step = ladder.step_from(from)?;
-                store.write(|txn| {
+                self.write(|txn| {
                     (step.run)(txn)?;
                     stamp(txn, from + 1)
                 })?;
             }
         }
-        store.write(|txn| {
+        self.write(|txn| {
             txn.open_table(SEQUENCES)?;
             schema.create_all(txn)
-        })?;
-        Ok(store)
+        })
+    }
+
+    /// Whether a failed read or write stopped the store. The engine then
+    /// answers nothing but that failure until the file is reopened, so what
+    /// a caller is told from here on is this and not its own call's fault.
+    #[must_use]
+    pub fn stopped(&self) -> bool {
+        self.stopped.load(Ordering::Relaxed)
+    }
+
+    /// Whether the store stopped and nobody was told yet: `true` once.
+    #[must_use]
+    pub fn stop_to_tell(&self) -> bool {
+        self.stopped() && !self.stop_told.swap(true, Ordering::Relaxed)
+    }
+
+    /// The file this store lies in, when it has one.
+    #[must_use]
+    pub fn file(&self) -> Option<&Path> {
+        self.file.as_deref()
+    }
+
+    /// Note whether `error` stopped the engine.
+    fn noted(&self, error: StoreError) -> StoreError {
+        if error.stops_the_engine() {
+            self.stopped.store(true, Ordering::Relaxed);
+        }
+        error
     }
 
     /// Run `act` inside one snapshot transaction.
@@ -124,39 +250,11 @@ impl Store {
         &self,
         act: impl FnOnce(&WriteTransaction) -> Result<R, E>,
     ) -> Result<R, E> {
-        Self::run(self.begin_write()?, act)
-    }
-
-    /// [`Store::write`] without the device flush — see
-    /// [`Store::begin_write_deferred`] for what that costs and
-    /// [`Store::flush`] for what settles it.
-    ///
-    /// # Errors
-    /// As [`Store::write`].
-    pub fn write_deferred<R, E: From<StoreError>>(
-        &self,
-        act: impl FnOnce(&WriteTransaction) -> Result<R, E>,
-    ) -> Result<R, E> {
-        Self::run(self.begin_write_deferred()?, act)
-    }
-
-    fn run<R, E: From<StoreError>>(
-        txn: WriteTransaction,
-        act: impl FnOnce(&WriteTransaction) -> Result<R, E>,
-    ) -> Result<R, E> {
+        let txn = self.begin_write()?;
         let outcome = act(&txn)?;
-        txn.commit().map_err(StoreError::from)?;
+        txn.commit()
+            .map_err(|error| self.noted(StoreError::from(error)))?;
         Ok(outcome)
-    }
-
-    /// Make every [`write_deferred`](Self::write_deferred) commit so far
-    /// durable: an empty immediate commit, which the engine settles every
-    /// deferred commit before it with.
-    ///
-    /// # Errors
-    /// An engine error.
-    pub fn flush(&self) -> Result<(), StoreError> {
-        self.write(|_| Ok(()))
     }
 
     /// A snapshot read; any number may be live at once.
@@ -164,7 +262,9 @@ impl Store {
     /// # Errors
     /// An engine error.
     pub fn begin_read(&self) -> Result<ReadTransaction, StoreError> {
-        Ok(self.db.begin_read()?)
+        self.db
+            .begin_read()
+            .map_err(|error| self.noted(error.into()))
     }
 
     /// The one live write; commits with immediate durability. Dropping it
@@ -173,24 +273,11 @@ impl Store {
     /// # Errors
     /// An engine error.
     pub fn begin_write(&self) -> Result<WriteTransaction, StoreError> {
-        let mut txn = self.db.begin_write()?;
+        let mut txn = self
+            .db
+            .begin_write()
+            .map_err(|error| self.noted(error.into()))?;
         txn.set_durability(Durability::Immediate)?;
-        Ok(txn)
-    }
-
-    /// A write that commits without a device flush: the writes land in the
-    /// store and every later read sees them, but they reach the disk only
-    /// when some transaction — this seam's or any other's — next commits
-    /// through [`begin_write`](Self::begin_write). A crash before that loses
-    /// them, so this is for a hot counter whose last few seconds are worth
-    /// less than a flush per write, never for a fact a caller was told was
-    /// durable.
-    ///
-    /// # Errors
-    /// An engine error.
-    pub fn begin_write_deferred(&self) -> Result<WriteTransaction, StoreError> {
-        let mut txn = self.db.begin_write()?;
-        txn.set_durability(Durability::None)?;
         Ok(txn)
     }
 
@@ -202,4 +289,51 @@ impl Store {
     pub fn version(&self) -> Result<u32, StoreError> {
         read_version(&self.begin_read()?)?.ok_or(StoreError::Unversioned)
     }
+}
+
+/// Refuse a file this build cannot open on a handle that cannot write: the
+/// writing handle marks the file as it opens, so a refusal behind it would
+/// hand the build that can read the file a different one. Whatever this look
+/// cannot judge is the writing open's to answer: a file absent, held or no
+/// store at all, and a file its last run left open, which only the engine's
+/// repair can read. That repair keeps every row, and the stamp refuses the
+/// file behind it.
+fn refuse_unwritten(path: &Path, ladder: &Ladder) -> Result<(), StoreError> {
+    let Ok(db) = ReadOnlyDatabase::open(path) else {
+        return Ok(());
+    };
+    if let Ok(Some(found)) = read_version(&db.begin_read()?) {
+        ladder.admit(found)?;
+    }
+    Ok(())
+}
+
+/// The name a climb from `found` keeps the file under: `<file>.v<found>`.
+fn copy_of(path: &Path, found: u32) -> PathBuf {
+    let mut name = path.as_os_str().to_os_string();
+    name.push(format!(".v{found}"));
+    PathBuf::from(name)
+}
+
+/// Keep the file as `found` left it. Written whole under another name, so a
+/// copy that stands is a whole one, and one that stands stays: a climb that
+/// was stopped and comes back must not replace what it left.
+fn keep_a_copy(path: &Path, found: u32) -> Result<(), StoreError> {
+    let copy = copy_of(path, found);
+    if copy.exists() {
+        return Ok(());
+    }
+    let mut partial = copy.as_os_str().to_os_string();
+    partial.push(".partial");
+    let partial = PathBuf::from(partial);
+    let copied = std::fs::copy(path, &partial)
+        // Windows flushes only through a handle open for writing.
+        .and_then(|_| {
+            std::fs::OpenOptions::new()
+                .write(true)
+                .open(&partial)?
+                .sync_all()
+        })
+        .and_then(|()| std::fs::rename(&partial, &copy));
+    copied.map_err(|source| StoreError::NotCopied { copy, source })
 }

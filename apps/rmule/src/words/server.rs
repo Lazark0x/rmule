@@ -5,7 +5,6 @@
 pub use rmule_words::server::*;
 
 use super::Sentence;
-use crate::config::PrefEdit;
 use crate::state::server_health::HealthEdge;
 
 /// The Networks log's line for an edge of the server list's health.
@@ -23,15 +22,18 @@ pub(crate) fn health_edge(edge: &HealthEdge) -> Sentence {
     }
 }
 
-/// What a saved server-policy edit changed, for the Settings receipt.
+/// What a saved **Dead Server Limit** says, for the Settings receipt.
 #[must_use]
-pub fn policy_receipt(edit: &PrefEdit) -> String {
-    match edit {
-        PrefEdit::DeadServerRetries(limit) => format!("dead after {limit} failed tries"),
-        PrefEdit::WithholdShares(true) => {
-            "shares withheld from servers that answer related searches".to_string()
-        }
-        PrefEdit::WithholdShares(false) => "shares announced to every server".to_string(),
-        _ => String::new(),
+pub fn dead_after_receipt(limit: u32) -> String {
+    format!("dead after {limit} failed tries")
+}
+
+/// What a saved **Announce Policy** says, for the Settings receipt.
+#[must_use]
+pub fn withhold_shares_receipt(on: bool) -> String {
+    if on {
+        "shares withheld from servers that answer related searches".to_string()
+    } else {
+        "shares announced to every server".to_string()
     }
 }

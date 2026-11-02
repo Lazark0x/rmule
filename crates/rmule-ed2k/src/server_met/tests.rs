@@ -11,7 +11,7 @@ use std::net::Ipv4Addr;
 
 use flate2::Compression;
 use flate2::write::GzEncoder;
-use rmule_primitives::TagName;
+use rmule_primitives::{TagName, ipv6_address_tag_compact};
 
 use super::*;
 fn name_tag(value: &str) -> Tag {
@@ -653,4 +653,19 @@ fn writer_state_round_trips_through_the_decoder() {
         reencoded, bytes,
         "encode is stable across a decode round-trip"
     );
+}
+
+#[test]
+fn a_file_declaring_past_the_row_cap_is_read_to_the_cap() {
+    let declared = MAX_SERVER_MET_ROWS + 1;
+    let mut file = vec![HEADER_MET];
+    file.extend_from_slice(&declared.to_le_bytes());
+    for _ in 0..declared {
+        file.extend_from_slice(&[1, 2, 3, 4, 0x35, 0x12, 0, 0, 0, 0]);
+    }
+
+    let met = ServerMet::decode(&file).expect("the header holds");
+
+    assert_eq!(met.entries().len(), MAX_SERVER_MET_ROWS as usize);
+    assert!(met.is_truncated());
 }

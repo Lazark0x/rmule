@@ -3,7 +3,14 @@
 //! and source exchange. The shared fixtures live here; each area's assertions
 //! live in a submodule.
 
+mod aich;
+mod block_ask;
+mod dial_back;
+mod flow;
+mod reading;
 mod reask;
+mod relink;
+mod served;
 mod sharing;
 mod slots;
 mod source_exchange;
@@ -12,9 +19,10 @@ mod transfer;
 use std::net::Ipv4Addr;
 use std::time::Duration;
 
+use rmule_peer::WireStatus;
 use rmule_peer::{
-    BundledAsk, PartIndex, PartRanges, PartStatusTail, ReaskAck, ReaskFilePing,
-    file_not_found_datagram, queue_full_datagram,
+    BundledAsk, PartRanges, PartStatusTail, ReaskAck, ReaskFilePing, file_not_found_datagram,
+    queue_full_datagram,
 };
 use rmule_primitives::{ClientId, ED2K_PART_SIZE, EMBLOCKSIZE, PartHash, PeerSource};
 
@@ -95,6 +103,14 @@ fn hello_facts(
         crypt: crypt_advert(),
         ..HelloFacts::of(user_hash)
     }
+}
+
+/// A slot holder's `PartsRequested` for `ranges` of `file_hash`.
+fn parts(file_hash: FileHash, ranges: [(u64, u64); 3]) -> ServeInput {
+    ServeInput::Server(ServerEvent::PartsRequested {
+        file_hash,
+        ranges: PartRanges::new(ranges),
+    })
 }
 
 fn identify(state: &mut ServeState, p: PeerEndpoint, user_hash: UserHash, t: Instant) {
@@ -187,7 +203,7 @@ fn slot_request(
 fn reask_ping(file_hash: FileHash) -> Vec<u8> {
     ReaskFilePing {
         file_hash,
-        part_status: Some(PartBitmap::complete_source_sentinel()),
+        part_status: Some(WireStatus::complete_source()),
         complete_sources: Some(0),
     }
     .encode_udp()

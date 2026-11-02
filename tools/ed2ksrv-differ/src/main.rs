@@ -25,7 +25,7 @@
 //! `--fail-on-unattributed` is passed. Three implementations of this protocol
 //! genuinely differ; the oracle has six filed bugs of its own; and ADR-0045's
 //! amendment makes its verdicts admissible **only while it stays unpatched and
-//! pinned at `eacf7f1`**. So a divergence is a pointer, and adjudicating it
+//! pinned at `97f97ff9`**. So a divergence is a pointer, and adjudicating it
 //! against aMule 2.3.3 is a human's job.
 //!
 //! # Running it
@@ -42,6 +42,7 @@
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
+mod contracts;
 mod known;
 mod report;
 mod tcp;
@@ -53,6 +54,7 @@ fn main() -> std::process::ExitCode {
     let mut report = report::Report::new(known::REGISTRY);
     tcp::run(&mut report);
     udp::run(&mut report);
+    contracts::run(&mut report);
 
     print!("{}", report.render());
 

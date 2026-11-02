@@ -23,48 +23,72 @@
 #![warn(missing_docs)]
 
 mod client_software;
+#[cfg(feature = "runtime")]
 mod download;
+#[cfg(feature = "runtime")]
 mod fake_dialer;
+#[cfg(feature = "runtime")]
 mod fake_ed2k_server;
+#[cfg(feature = "runtime")]
 mod fake_peer;
+#[cfg(feature = "runtime")]
 mod framing;
 mod hang_guard;
+#[cfg(feature = "runtime")]
 mod interfaces;
 pub mod kad_keyword;
 pub mod kad_mesh;
 pub mod kad_node;
 pub mod kad_source;
+#[cfg(feature = "runtime")]
 mod operator;
 pub mod peer_session;
+#[cfg(feature = "runtime")]
 mod portmap;
+#[cfg(feature = "runtime")]
 mod serve;
+#[cfg(feature = "runtime")]
 mod server_udp;
+#[cfg(feature = "runtime")]
 mod store;
+#[cfg(feature = "runtime")]
 mod test_tracing;
 pub mod wire;
 
 pub use client_software::{amule_233, client_software, emule_qt};
+#[cfg(feature = "runtime")]
 pub use download::{
     PendingPeerTransfer, PlanAssertingPeerTransfer, StaticPeerTransfer, StaticSourceLookup,
-    emit_streamed_part, file_link, file_link_without_part_hash_set, file_name, in_download_dir,
-    loopback_peer, next_event, plain_sources, run_download, source_with_high_id,
-    two_high_id_sources,
+    emit_blocks, every_part, file_link, file_link_without_part_hash_set, file_name,
+    in_download_dir, loopback_peer, next_event, plain_sources, run_download, run_download_with,
+    source_with_high_id, two_high_id_sources,
 };
+#[cfg(feature = "runtime")]
 pub use fake_dialer::{FakeBuddy, FakeDialer};
+#[cfg(feature = "runtime")]
 pub use fake_ed2k_server::{FakeEd2kServer, spawn_check_answering_listener};
+#[cfg(feature = "runtime")]
 pub use fake_peer::{
     FakePeer, HashSetPolicy, MultiPacketPolicy, PeerScript, PeerStats, SeenMultiPacketRequest,
     ServePolicy, SlotPolicy, SourcesPolicy,
 };
 pub use hang_guard::HANG_GUARD;
+#[cfg(feature = "runtime")]
 pub use interfaces::FakeInterfaces;
 pub use kad_mesh::{FakeKadPeer, KadMeshSim, LinkPolicy, TraceEntry, drain_split};
+#[cfg(feature = "runtime")]
 pub use operator::{absolute_path, connect_to, share_directory};
+pub use peer_session::test_identity;
+#[cfg(feature = "runtime")]
 pub use portmap::{FakeGateways, GrantPolicy, ScriptedBackend};
+#[cfg(feature = "runtime")]
 pub use serve::{
     LoopbackServeRuntime, PendingSourceLookup, RefusingPeerTransfer, ServingCore,
-    test_handshake_ctx, test_identity,
+    test_handshake_ctx,
 };
+#[cfg(feature = "runtime")]
 pub use server_udp::FakeServerUdp;
+#[cfg(feature = "runtime")]
 pub use store::{memory_store, scratch_ports};
+#[cfg(feature = "runtime")]
 pub use test_tracing::{CapturedLog, TracingGuard, capture_tracing, init_tracing};

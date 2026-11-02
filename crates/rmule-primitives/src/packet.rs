@@ -8,18 +8,33 @@ use crate::{PrimitiveError, Result};
 const EDONKEY_PROTOCOL_BYTE: u8 = 0xE3;
 const EMULE_PROTOCOL_BYTE: u8 = 0xC5;
 const PACKED_ED2K_PROTOCOL_BYTE: u8 = 0xD4;
+const ED2KV2_PROTOCOL_BYTE: u8 = 0xF4;
+const PACKED_ED2KV2_PROTOCOL_BYTE: u8 = 0xF5;
 const PACKET_HEADER_LEN: usize = 5;
 
-/// Maximum decoded length (opcode + payload) the framer accepts.
-///
-/// A hostile peer can declare `length = u32::MAX` in the frame header
-/// (~4 GiB), so without a cap the decoder would happily report a
-/// `TruncatedPacket` with `needed = 4 GiB+5`, and a streaming caller
-/// that pre-allocates `needed` bytes would OOM. 16 MiB sits well above
-/// any wire-realistic packet — the welcome burst is < 1 KiB, the
-/// (future) compression transport caps inflation at 250 KB — and well
-/// below any plausible allocation budget.
-const MAX_FRAME_LEN: u32 = 16 * 1024 * 1024;
+/// The largest declared length (opcode plus payload) a reader takes, per
+/// protocol: the header is judged before a byte of the body is held, so a
+/// stranger's frame costs what its protocol honestly needs and no more.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FrameCeiling(u32);
+
+impl FrameCeiling {
+    /// Stock's reader: a body of up to 2,000,000 bytes behind its opcode
+    /// (`EMSocket.cpp:41`, `:211`, `Packet.cpp:175`), a frame no stock peer
+    /// or stock client would ever take.
+    pub const STOCK: Self = Self(2_000_001);
+
+    /// A ceiling of `declared_len` bytes, opcode included.
+    #[must_use]
+    pub const fn new(declared_len: u32) -> Self {
+        Self(declared_len)
+    }
+}
+
+/// The ceiling of a reader that holds no protocol: a tool walking a capture.
+/// A hostile `length = u32::MAX` must not read as a `TruncatedPacket` a
+/// streaming caller would pre-allocate for.
+const ANY_PROTOCOL_CEILING: FrameCeiling = FrameCeiling(16 * 1024 * 1024);
 
 /// Which of the three eD2k framings a packet uses, named by its marker byte.
 ///
@@ -36,6 +51,11 @@ pub enum PacketProtocol {
     Emule,
     /// Zlib-compressed eD2k frame (`OP_PACKEDPROT = 0xD4`).
     PackedEd2k,
+    /// aMule's experimental tag-based framing (`OP_ED2KV2HEADER = 0xF4`).
+    /// A peer link's reader takes it; a server link has no use for it.
+    Ed2kV2,
+    /// That framing compressed (`OP_ED2KV2PACKEDPROT = 0xF5`).
+    PackedEd2kV2,
 }
 
 impl PacketProtocol {
@@ -46,7 +66,15 @@ impl PacketProtocol {
             Self::Edonkey => EDONKEY_PROTOCOL_BYTE,
             Self::Emule => EMULE_PROTOCOL_BYTE,
             Self::PackedEd2k => PACKED_ED2K_PROTOCOL_BYTE,
+            Self::Ed2kV2 => ED2KV2_PROTOCOL_BYTE,
+            Self::PackedEd2kV2 => PACKED_ED2KV2_PROTOCOL_BYTE,
         }
+    }
+
+    /// Whether the payload is zlib-compressed.
+    #[must_use]
+    pub const fn is_packed(self) -> bool {
+        matches!(self, Self::PackedEd2k | Self::PackedEd2kV2)
     }
 
     /// Stable, human-readable protocol tag for diagnostics and packet
@@ -59,8 +87,21 @@ impl PacketProtocol {
             Self::Edonkey => "edonkey",
             Self::Emule => "emule",
             Self::PackedEd2k => "packed-ed2k",
+            Self::Ed2kV2 => "ed2k-v2",
+            Self::PackedEd2kV2 => "packed-ed2k-v2",
         }
     }
+}
+
+/// A decoder was handed some other packet's frame: its protocol byte or its
+/// opcode is not the one the decoder reads.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+#[error("not a {} frame of opcode 0x{opcode:02X}", protocol.name())]
+pub struct WrongFrame {
+    /// The protocol the decoder reads.
+    pub protocol: PacketProtocol,
+    /// The opcode the decoder reads.
+    pub opcode: u8,
 }
 
 /// One eD2k frame: its protocol marker, its opcode, and the payload bytes
@@ -112,6 +153,14 @@ impl Packet {
     /// unknown marker, [`PrimitiveError::InvalidPacketLength`] on a zero or
     /// over-ceiling declared length.
     pub fn decode(bytes: &[u8]) -> Result<(Self, usize)> {
+        Self::decode_within(bytes, ANY_PROTOCOL_CEILING)
+    }
+
+    /// [`decode`](Self::decode) under the ceiling of the protocol being read.
+    ///
+    /// # Errors
+    /// As [`decode`](Self::decode), the ceiling being `ceiling`.
+    pub fn decode_within(bytes: &[u8], ceiling: FrameCeiling) -> Result<(Self, usize)> {
         if bytes.len() < PACKET_HEADER_LEN {
             return Err(PrimitiveError::TruncatedPacket {
                 needed: PACKET_HEADER_LEN,
@@ -123,10 +172,12 @@ impl Packet {
             EDONKEY_PROTOCOL_BYTE => PacketProtocol::Edonkey,
             EMULE_PROTOCOL_BYTE => PacketProtocol::Emule,
             PACKED_ED2K_PROTOCOL_BYTE => PacketProtocol::PackedEd2k,
+            ED2KV2_PROTOCOL_BYTE => PacketProtocol::Ed2kV2,
+            PACKED_ED2KV2_PROTOCOL_BYTE => PacketProtocol::PackedEd2kV2,
             protocol => return Err(PrimitiveError::UnsupportedProtocolByte { protocol }),
         };
         let length = u32::from_le_bytes([bytes[1], bytes[2], bytes[3], bytes[4]]);
-        if length == 0 || length > MAX_FRAME_LEN {
+        if length == 0 || length > ceiling.0 {
             return Err(PrimitiveError::InvalidPacketLength { length });
         }
 
@@ -157,12 +208,33 @@ impl Packet {
     /// Serialize as a TCP frame: `[protocol][length LE u32][opcode][payload]`.
     #[must_use]
     pub fn encode(&self) -> Vec<u8> {
-        let length = self.encoded_payload_len();
-        let mut encoded = Vec::with_capacity(PACKET_HEADER_LEN + length as usize);
-        encoded.push(self.protocol.as_byte());
-        encoded.extend_from_slice(&length.to_le_bytes());
-        encoded.push(self.opcode);
-        encoded.extend_from_slice(&self.payload);
+        Self::encode_with(self.protocol, self.opcode, self.payload.len(), |frame| {
+            frame.extend_from_slice(&self.payload);
+        })
+    }
+
+    /// Serialize a TCP frame whose payload `write` appends in place, so a
+    /// sender framing borrowed bytes copies them once, into the frame, rather
+    /// than into a payload first. `payload_len` sizes the one allocation; the
+    /// length field counts what `write` actually appended.
+    ///
+    /// # Panics
+    /// If the payload is larger than a `u32` can express.
+    #[must_use]
+    pub fn encode_with(
+        protocol: PacketProtocol,
+        opcode: u8,
+        payload_len: usize,
+        write: impl FnOnce(&mut Vec<u8>),
+    ) -> Vec<u8> {
+        let mut encoded = Vec::with_capacity(PACKET_HEADER_LEN + 1 + payload_len);
+        encoded.push(protocol.as_byte());
+        encoded.extend_from_slice(&[0; 4]);
+        encoded.push(opcode);
+        write(&mut encoded);
+        let length = u32::try_from(encoded.len() - PACKET_HEADER_LEN)
+            .expect("packet payload length exceeds u32");
+        encoded[1..PACKET_HEADER_LEN].copy_from_slice(&length.to_le_bytes());
         encoded
     }
 
@@ -199,6 +271,23 @@ impl Packet {
     #[must_use]
     pub fn payload(&self) -> &[u8] {
         &self.payload
+    }
+
+    /// The payload, once this frame proves to be `opcode` under `protocol`.
+    /// The one check a decoder of a single packet makes of its frame.
+    ///
+    /// # Errors
+    /// [`WrongFrame`] when it is any other frame.
+    pub fn body_of(
+        &self,
+        protocol: PacketProtocol,
+        opcode: u8,
+    ) -> core::result::Result<&[u8], WrongFrame> {
+        if self.protocol == protocol && self.opcode == opcode {
+            Ok(&self.payload)
+        } else {
+            Err(WrongFrame { protocol, opcode })
+        }
     }
 
     /// The value the TCP frame's length field carries: the payload plus the

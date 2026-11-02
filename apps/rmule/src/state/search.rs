@@ -5,8 +5,12 @@
 //! search of the run keeps its pane, receiving results whether or not it is
 //! in view, until the operator closes its **Held Search**.
 
+use std::collections::HashMap;
+use std::collections::hash_map::Entry;
+use std::ops::Deref;
+
 use rmule_core::{RelatedSearchRefusal, SearchEvent, SearchFailure, SearchId, SearchLegs};
-use rmule_primitives::SearchResult;
+use rmule_primitives::{SearchResult, SearchResultKey};
 
 use super::{UiState, note};
 use crate::words::search as words;
@@ -38,15 +42,54 @@ pub enum SearchStatus {
     },
 }
 
+/// A search's rows in the order they first arrived, one per key. A batch
+/// carries each row whole, and a row the set holds is replaced where it stands.
+#[derive(Clone, Debug, Default)]
+pub struct SearchRows {
+    rows: Vec<SearchResult>,
+    at: HashMap<SearchResultKey, usize>,
+}
+
+impl SearchRows {
+    /// Fold one batch in.
+    pub fn absorb(&mut self, batch: impl IntoIterator<Item = SearchResult>) {
+        for row in batch {
+            match self.at.entry(row.key()) {
+                Entry::Occupied(held) => self.rows[*held.get()] = row,
+                Entry::Vacant(open) => {
+                    open.insert(self.rows.len());
+                    self.rows.push(row);
+                }
+            }
+        }
+    }
+}
+
+impl From<Vec<SearchResult>> for SearchRows {
+    fn from(batch: Vec<SearchResult>) -> Self {
+        let mut rows = Self::default();
+        rows.absorb(batch);
+        rows
+    }
+}
+
+impl Deref for SearchRows {
+    type Target = [SearchResult];
+
+    fn deref(&self) -> &[SearchResult] {
+        &self.rows
+    }
+}
+
 /// One search's event-folded results + status (spec §3.3), keyed by its
 /// [`SearchId`] in [`UiState::searches`].
 #[derive(Clone, Debug)]
 pub struct SearchPane {
     /// Where this search stands.
     pub status: SearchStatus,
-    /// The whole merged set as core last published it — replaced per batch,
-    /// never appended, because core re-sends the full set on every change.
-    pub results: Vec<SearchResult>,
+    /// The merged set, folded from what core publishes per batch: at most the
+    /// row cap core holds a search to.
+    pub results: SearchRows,
     /// Server-skipped results (malformed/filtered). Surfaced in the status line
     /// only when non-zero, so the tally stays honest without noise.
     pub skipped: usize,
@@ -131,7 +174,7 @@ impl SearchPane {
     fn running() -> Self {
         Self {
             status: SearchStatus::Running,
-            results: Vec::new(),
+            results: SearchRows::default(),
             skipped: 0,
             waiting_for_turn: None,
             more_ended: None,
@@ -148,11 +191,10 @@ pub(super) fn fold(state: &mut UiState, event: SearchEvent) -> bool {
             state.searches.insert(search_id, SearchPane::running());
             note(state, words::STARTED)
         }
-        // The event carries the whole merged set, deduped by `(hash, size)`,
-        // re-sent on every change — appending it would list every row again
-        // per batch.
+        // The rows a batch added or changed, each whole: a row the pane
+        // holds is replaced where it stands, a new one appended.
         E::SearchResultsReceived { search_id, results } => {
-            search_pane(state, search_id).results = results;
+            search_pane(state, search_id).results.absorb(results);
             true
         }
         E::SearchResultSkipped { search_id, .. } => {
@@ -247,24 +289,22 @@ mod tests {
                 results: vec![search_result("a.avi", 5), search_result("b.avi", 250)],
             }),
         );
-        // Core re-sends the whole merged set, so the second event repeats the
-        // first two rows and adds one. Appending would show five.
+        // A batch brings only what it added or changed: `b.avi` again,
+        // merged, stands where it stood.
+        let mut merged = search_result("b.avi", 250);
+        merged = merged.with_reported_availability(999);
         fold(
             &mut state,
             search_event(SearchEvent::SearchResultsReceived {
                 search_id: search_id(1),
-                results: vec![
-                    search_result("a.avi", 5),
-                    search_result("b.avi", 250),
-                    search_result("c.mp3", 40),
-                ],
+                results: vec![merged, search_result("c.mp3", 40)],
             }),
         );
         let pane = &state.searches[&search_id(1)];
         assert_eq!(
             pane.results.len(),
             3,
-            "the pane mirrors the latest snapshot"
+            "a held row is replaced, a new one appended"
         );
 
         let dirty = fold(

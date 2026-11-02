@@ -1,5 +1,5 @@
-//! The **Spare Copy** records on the Durable Store (ADR-0100, "Spare copies
-//! are recorded"): one row per path under the download directory whose
+//! The **Spare Copy** records on the Durable Store (ADR-0100): one row per path under the download
+//! directory whose
 //! content is already shared from another path, with the stamp and identity
 //! the **Hash Trust Rule** compares, keyed to the content's hash.
 //!
@@ -52,11 +52,6 @@ pub(crate) fn schema() -> Schema {
     Schema::new().indexed(&SPARES)
 }
 
-/// Store version 4 → 5, the table's half: it appears, empty.
-pub(super) fn create(txn: &WriteTransaction) -> Result<(), StoreError> {
-    SPARES.create(txn)
-}
-
 /// Record `spare`, replacing whatever was recorded at its path. A path that is
 /// not valid UTF-8 is not recorded; the file is hashed again at each start.
 pub(super) fn record(txn: &WriteTransaction, spare: &SpareCopy) -> Result<(), StoreError> {
@@ -94,8 +89,7 @@ pub(super) fn forget_content(txn: &WriteTransaction, key: &FileKey) -> Result<()
 
 /// Every recorded spare.
 pub(super) fn list(txn: &impl Readable) -> Result<Vec<SpareCopy>, StoreError> {
-    Ok(SPARES
-        .iter(txn)?
+    Ok(crate::store::readable(&SPARES, txn)?
         .into_iter()
         .map(|(path, row)| SpareCopy {
             path: PathBuf::from(path),
@@ -115,12 +109,11 @@ mod tests {
     use std::time::{Duration, SystemTime};
 
     use rmule_primitives::FileHash;
-    use rmule_store::{Ladder, Schema};
 
     use crate::directory_scan::{FileIdentity, FileStamp, SpareCopy};
     use crate::registry::{ShareSource, SharedFileEntry, SharedFileRegistry};
-    use crate::store::registry::{DurableSharedFileRegistry, SHARED_FILES_V2, SharedFileV2};
-    use crate::store::{DURABLE_STORE_FILE, DurableStore, open_durable_store};
+    use crate::store::open_durable_store;
+    use crate::store::registry::{DurableSharedFileRegistry, ScanWrite};
 
     const CONTENT: FileHash = FileHash::from_bytes([7; FileHash::BYTE_LEN]);
 
@@ -160,21 +153,41 @@ mod tests {
         DurableSharedFileRegistry::new(open_durable_store(dir).unwrap())
     }
 
+    fn record(registry: &DurableSharedFileRegistry, path: &str) {
+        registry
+            .write_scanned(&[ScanWrite::Spare(spare(path))])
+            .unwrap();
+    }
+
+    /// The rows a commit moving the row of [`CONTENT`] says it moved.
+    fn relocate(
+        registry: &DurableSharedFileRegistry,
+        from: &str,
+        to: &str,
+    ) -> Vec<rmule_primitives::FileHash> {
+        registry
+            .write_scanned(&[ScanWrite::Moved {
+                file_hash: CONTENT,
+                from: from.into(),
+                to: spare(to),
+            }])
+            .unwrap()
+    }
+
     #[test]
     fn a_spare_is_durable_only_beside_its_contents_row() {
         let dir = tempfile::tempdir().unwrap();
         {
             let registry = open(dir.path());
-            assert!(
-                !registry.record_spare(&spare("/dl/copy.bin")).unwrap(),
-                "no row yet"
-            );
+            record(&registry, "/dl/copy.bin");
+            assert!(registry.spares().unwrap().is_empty(), "no row yet");
             registry.share(row("/dl/film.bin")).unwrap();
+            record(&registry, "/dl/film.bin");
             assert!(
-                !registry.record_spare(&spare("/dl/film.bin")).unwrap(),
+                registry.spares().unwrap().is_empty(),
                 "the row's own path is no spare"
             );
-            assert!(registry.record_spare(&spare("/dl/copy.bin")).unwrap());
+            record(&registry, "/dl/copy.bin");
         }
         let registry = open(dir.path());
         assert_eq!(registry.spares().unwrap(), [spare("/dl/copy.bin")]);
@@ -185,15 +198,15 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let registry = open(dir.path());
         registry.share(row("/dl/film.bin")).unwrap();
-        registry.record_spare(&spare("/dl/a.bin")).unwrap();
-        registry.record_spare(&spare("/dl/b.bin")).unwrap();
+        record(&registry, "/dl/a.bin");
+        record(&registry, "/dl/b.bin");
         registry.share(row("/dl/a.bin")).unwrap();
         assert_eq!(registry.spares().unwrap(), [spare("/dl/b.bin")]);
         registry.unshare(CONTENT).unwrap();
         assert!(registry.spares().unwrap().is_empty());
 
         registry.share(row("/dl/film.bin")).unwrap();
-        registry.record_spare(&spare("/dl/b.bin")).unwrap();
+        record(&registry, "/dl/b.bin");
         assert!(registry.gone(CONTENT, Path::new("/dl/film.bin")).unwrap());
         assert!(registry.spares().unwrap().is_empty());
     }
@@ -205,21 +218,14 @@ mod tests {
         let mut shared = row("/dl/film.bin");
         shared.part_hashes = vec![rmule_primitives::PartHash::from_bytes([3; 16])];
         registry.share(shared.clone()).unwrap();
-        registry.record_spare(&spare("/dl/copy.bin")).unwrap();
+        record(&registry, "/dl/copy.bin");
         assert!(
-            !registry
-                .relocate(
-                    CONTENT,
-                    Path::new("/dl/elsewhere.bin"),
-                    &spare("/dl/copy.bin")
-                )
-                .unwrap(),
+            relocate(&registry, "/dl/elsewhere.bin", "/dl/copy.bin").is_empty(),
             "only from the path the row names"
         );
-        assert!(
-            registry
-                .relocate(CONTENT, Path::new("/dl/film.bin"), &spare("/dl/copy.bin"))
-                .unwrap()
+        assert_eq!(
+            relocate(&registry, "/dl/film.bin", "/dl/copy.bin"),
+            [CONTENT]
         );
         let moved = registry.get(CONTENT).unwrap().unwrap();
         assert_eq!(moved.path, Path::new("/dl/copy.bin"));
@@ -234,39 +240,21 @@ mod tests {
     }
 
     #[test]
-    fn a_version_four_row_climbs_to_an_unknown_identity_and_no_spare() {
-        let dir = tempfile::tempdir().unwrap();
-        {
-            let v4 = DurableStore::open(
-                dir.path().join(DURABLE_STORE_FILE),
-                &Schema::new().indexed(&SHARED_FILES_V2),
-                &Ladder::new(4, &[]),
-            )
-            .unwrap();
-            v4.write(|txn| {
-                SHARED_FILES_V2.insert(
-                    txn,
-                    CONTENT.as_bytes(),
-                    &SharedFileV2 {
-                        file_size: 9,
-                        path: "/dl/film.bin".into(),
-                        name: "film.bin".into(),
-                        source: ShareSource::Explicit,
-                        modified: Some(at(1)),
-                    },
-                )
-            })
-            .unwrap();
-        }
-        let registry = open(dir.path());
-        let rows = registry.list().unwrap();
-        assert_eq!(rows.len(), 1);
-        assert_eq!(
-            rows[0].modified,
-            Some(at(1)),
-            "the stamp survives the climb"
+    fn a_spare_row_keeps_its_bytes() {
+        let at = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000_000);
+        let row = super::SpareRow {
+            file_hash: FileHash::from_bytes([7; 16]),
+            size: 300,
+            modified: at,
+            identity: Some(FileIdentity {
+                device: 1,
+                inode: 2,
+                born: at,
+            }),
+        };
+        crate::store::assert_pinned(
+            &row,
+            "07070707070707070707070707070707ac028094ebdc03000101028094ebdc0300",
         );
-        assert!(registry.identities().unwrap().is_empty());
-        assert!(registry.spares().unwrap().is_empty());
     }
 }

@@ -1,10 +1,11 @@
 //! The pass against a scripted directory: the trust rule, the diff, the skip
 //! rules and the disclosure guard, with every open counted at the seam.
 
+use parking_lot::Mutex;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use rmule_primitives::{FileHash, FileHashSummary};
@@ -14,20 +15,20 @@ use super::{
     Consent, DirEntry, DirectorySource, EntryKind, FileStamp, Memory, PassEnd, ProgressCell,
     ScanReport, ScanSummary, SpareCopy, run_pass,
 };
-use crate::registry::{ShareSource, SharedFileEntry};
+use crate::registry::{ShareRefusal, ShareSource, SharedRow};
 
 struct Outcome {
     end: PassEnd,
     reports: Vec<ScanReport>,
 }
 
-fn pass_with(dir: &Scripted, rows: &[SharedFileEntry], consent: Consent) -> Outcome {
+fn pass_with(dir: &Scripted, rows: &[SharedRow], consent: Consent) -> Outcome {
     let progress: ProgressCell = Arc::new(Mutex::new(None));
     let mut reports = Vec::new();
     let end = run_pass(
         dir,
         Path::new(ROOT),
-        &known(rows),
+        &mut || Some(known(rows)),
         consent,
         &AtomicBool::new(false),
         &progress,
@@ -37,7 +38,7 @@ fn pass_with(dir: &Scripted, rows: &[SharedFileEntry], consent: Consent) -> Outc
     Outcome { end, reports }
 }
 
-fn pass(dir: &Scripted, rows: &[SharedFileEntry]) -> Outcome {
+fn pass(dir: &Scripted, rows: &[SharedRow]) -> Outcome {
     pass_with(dir, rows, Consent::Given)
 }
 
@@ -55,6 +56,7 @@ fn shared_paths(reports: &[ScanReport]) -> Vec<PathBuf> {
             | ScanReport::Held { .. }
             | ScanReport::Unreadable { .. }
             | ScanReport::NotHashed { .. }
+            | ScanReport::Refused { .. }
             | ScanReport::LeftoverParts(_)
             | ScanReport::WatchInterrupted(_)
             | ScanReport::WatchRestored
@@ -65,6 +67,36 @@ fn shared_paths(reports: &[ScanReport]) -> Vec<PathBuf> {
             | ScanReport::Finished(_) => None,
         })
         .collect()
+}
+
+/// A file past eD2k's limit is told once and costs no read, and an offer
+/// counts it nowhere.
+#[test]
+fn a_file_past_the_size_limit_is_refused_unread_and_never_offered() {
+    let mut dir = Scripted::new();
+    let size = rmule_primitives::MAX_ED2K_FILE_SIZE + 1;
+    dir.sized("/dl/disk.img", size, 1);
+    let outcome = pass(&dir, &[]);
+    assert_eq!(dir.opens(), 0, "a refused file is not read");
+    assert_eq!(
+        outcome.end,
+        PassEnd::Finished(ScanSummary {
+            skipped: 1,
+            ..ScanSummary::default()
+        })
+    );
+    assert!(outcome.reports.contains(&ScanReport::Refused {
+        path: PathBuf::from("/dl/disk.img"),
+        refusal: ShareRefusal::PastSizeLimit { file_size: size },
+    }));
+    assert!(
+        !outcome
+            .reports
+            .iter()
+            .any(|report| matches!(report, ScanReport::Share(_))),
+        "{:?}",
+        outcome.reports
+    );
 }
 
 #[test]
@@ -199,7 +231,7 @@ fn a_gone_row_whose_size_matched_other_content_leaves_after_the_hashing() {
     );
 }
 
-fn outcome_entry(report: &ScanReport) -> SharedFileEntry {
+fn outcome_entry(report: &ScanReport) -> crate::registry::SharedFileEntry {
     match report {
         ScanReport::Share(entry) => entry.clone(),
         other => panic!("expected a share first, got {other:?}"),
@@ -284,15 +316,11 @@ fn the_guard_hashes_nothing_before_the_operator_answers() {
         &dir,
         &[],
         Consent::Ask(Box::new(move |files| {
-            *seen.lock().unwrap() = Some((files.files, probe.opens()));
+            *seen.lock() = Some((files.files, probe.opens()));
             false
         })),
     );
-    assert_eq!(
-        *asked.lock().unwrap(),
-        Some((1, 0)),
-        "asked with nothing opened"
-    );
+    assert_eq!(*asked.lock(), Some((1, 0)), "asked with nothing opened");
     assert_eq!(outcome.end, PassEnd::Declined);
     assert!(outcome.reports.is_empty());
     assert_eq!(dir.opens(), 0);
@@ -326,7 +354,7 @@ fn a_raised_stop_ends_the_pass_before_the_next_read() {
     let end = run_pass(
         &dir,
         Path::new(ROOT),
-        &known(&[]),
+        &mut || Some(known(&[])),
         Consent::Given,
         &AtomicBool::new(true),
         &progress,
@@ -354,7 +382,7 @@ fn an_unlistable_directory_changes_nothing() {
 
 /// Several thousand files spread over subdirectories, each with the row a
 /// past pass left.
-fn restart_fixture(files: usize) -> (Scripted, Vec<SharedFileEntry>) {
+fn restart_fixture(files: usize) -> (Scripted, Vec<SharedRow>) {
     let mut dir = Scripted::new();
     let mut rows = Vec::with_capacity(files);
     for sub in 0..files.div_ceil(100) {
@@ -447,7 +475,7 @@ fn restart_revalidation_on_disk_wall_time() {
     }
     let source = CountingFs(AtomicUsize::new(0));
     // The rows a first pass would have left: every file's own stamp.
-    let rows: Vec<_> = super::walk(&source, tmp.path(), &super::Known::default())
+    let rows: Vec<_> = super::plan::walk(&source, tmp.path(), &super::Known::default())
         .unwrap()
         .found
         .into_iter()
@@ -467,7 +495,7 @@ fn restart_revalidation_on_disk_wall_time() {
     let end = run_pass(
         &source,
         tmp.path(),
-        &known(&rows),
+        &mut || Some(known(&rows)),
         Consent::Given,
         &AtomicBool::new(false),
         &progress,

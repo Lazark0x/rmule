@@ -17,11 +17,12 @@ use rmule_core::diagnostics::{
     KadFirewallCheck, KadFirewallVerdict, KadRuntimeDiagnostics, KadUdpVerdict,
 };
 
-use crate::rates::format_rate;
-
 use crate::state::UiState;
+use crate::table::widest;
 use crate::theme::Theme;
 use crate::views::human_size;
+use crate::words::units::rate;
+use crate::words::{absent, networks as words};
 use crate::wrap::labeled_lines;
 
 /// The TCP firewall row: the verdict, then why — whether a check has run,
@@ -30,37 +31,37 @@ use crate::wrap::labeled_lines;
 pub(super) fn firewall_text(kad: &KadRuntimeDiagnostics) -> String {
     let needed = KadFirewallCheck::ACKS_FOR_OPEN;
     let why = match kad.firewall_check {
-        KadFirewallCheck::NotYetRun => "not checked yet".to_owned(),
+        KadFirewallCheck::NotYetRun => words::NOT_CHECKED.to_owned(),
         KadFirewallCheck::Running { acks } | KadFirewallCheck::Ended { acks } => {
-            format!("{acks}/{needed} dial-backs")
+            words::dial_backs(acks, needed)
         }
     };
     let verdict = match kad.firewall {
-        KadFirewallVerdict::Open => "open",
-        KadFirewallVerdict::Checking => "checking",
-        KadFirewallVerdict::Firewalled => "firewalled",
+        KadFirewallVerdict::Open => words::OPEN,
+        KadFirewallVerdict::Checking => words::CHECKING,
+        KadFirewallVerdict::Firewalled => words::FIREWALLED,
     };
-    format!("{verdict} · {why}")
+    words::firewall(verdict, &why)
 }
 
 /// The UDP self-check's verdict: open on the port a helper reached, or what
 /// the helpers concluded.
 pub(super) fn udp_text(verdict: KadUdpVerdict) -> String {
     match verdict {
-        KadUdpVerdict::Open { port } => format!("open · port {port}"),
-        KadUdpVerdict::Firewalled => "firewalled · helpers failed".to_owned(),
-        KadUdpVerdict::Unverified => "unverified · no helper yet".to_owned(),
+        KadUdpVerdict::Open { port } => words::udp_open(port),
+        KadUdpVerdict::Firewalled => words::UDP_FIREWALLED.to_owned(),
+        KadUdpVerdict::Unverified => words::UDP_UNVERIFIED.to_owned(),
     }
 }
 
-/// One direction of Kad traffic: its metered rate (a dash until the bridge
-/// has metered an echo), then its wire bytes this session.
+/// One direction of Kad traffic: its metered rate (the word for none until
+/// the bridge has metered an echo), then its wire bytes this session.
 pub(super) fn traffic_text(bps: Option<f64>, bytes: u64) -> String {
-    let rate = bps.map_or_else(|| "—".to_owned(), format_rate);
-    format!("{rate} · {}", human_size(bytes))
+    let rate = bps.map_or_else(|| absent::NOT_MEASURED.to_owned(), rate);
+    words::traffic(&rate, &human_size(bytes))
 }
 
-/// The Kad panel — the live runtime facts, and a reasoned dash for the rest.
+/// The Kad panel — the live runtime facts, and the word for the rest.
 ///
 /// `DiagnosticsSnapshot::kad` is core's Kad vocabulary (ADR-0067): `None` until
 /// `EnableKad` started a node, then the join observable (aMule's `HasHadContact` — the *Joined* row and the status
@@ -69,17 +70,12 @@ pub(super) fn traffic_text(bps: Option<f64>, bytes: u64) -> String {
 /// size.
 pub(super) fn draw_kad(frame: &mut Frame, area: Rect, state: &UiState, theme: &Theme) {
     let kad_state = state.diagnostics.kad_state;
-    // `K` is hinted only with a core to send it to (No dead UI).
-    let hint = if state.session.is_some() {
-        crate::words::kad::switch_hint(kad_state)
-    } else {
-        ""
-    };
+    let hint = crate::words::kad::switch_hint(kad_state);
     let block = Block::bordered().border_style(theme.chrome());
     let block = crate::views::title::titled(
         block,
         area.width,
-        (" Kad ", Style::new().fg(theme.fg)),
+        (words::KAD_TITLE, Style::new().fg(theme.fg)),
         (hint, theme.dim_text()),
     );
     let inner = block.inner(area);
@@ -93,63 +89,49 @@ pub(super) fn draw_kad(frame: &mut Frame, area: Rect, state: &UiState, theme: &T
     // Dot colour is aMule's own arrow parity, applied to the one fact we have:
     // red = no node, yellow = running but nobody has answered, green = joined.
     // The grade is never colour-only — the *Joined* row spells it out.
-    let dot = match kad {
-        None => theme.bad,
-        Some(k) if k.contact_responded => theme.good,
-        Some(_) => theme.warn,
-    };
+    let dot = crate::views::kad_dot(state, theme);
     let live = Style::new().fg(theme.fg);
-    let contact = kad.is_some_and(|k| k.contact_responded);
-    let word = crate::words::kad::state_word(kad_state, contact);
+    let (word, word_style) = crate::views::kad_word(state, theme);
     let mut lines = vec![Line::from(vec![
         Span::styled("● ", Style::new().fg(dot)),
-        match kad_state {
-            rmule_core::diagnostics::KadState::Off => Span::styled(word, theme.dim_text()),
-            _ => Span::styled(word, live),
-        },
+        Span::styled(word, word_style),
     ])];
 
     let joined = match kad {
-        None => "— (node not started)",
-        Some(k) if k.contact_responded => "yes",
+        None => absent::NOT_RUNNING,
+        Some(k) if k.contact_responded => words::YES,
         // Only a received datagram flips the flag, so "not yet" is the whole
         // claim: nobody has answered *us* — never that the node is failing.
-        Some(_) => "not yet",
+        Some(_) => words::NOT_YET,
     };
-    let never = || "— (never run)".to_owned();
-    let firewall = kad.as_ref().map_or_else(never, firewall_text);
-    let udp = kad.map_or_else(never, |k| udp_text(k.udp));
-    let contacts = kad.map_or_else(|| "—".to_owned(), |k| k.contacts.to_string());
-    let keywords = kad.map_or_else(|| "—".to_owned(), |k| k.keywords_stored.to_string());
-    let node_id = kad.map_or_else(|| "—".to_owned(), |k| short_kad_id(k.node_id));
+    let off = || absent::NOT_RUNNING.to_owned();
+    let firewall = kad.as_ref().map_or_else(off, firewall_text);
+    let udp = kad.map_or_else(off, |k| udp_text(k.udp));
+    let contacts = kad.map_or_else(off, |k| k.contacts.to_string());
+    let keywords = kad.map_or_else(off, |k| k.keywords_stored.to_string());
+    let node_id = kad.map_or_else(off, |k| short_kad_id(k.node_id));
     let rates = state.rates.kad;
-    let received = kad.map_or_else(
-        || "—".to_owned(),
-        |k| {
-            let t = k.traffic;
-            traffic_text(rates.map(|r| r.in_bps), t.bytes_in)
-        },
-    );
-    let sent = kad.map_or_else(
-        || "—".to_owned(),
-        |k| {
-            let t = k.traffic;
-            traffic_text(rates.map(|r| r.out_bps), t.bytes_out)
-        },
-    );
+    let received = kad.map_or_else(off, |k| {
+        let t = k.traffic;
+        traffic_text(rates.map(|r| r.in_bps), t.bytes_in)
+    });
+    let sent = kad.map_or_else(off, |k| {
+        let t = k.traffic;
+        traffic_text(rates.map(|r| r.out_bps), t.bytes_out)
+    });
     let fact_style = if kad.is_some() {
         live
     } else {
         theme.dim_text()
     };
-    lines.extend(kad_kv(theme, "Joined", joined, fact_style, width));
-    lines.extend(kad_kv(theme, "Contacts", &contacts, fact_style, width));
-    lines.extend(kad_kv(theme, "Firewall", &firewall, fact_style, width));
-    lines.extend(kad_kv(theme, "UDP", &udp, fact_style, width));
-    lines.extend(kad_kv(theme, "Keywords", &keywords, fact_style, width));
-    lines.extend(kad_kv(theme, "Node id", &node_id, fact_style, width));
-    lines.extend(kad_kv(theme, "Received", &received, fact_style, width));
-    lines.extend(kad_kv(theme, "Sent", &sent, fact_style, width));
+    lines.extend(kad_kv(theme, words::JOINED, joined, fact_style, width));
+    lines.extend(kad_kv(theme, words::CONTACTS, &contacts, fact_style, width));
+    lines.extend(kad_kv(theme, words::FIREWALL, &firewall, fact_style, width));
+    lines.extend(kad_kv(theme, words::UDP, &udp, fact_style, width));
+    lines.extend(kad_kv(theme, words::KEYWORDS, &keywords, fact_style, width));
+    lines.extend(kad_kv(theme, words::NODE_ID, &node_id, fact_style, width));
+    lines.extend(kad_kv(theme, words::RECEIVED, &received, fact_style, width));
+    lines.extend(kad_kv(theme, words::SENT, &sent, fact_style, width));
     frame.render_widget(Paragraph::new(lines), inner);
 }
 
@@ -166,11 +148,12 @@ fn kad_kv(
     value_style: Style,
     width: usize,
 ) -> Vec<Line<'static>> {
+    let label_w = widest(&words::KAD_LABELS);
     labeled_lines(
-        Span::styled(format!("{label:<9} "), theme.dim_text()),
+        Span::styled(format!("{label:<label_w$} "), theme.dim_text()),
         value,
         value_style,
-        width.saturating_sub(10).max(1),
+        width.saturating_sub(label_w + 1).max(1),
     )
 }
 #[cfg(test)]
@@ -205,17 +188,17 @@ mod tests {
         for (state, dot_color, status, joined) in [
             (
                 UiState::default(),
-                theme.bad,
+                theme.dim,
                 "Kad: off",
-                "Joined    — (node not started)",
+                "Joined   not running",
             ),
             (
                 with_kad(false),
                 theme.warn,
                 "Kad: joining",
-                "Joined    not yet",
+                "Joined   not yet",
             ),
-            (with_kad(true), theme.good, "Kad: running", "Joined    yes"),
+            (with_kad(true), theme.good, "Kad: running", "Joined   yes"),
         ] {
             let mut view = NetworksView::new();
             let mut terminal = Terminal::new(TestBackend::new(78, 21)).expect("terminal");
@@ -257,7 +240,7 @@ mod tests {
     }
 
     /// The Kad panel facts render live from the snapshot — contact count,
-    /// firewall verdict, short node id — and keep their honest dash while no
+    /// firewall verdict, short node id — and keep their honest word while no
     /// node runs. The keyword row keeps its dash either way (no core surface).
     /// Every row is a fact core reported — the firewall verdict with why,
     /// the UDP verdict, the keyword index — and without a node every row
@@ -282,31 +265,31 @@ mod tests {
             (
                 UiState::default(),
                 [
-                    "Contacts  —",
-                    "Firewall  — (never run)",
-                    "UDP       — (never run)",
-                    "Keywords  —",
-                    "Node id   —",
+                    "Contacts not running",
+                    "Firewall not running",
+                    "UDP      not running",
+                    "Keywords not running",
+                    "Node id  not running",
                 ],
             ),
             (
                 with_kad(true),
                 [
-                    "Contacts  54",
-                    "Firewall  firewalled · not checked yet",
-                    "UDP       unverified · no helper yet",
-                    "Keywords  0",
-                    "Node id   2E2E2E2E2E…",
+                    "Contacts 54",
+                    "Firewall firewalled · not checked yet",
+                    "UDP      unverified · no helper yet",
+                    "Keywords 0",
+                    "Node id  2E2E2E2E2E…",
                 ],
             ),
             (
                 checked(KadFirewallVerdict::Firewalled, 1, KadUdpVerdict::Firewalled),
                 [
-                    "Contacts  54",
-                    "Firewall  firewalled · 1/2 dial-backs",
-                    "UDP       firewalled · helpers failed",
-                    "Keywords  12",
-                    "Node id   2E2E2E2E2E…",
+                    "Contacts 54",
+                    "Firewall firewalled · 1/2 dial-backs",
+                    "UDP      firewalled · helpers failed",
+                    "Keywords 12",
+                    "Node id  2E2E2E2E2E…",
                 ],
             ),
             (
@@ -316,11 +299,11 @@ mod tests {
                     KadUdpVerdict::Open { port: 4672 },
                 ),
                 [
-                    "Contacts  54",
-                    "Firewall  open · 2/2 dial-backs",
-                    "UDP       open · port 4672",
-                    "Keywords  12",
-                    "Node id   2E2E2E2E2E…",
+                    "Contacts 54",
+                    "Firewall open · 2/2 dial-backs",
+                    "UDP      open · port 4672",
+                    "Keywords 12",
+                    "Node id  2E2E2E2E2E…",
                 ],
             ),
         ] {

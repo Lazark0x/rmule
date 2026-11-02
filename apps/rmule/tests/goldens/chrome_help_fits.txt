@@ -1,0 +1,44 @@
+┌ 1 Networks │ 2 Searches │ 3 Transfers │ 4 Shared Files │ 5 Statistics │ 6 Settings ─────── rmule ┐
+┌ Help ────────────────────────────────────────────────────────────────────────────────────────────┐
+│ rmule 0.1.0 (0123456789ab, committed 2026-09-30)                                                ▲│
+│                                                                                                 █│
+│ Networks                                                                                        █│
+│ a               add server                                                                      █│
+│ U               update server list from URL                                                     █│
+│ c               connect to the selected server, or disconnect from the one you are on           █│
+│ K               start or stop Kad                                                               █│
+│ d               the selected server's grants, flags and health                                  █│
+│ f               in the log: every line, warnings and failures, or failures                      █│
+│                                                                                                 █│
+│ Everywhere                                                                                      █│
+│ 1–6             switch view directly                                                            █│
+│ h / l  ← / →    previous / next view                                                            █│
+│ j/k  ↑/↓        select row in focused pane                                                      █│
+│ PgUp / PgDn     a page; Ctrl-U / Ctrl-D too                                                     █│
+│ g / G           top / bottom; Home / End too                                                    █│
+│ /               filter the focused list as you type                                             █│
+│ Space / T       tag a row / every row on show                                                   █│
+│ Tab / Shift-Tab cycle panes (the focused pane's border stands out)                               │
+│ z               zoom the focused pane to the whole tab, or back                                  │
+│ m / Enter       row action menu; acts on the tagged rows if any                                  │
+│ x               take the row away, or the tagged rows; asks first                                │
+│ s / S           sort the focused table by next column / reverse                                  │
+│ ?               this help; type to filter it, ↑/↓ and PgUp/PgDn scroll                           │
+│ q               quit; asks first while anything is under way                                     │
+│ Ctrl-C          quit, from anywhere                                                              │
+│ Ctrl-Z          stop as a job; transfers stand still until fg                                    │
+│ Ctrl-L          repaint the screen                                                               │
+│ Esc             clear a filter or the tags; close a menu, a form or a confirm; leave the query;  │
+│                 a share question waits for y or n                                                │
+│ Ctrl-A / E      in a text field: to the start / end; Alt-←/→ by word                             │
+│ Ctrl-U/K/W/Y    in a text field: cut to start / to end / a word; put it back                     │
+│ Tab             in a path field: complete it; ~ is your home                                     │
+│ mouse           click tab/row selects, header sorts, a click runs a menu item, the wheel scrolls │
+│                 the pane under it                                                                │
+│ copy text       hold Shift, or Option on macOS, to drag; or turn Mouse off in Settings or start  │
+│                 with --no-mouse: clicks and the wheel then do nothing                            │
+│                                                                                                  │
+│ Searches                                                                                        ▼│
+│/                                                                                         63 of 63│
+└─────────────────────────────────────────────────────────────────────────────────── ↑/↓ ─ 39 / 85 ┘
+└ ▼   0.0 KB/s ▲   0.0 KB/s │ ●eD2k off ●Kad: off────────────────────────────────────────Esc leave ┘

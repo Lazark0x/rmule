@@ -9,8 +9,8 @@
 use std::net::Ipv4Addr;
 
 use rmule_primitives::{
-    ClientId, Ed2kText, FileHash, Ipv4Endpoint, PeerSource, SourceCryptOptions, SourceSighting,
-    UserHash,
+    ClientId, Ed2kText, FileHash, Informant, Ipv4Endpoint, PeerSource, SourceCryptOptions,
+    SourceSighting, UserHash,
 };
 use tokio::sync::mpsc;
 
@@ -23,15 +23,12 @@ fn hash(byte: u8) -> UserHash {
 }
 
 fn file() -> Ed2kFileLink {
-    Ed2kFileLink {
-        name: Ed2kText::from_utf8("claimed"),
-        size: 4096,
-        file_hash: FileHash::from_bytes([0xCD; FileHash::BYTE_LEN]),
-        part_hash_set: None,
-        aich_root: None,
-        ipv6_sources: Vec::new(),
-        sources: Default::default(),
-    }
+    Ed2kFileLink::new(
+        Ed2kText::from_utf8("claimed"),
+        4096,
+        FileHash::from_bytes([0xCD; FileHash::BYTE_LEN]),
+    )
+    .expect("a size eD2k addresses")
 }
 
 /// A connected-server Low-ID candidate whose obfuscation-aware `0x44` item
@@ -43,6 +40,7 @@ fn candidate_with_hash(low_id: u32, user_hash: UserHash) -> LowIdCandidate {
             PeerSource::new(ClientId::from_u32(low_id), 4662),
             Some(user_hash),
             Some(SourceCryptOptions::from_byte(0x01)),
+            Informant::Own,
         ),
         None,
     )
@@ -52,7 +50,10 @@ fn candidate_with_hash(low_id: u32, user_hash: UserHash) -> LowIdCandidate {
 /// The same source as a plain `0x42` answer names it: an id and a port.
 fn bare_candidate(low_id: u32) -> LowIdCandidate {
     LowIdCandidate::from_sighting(
-        SourceSighting::plain(PeerSource::new(ClientId::from_u32(low_id), 4662)),
+        SourceSighting::plain(
+            PeerSource::new(ClientId::from_u32(low_id), 4662),
+            Informant::Own,
+        ),
         None,
     )
     .expect("a Low-ID source is a candidate")
@@ -73,8 +74,8 @@ fn context(registry: &AwaitedInbound) -> CallbackContext {
                 own,
                 crate::natt::front::SharedNattFront::default(),
             ),
-            our_tcp_port: 4662,
         },
+        mpsc::channel(4).0,
         mpsc::channel(4).0,
         mpsc::channel(4).0,
         registry.clone(),
@@ -84,7 +85,7 @@ fn context(registry: &AwaitedInbound) -> CallbackContext {
 fn brief() -> AdoptionBrief {
     AdoptionBrief {
         file: file(),
-        own_status: PartBitmap::downloader_empty(0),
+        own_status: WireStatus::downloader_empty(0),
         want_sources: true,
     }
 }
@@ -114,7 +115,7 @@ fn ending_a_callback_drops_both_roads() {
     let mut ctx = context(&registry);
     ctx.await_callback(key, brief());
     assert!(
-        ctx.claim_tunnel(&candidate, &file(), PartBitmap::downloader_empty(0), true),
+        ctx.claim_tunnel(&candidate, &file(), WireStatus::downloader_empty(0), true),
         "a candidate carrying a User Hash claims its Tunnel"
     );
 
@@ -152,7 +153,7 @@ fn a_candidate_without_a_user_hash_claims_no_tunnel() {
         !ctx.claim_tunnel(
             &bare_candidate(7),
             &file(),
-            PartBitmap::downloader_empty(0),
+            WireStatus::downloader_empty(0),
             true
         ),
         "a plain 0x42 candidate has no hash to be claimed under"
@@ -170,7 +171,7 @@ fn ending_one_callback_leaves_another_targets_claim_standing() {
     let first = candidate_with_hash(7, hash(0xAB));
     let second = candidate_with_hash(8, hash(0xCD));
     for candidate in [&first, &second] {
-        ctx.claim_tunnel(candidate, &file(), PartBitmap::downloader_empty(0), true);
+        ctx.claim_tunnel(candidate, &file(), WireStatus::downloader_empty(0), true);
     }
 
     ctx.end_callback(first.key());

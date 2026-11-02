@@ -15,7 +15,7 @@ use rand::rngs::OsRng;
 use rsa::pkcs1::{DecodeRsaPrivateKey, EncodeRsaPrivateKey};
 use rsa::pkcs1v15::{Signature, SigningKey, VerifyingKey};
 use rsa::pkcs8::{DecodePublicKey, EncodePublicKey};
-use rsa::signature::{SignatureEncoding, Signer, Verifier};
+use rsa::signature::{RandomizedSigner, SignatureEncoding, Verifier};
 use rsa::{RsaPrivateKey, RsaPublicKey};
 use sha1::Sha1;
 
@@ -82,11 +82,12 @@ impl SecureIdentKey {
 
     /// Sign `message` with RSASSA-PKCS1v15 / SHA-1. Deterministic — the same key
     /// and message always produce the same bytes, which is what lets a captured
-    /// `(key, message, signature)` triple be a reproducible fixture.
+    /// `(key, message, signature)` triple be a reproducible fixture. The RNG only
+    /// blinds the private-key operation: its input is bytes a peer chose.
     #[must_use]
     pub fn sign(&self, message: &[u8]) -> Vec<u8> {
         let signing_key = SigningKey::<Sha1>::new(self.private.clone());
-        signing_key.sign(message).to_vec()
+        signing_key.sign_with_rng(&mut OsRng, message).to_vec()
     }
 
     /// The DER encoding of the public half, as carried in `OP_PUBLICKEY`:

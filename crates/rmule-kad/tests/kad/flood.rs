@@ -12,7 +12,8 @@ use rmule_kad::{
 };
 use rmule_primitives::session::drain;
 use rmule_testkit::kad_node::{
-    T0, deliver, diagnostics, endpoint, events, id, node, sent_messages,
+    T0, crypt_node, crypt_to_node, datagrams, deliver, diagnostics, drain_outputs, endpoint,
+    events, id, node, our_key_for, sent_messages,
 };
 
 /// A LAN sender (RFC 1918) — the flood table's bypass case.
@@ -126,9 +127,117 @@ fn flood_bucket_admits_up_to_rate_drops_above_and_reports_offender_at_five_times
             }),
             KadEvent::FloodOffenderDetected {
                 ip: from.ip(),
-                opcode: KADEMLIA2_HELLO_REQ
+                opcode: KADEMLIA2_HELLO_REQ,
+                proven: false,
             },
         ]
+    );
+}
+
+/// The offender reports among `outputs`, as `proven`.
+fn offender_reports(outputs: &[rmule_kad::KadOutput]) -> Vec<bool> {
+    events(outputs)
+        .into_iter()
+        .filter_map(|event| match event {
+            KadEvent::FloodOffenderDetected { proven, .. } => Some(proven),
+            _ => None,
+        })
+        .collect()
+}
+
+fn keyed_ping(peer: KadNodeEndpoint) -> Vec<u8> {
+    crypt_to_node(
+        &Kad2Message::Ping.encode().encode(),
+        our_key_for(peer),
+        0xB00F_B00F,
+    )
+}
+
+/// ADR-0064: a valid receiver key proves the sender receives at the address,
+/// so a flood of them is an offence the address itself committed.
+#[test]
+fn a_flood_of_valid_receiver_keys_reports_a_proven_offender() {
+    let mut node = crypt_node();
+    let from = endpoint(5, 4705);
+    let mut reports = Vec::new();
+
+    for _ in 0..11 {
+        node.handle_datagram(T0, from, &keyed_ping(from));
+        reports.extend(offender_reports(&drain_outputs(&mut node)));
+    }
+
+    assert_eq!(reports, vec![true]);
+}
+
+/// The two-byte datagram that crosses `5 × rate` costs a forger nothing, and
+/// no trailer means no proof, armed or not.
+#[test]
+fn six_forged_two_byte_datagrams_report_an_unproven_offender() {
+    let mut node = crypt_node();
+    let victim = endpoint(5, 4705);
+    let mut reports = Vec::new();
+
+    for _ in 0..6 {
+        node.handle_datagram(T0, victim, &[0xE4, 0x52]);
+        reports.extend(offender_reports(&drain_outputs(&mut node)));
+    }
+
+    assert_eq!(reports, vec![false]);
+}
+
+/// A forger filling the victim's bucket must not make the victim's own keyed
+/// datagram the proven one that crosses, nor cost it its allowance.
+#[test]
+fn a_forged_plaintext_flood_leaves_the_keyed_senders_bucket_untouched() {
+    let mut node = crypt_node();
+    let victim = endpoint(5, 4705);
+    let forged = Kad2Message::Ping.encode().encode();
+    for _ in 0..30 {
+        node.handle_datagram(T0, victim, &forged);
+    }
+    drain_outputs(&mut node);
+
+    node.handle_datagram(T0, victim, &keyed_ping(victim));
+    let outputs = drain_outputs(&mut node);
+
+    assert_eq!(offender_reports(&outputs), Vec::<bool>::new());
+    assert_eq!(datagrams(&outputs).len(), 1, "the keyed ping is answered");
+}
+
+/// Under the Hush a datagram that proves nothing stops, and the one that
+/// proves a round trip goes on: the forger costs the victim its plaintext
+/// and no more.
+#[test]
+fn a_hushed_address_is_heard_only_by_its_valid_receiver_key() {
+    let mut node = crypt_node();
+    let from = endpoint(5, 4705);
+    let plain = Kad2Message::Ping.encode().encode();
+
+    node.handle_hushed_datagram(T0, from, &plain);
+    let outputs = drain_outputs(&mut node);
+    assert_eq!(
+        diagnostics(&outputs),
+        vec![KadNodeDiagnostic::HushedDropped { from }]
+    );
+    assert!(datagrams(&outputs).is_empty());
+
+    node.handle_hushed_datagram(
+        T0,
+        from,
+        &crypt_to_node(&plain, our_key_for(from) ^ 1, 0xB00F_B00F),
+    );
+    let outputs = drain_outputs(&mut node);
+    assert_eq!(
+        diagnostics(&outputs),
+        vec![KadNodeDiagnostic::HushedDropped { from }],
+        "another address's key proves nothing"
+    );
+
+    node.handle_hushed_datagram(T0, from, &keyed_ping(from));
+    assert_eq!(
+        datagrams(&drain_outputs(&mut node)).len(),
+        1,
+        "the keyed ping is answered"
     );
 }
 

@@ -48,7 +48,7 @@ Open the eD2k peer transfer flow end-to-end against one peer: file probe, hash-s
 These corrections to the plan emerged from citing aMule + eMule source at the pinned commits and override any earlier assumption. Treat the entries here as the locked design.
 
 - **`QueueRanking` rank is `u16`, not `u32`.** Wire payload is 12 bytes (rank u16 + 10 zero pad); aMule send (`UploadClient.cpp:575-594`) and receive (`ClientTCPSocket.cpp:1331-1349`) both confirm. `OP_QUEUERANK = 0x5C` (standard protocol, u32, legacy) has never been sent by any aMule version (git history search returned zero hits); decoded as `PeerPacket::Unknown` per ADR-0018 until evidence appears.
-- **`OP_QUEUEFULL` (0x93) is UDP, not TCP, and out of scope.** The transfer scope models `OP_OUTOFPARTREQS (0x57)` as the TCP slot-rejection signal. Session-level event `QueueRejected { file_hash }` + `SlotReleased { QueueRejected }` semantics are unchanged from plan.
+- **`OP_QUEUEFULL` (0x93) is UDP, not TCP, and out of scope.** `OP_OUTOFPARTREQS (0x57)` is no slot rejection: on a granted slot it puts the flow back on queue on the same link (session event `Requeued { file_hash }`), and while only queued it changes nothing, as aMule (`ClientTCPSocket.cpp:755-762`; ADR-0025).
 - **Packet dispatch is keyed by `(PacketProtocol, opcode)`, not opcode alone.** Opcode `0x60` overloads between `OP_EDONKEYPROT` (`OP_ASKSHAREDFILESDIRANS`) and `OP_EMULEPROT` (`OP_QUEUERANKING`); same shape for any future extended opcode. `PeerPacket::Unknown` gains a `protocol: PacketProtocol` field; `NoticeEvent::UnknownPacket` gains the same field so replay tests and the inspector preserve the routing attribution.
 
 ### Non-goals (transfer scope)

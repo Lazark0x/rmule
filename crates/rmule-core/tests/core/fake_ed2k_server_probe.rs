@@ -101,3 +101,62 @@ async fn a_started_serve_answers_the_port_check_of_a_login_in_flight() {
         "the listener must answer the port check during the login and earn High-ID, got {id:?}"
     );
 }
+
+/// The fake holds a login to rmule's claim: the IPv6 tag is served alone, and
+/// `CT_SERVER_FLAGS` `0x1000`, Lugdunum's NAT callback, is dropped before an id
+/// is granted with or without it (ADR-0087).
+#[tokio::test]
+async fn a_login_claiming_the_nat_callback_is_dropped() {
+    use rmule_ed2k::{LoginAdvert, LoginRequest};
+    use rmule_primitives::{Capabilities, CryptStance, Tag, TagValue};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    const SRVCAP_NATTRAVERSAL: u32 = 0x1000;
+    let server = FakeEd2kServer::start().await;
+    let identity = identity_with_port(dead_port().await);
+    let advertising = LoginRequest::from_identity_advertising(
+        &identity,
+        &Capabilities::shipped(CryptStance::disabled()),
+        LoginAdvert {
+            ipv6: Some("2001:db8::9".parse().unwrap()),
+            udp_ports: None,
+            offer_pace: false,
+        },
+    );
+    let claiming = LoginRequest::new(
+        advertising.user_hash(),
+        advertising.client_id(),
+        advertising.tcp_port(),
+        advertising
+            .tags()
+            .iter()
+            .map(|tag| match tag.value() {
+                TagValue::U32(flags) if tag.name().id() == Some(0x20) => Tag::new(
+                    tag.name().clone(),
+                    TagValue::U32(flags | SRVCAP_NATTRAVERSAL),
+                ),
+                _ => tag.clone(),
+            })
+            .collect(),
+    );
+
+    let answered = |login: LoginRequest| {
+        let addr = server.local_addr();
+        async move {
+            let mut sock = tokio::net::TcpStream::connect(addr).await.unwrap();
+            sock.write_all(&login.encode_packet().encode())
+                .await
+                .unwrap();
+            let mut first = [0u8; 1];
+            matches!(
+                tokio::time::timeout(rmule_testkit::HANG_GUARD, sock.read(&mut first)).await,
+                Ok(Ok(1))
+            )
+        }
+    };
+    assert!(
+        answered(advertising.clone()).await,
+        "the tag alone is served"
+    );
+    assert!(!answered(claiming).await, "the claim is dropped");
+}

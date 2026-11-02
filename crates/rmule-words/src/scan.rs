@@ -8,11 +8,13 @@ use std::time::SystemTime;
 
 use rmule_core::{
     DirectoryOffer, DirectoryRefusal, DirectoryRole, DirectoryState, ScanEvent, ScanPhase,
-    WatchFault,
+    ScanSummary, ShareRefusal, WatchFault,
 };
+use rmule_primitives::MAX_ED2K_FILE_SIZE;
 
 use super::Sentence;
 use super::os::{kind_words, refusal_words};
+use super::plural::Plural;
 use super::units::human_size;
 
 /// Why a watch does not hold, as a clause: "… not watched: {this}".
@@ -47,6 +49,7 @@ pub fn refusal(reason: &DirectoryRefusal) -> String {
             format!("it cannot be looked at: {}", kind_words(*kind))
         }
         DirectoryRefusal::NotUtf8 => "its name is not valid UTF-8".to_string(),
+        DirectoryRefusal::NotAbsolute => "it is not an absolute path".to_string(),
         DirectoryRefusal::HomeDirectory => {
             "it is your home directory — share a folder inside it".to_string()
         }
@@ -62,6 +65,15 @@ pub fn refusal(reason: &DirectoryRefusal) -> String {
         DirectoryRefusal::AlreadyShared => "it is already shared".to_string(),
         DirectoryRefusal::InsideShared { parent } => {
             format!("it is already shared as part of {}", parent.display())
+        }
+        DirectoryRefusal::HoldsShared { child } => {
+            format!("it holds the shared directory {}", child.display())
+        }
+        DirectoryRefusal::HoldsTempDirectory => {
+            "it is or holds the Temp Directory, where unfinished downloads are kept".to_string()
+        }
+        DirectoryRefusal::InsideTempDirectory => {
+            "it lies inside the Temp Directory, where unfinished downloads are kept".to_string()
         }
         DirectoryRefusal::DownloadDirectory => {
             "it is the download directory — change that above, under Paths".to_string()
@@ -81,6 +93,24 @@ pub fn download_dir_refusal(reason: &DirectoryRefusal) -> String {
         DirectoryRefusal::HomeDirectory => "it is your home directory".to_string(),
         DirectoryRefusal::FilesystemRoot => "it is the root of a disk".to_string(),
         other => refusal(other),
+    }
+}
+
+/// Why the Temp Directory was not taken, as a clause: where it lies against
+/// the shared directories, what it is, or why it could not be made.
+#[must_use]
+pub fn temp_dir_refusal(reason: &DirectoryRefusal) -> String {
+    match reason {
+        DirectoryRefusal::NotADirectory => "it names a file, not a directory".to_string(),
+        DirectoryRefusal::Unreachable(kind) => {
+            format!("it cannot be made: {}", kind_words(*kind))
+        }
+        DirectoryRefusal::DownloadDirectory => "it is the download directory".to_string(),
+        DirectoryRefusal::AlreadyShared => "it is a shared directory".to_string(),
+        DirectoryRefusal::InsideShared { parent } => {
+            format!("it lies inside the shared directory {}", parent.display())
+        }
+        other => download_dir_refusal(other),
     }
 }
 
@@ -109,16 +139,9 @@ pub fn line(event: &ScanEvent) -> Sentence {
             offer.files,
             dir.display()
         ),
-        ScanEvent::Finished { dir, summary } => format!(
-            "{} scanned: {} kept, {} carried, {} hashed, {} dropped, {} skipped, {} unreadable",
-            dir.display(),
-            summary.trusted,
-            summary.carried,
-            summary.hashed,
-            summary.dropped,
-            summary.skipped,
-            summary.unreadable
-        ),
+        ScanEvent::Finished { dir, summary } => {
+            format!("{}: {}", dir.display(), scan_receipt(summary))
+        }
         ScanEvent::Declined { dir } => format!("{} not shared (declined)", dir.display()),
         ScanEvent::DirectoryAdded { dir, replaced } if replaced.is_empty() => {
             format!("{} is shared", dir.display())
@@ -185,11 +208,27 @@ pub fn line(event: &ScanEvent) -> Sentence {
             path.display(),
             refusal_words(*kind, *os_code)
         ),
+        ScanEvent::FileRefused { path, refusal, .. } => format!(
+            "{} is not shared: {}",
+            path.display(),
+            share_refusal_words(*refusal)
+        ),
         ScanEvent::Unlistable { dir } => format!(
             "{} cannot be listed, nothing unshared; it is scanned again at the next start",
             dir.display()
         ),
     })
+}
+
+/// Why a file is refused a share.
+fn share_refusal_words(refusal: ShareRefusal) -> String {
+    match refusal {
+        ShareRefusal::PastSizeLimit { file_size } => format!(
+            "at {} it is past the {} eD2k can address",
+            human_size(file_size),
+            human_size(MAX_ED2K_FILE_SIZE)
+        ),
+    }
 }
 
 /// A scan's phase as a short state: the strip's and Settings' words.
@@ -259,13 +298,47 @@ pub const fn role_words(role: DirectoryRole) -> Option<&'static str> {
     }
 }
 
+/// What a finished pass changed, in the operator's terms: the files it added
+/// and only the exceptions beside them. A file it found as it was left is
+/// not news.
+fn scan_receipt(summary: &ScanSummary) -> String {
+    let said: Vec<String> = [
+        (
+            summary.hashed,
+            Plural::new("{n} file added", "{n} files added"),
+        ),
+        (
+            summary.carried,
+            Plural::new("{n} file moved", "{n} files moved"),
+        ),
+        (
+            summary.dropped,
+            Plural::new("{n} file no longer shared", "{n} files no longer shared"),
+        ),
+        (
+            summary.skipped,
+            Plural::new("{n} file left out", "{n} files left out"),
+        ),
+        (
+            summary.unreadable,
+            Plural::new("{n} file could not be read", "{n} files could not be read"),
+        ),
+    ]
+    .into_iter()
+    .filter(|(count, _)| *count > 0)
+    .map(|(count, phrase)| phrase.of(count))
+    .collect();
+    if said.is_empty() {
+        "no change".to_string()
+    } else {
+        said.join(", ")
+    }
+}
+
 /// A count of files, in words.
 #[must_use]
 pub fn files(count: usize) -> String {
-    match count {
-        1 => "1 file".to_string(),
-        count => format!("{count} files"),
-    }
+    Plural::new("{n} file", "{n} files").of(count)
 }
 
 /// The share confirm: its title, its question, and what a yes discloses.
@@ -312,5 +385,71 @@ pub const ADD_EMPTY: &str = "type the path of a directory to share";
 /// The add row's commit with a relative path.
 pub const ADD_RELATIVE: &str = "a shared directory is named by its absolute path";
 
+/// The add row's commit with no directory at the path.
+pub const ADD_MISSING: &str = "no directory there: check the path, Tab completes it";
+
 /// The remove confirm's title.
 pub const REMOVE_TITLE: &str = " Stop sharing? ";
+
+/// The CLI's line for the Download Directory: where it is, or that none is
+/// set yet.
+#[must_use]
+pub fn download_dir_line(dir: Option<&Path>) -> String {
+    match dir {
+        Some(dir) => format!("download_dir {}", dir.display()),
+        None => "download_dir <unset>".to_string(),
+    }
+}
+
+/// The CLI's line for the Temp Directory: where it is, and when that is the
+/// default beside the data directory rather than one the operator chose.
+#[must_use]
+pub fn temp_dir_line(dir: &Path, is_default: bool) -> String {
+    if is_default {
+        format!("temp_dir {} (default)", dir.display())
+    } else {
+        format!("temp_dir {}", dir.display())
+    }
+}
+
+/// The CLI's refusal when the Download Directory was not taken, `reason`
+/// being the refusal's own words.
+#[must_use]
+pub fn download_dir_not_set(dir: &Path, reason: &DirectoryRefusal) -> String {
+    format!(
+        "{} is not set as the download directory: everything under it is shared, and {}",
+        dir.display(),
+        download_dir_refusal(reason)
+    )
+}
+
+/// The CLI's refusal when the Temp Directory was not taken.
+#[must_use]
+pub fn temp_dir_not_set(dir: &Path, reason: &DirectoryRefusal) -> String {
+    format!(
+        "{} is not set as the Temp Directory: {}",
+        dir.display(),
+        temp_dir_refusal(reason)
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The operator reads which file, how large it is and what the limit is.
+    #[test]
+    fn a_refused_file_says_its_size_and_the_limit() {
+        let event = ScanEvent::FileRefused {
+            dir: PathBuf::from("/vm"),
+            path: PathBuf::from("/vm/disk.img"),
+            refusal: ShareRefusal::PastSizeLimit {
+                file_size: 300 << 30,
+            },
+        };
+        assert_eq!(
+            line(&event).as_str(),
+            "/vm/disk.img is not shared: at 300.0 GB it is past the 256.0 GB eD2k can address"
+        );
+    }
+}

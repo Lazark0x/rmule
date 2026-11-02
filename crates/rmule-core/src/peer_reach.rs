@@ -56,7 +56,7 @@ pub(crate) struct PeerReachWiring {
     pub(crate) obfuscation: crate::obfuscation_policy::SharedObfuscationPolicy,
     pub(crate) diagnostics: DiagnosticsState,
     /// Where each road taken is reported.
-    pub(crate) events: mpsc::Sender<CoreEvent>,
+    pub(crate) events: crate::service::Outbox,
 }
 
 /// **Peer Reach** itself: one per core, owned by the actor.
@@ -88,15 +88,11 @@ impl PeerReacher {
         retire: Option<PendingCallback>,
     ) -> PeerReachRoute {
         let route = self.road(peer, retire).await;
-        tracing::debug!(peer = ?peer.tcp, ?route, "peer reach routed (ADR-0061)");
-        let _ = self
-            .wiring
-            .events
-            .send(CoreEvent::PeerReachRouted {
-                peer: peer.tcp,
-                route,
-            })
-            .await;
+        tracing::debug!(peer = ?peer.address, ?route, "peer reach routed (ADR-0061)");
+        self.wiring.events.send(CoreEvent::PeerReachRouted {
+            peer: peer.address,
+            route,
+        });
         route
     }
 
@@ -110,6 +106,7 @@ impl PeerReacher {
         let retire = Retire {
             key: pending.key,
             tx: pending.retire_tx,
+            held_tx: pending.held_tx,
         };
         match pending.road {
             DownloadAsk::BuddyCallback { file_hash } => {
@@ -127,7 +124,7 @@ impl PeerReacher {
                     // could be asked".
                     self.wiring.diagnostics.count_natt_download_no_coordinator();
                     tracing::debug!(
-                        peer = ?peer.tcp,
+                        peer = ?peer.address,
                         ?silence,
                         "a download's Low-ID candidate has no NAT-T coordinator (ADR-0091 rung 1)"
                     );
@@ -304,6 +301,7 @@ impl PeerReacher {
         Some(AttemptOwner {
             target,
             facts: callback_target(peer).natt_facts(),
+            crypt: peer.crypt,
             offer: crate::natt::RendezvousOffer {
                 our_user_hash,
                 // uTP only: ADR-0091 keeps QUIC dark until a live handshake
@@ -379,10 +377,8 @@ impl PeerReacher {
             );
             return unsent;
         };
-        // A pump that refused the ask (its task gone, or its mailbox full) is
-        // not retired here: the socket-free Kad factories the integration legs
-        // run on never install a pump, and their publisher dials back
-        // unprompted. The callback's own deadline bounds that slot.
+        // A pump that refused the ask — its task gone, or its mailbox full —
+        // sent nothing, so the road ends as one that never left.
         let emitted_to = match buddy.buddy_udp {
             Some(buddy_udp) => crate::adapters::request_kad_buddy_callback(
                 &self.wiring.kad_pump,
@@ -391,6 +387,7 @@ impl PeerReacher {
                     buddy_id: buddy.buddy_id,
                     file_hash,
                     tcp_port,
+                    reply: retire.reply(),
                 },
             )
             .then_some(buddy_udp),
@@ -401,10 +398,7 @@ impl PeerReacher {
                         buddy_id: buddy.buddy_id,
                         file_hash,
                         tcp_port,
-                        reply: crate::adapters::CallbackWalkReply {
-                            key: retire.key,
-                            retire_tx: retire.tx,
-                        },
+                        reply: retire.reply(),
                     },
                 ) {
                     tracing::info!(
@@ -418,6 +412,9 @@ impl PeerReacher {
                 None
             }
         };
+        if emitted_to.is_none() {
+            retire.unopened(NattRetirement::CallbackNotSent);
+        }
         tracing::info!(
             ?emitted_to,
             buddy_id = ?buddy.buddy_id,
@@ -542,9 +539,20 @@ impl PeerReacher {
 struct Retire {
     key: CallbackKey,
     tx: mpsc::Sender<(CallbackKey, NattRetirement)>,
+    /// Where the **Callback Pace** says it holds the road's `0x52`.
+    held_tx: crate::adapters::HeldSender,
 }
 
 impl Retire {
+    /// Where the `0x52`'s fate is reported.
+    fn reply(&self) -> crate::adapters::CallbackReply {
+        crate::adapters::CallbackReply {
+            key: self.key,
+            retire_tx: self.tx.clone(),
+            held_tx: self.held_tx.clone(),
+        }
+    }
+
     /// Tell the candidate that the road it was asked down never opened: the
     /// one owner that would otherwise report its end was never created, so
     /// without this the slot waits out its deadline for an ask that never

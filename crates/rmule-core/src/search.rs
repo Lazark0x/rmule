@@ -13,18 +13,19 @@
 //! again with its set kept, and completes again. It ends once another search
 //! request has made the server let the rows go.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::ops::ControlFlow;
 use std::pin::Pin;
 use std::time::Duration;
 
+use rmule_ed2k::SearchResultSkipReason;
 use rmule_primitives::{SearchResult, SearchResultKey};
 use tokio::sync::{mpsc, oneshot, watch};
 use tokio::time::{Instant, Sleep, sleep_until};
 
 use crate::server_session::{SearchStream, ServerSearchEvent, ServerSessionHandle};
 use crate::service::{
-    CoreEvent, LegNotSent, SearchEvent, SearchFailure, SearchId, SearchLegState, SearchLegs,
+    LegNotSent, SearchEvent, SearchFailure, SearchId, SearchLegState, SearchLegs,
 };
 
 mod attribution;
@@ -67,7 +68,7 @@ pub(crate) struct SearchTask {
     /// dropped, when there is no sweep: the global leg's settle signal.
     pub(crate) global_sweep: SweepDone,
     pub(crate) windows: SearchWindows,
-    pub(crate) evt_tx: mpsc::Sender<CoreEvent>,
+    pub(crate) evt_tx: crate::service::Outbox,
     /// The search's stop: raised, or its sender dropped, the task ends at
     /// once and says nothing — its retire says `SearchCancelled`.
     pub(crate) cancel_rx: watch::Receiver<bool>,
@@ -377,23 +378,33 @@ impl SearchTask {
         }
     }
 
-    /// Fold `batch` into the set and publish the snapshot. `false` for an
-    /// empty batch: it is not a result event, so it neither publishes nor
-    /// holds the quiet window open.
+    /// Fold `batch` into the set and publish the rows it added or changed.
+    /// Answers whether it added one: only that holds the quiet window open.
     async fn merge(&self, results: &mut SearchResultSet, batch: Vec<SearchResult>) -> bool {
-        if !results.merge_batch(batch) {
-            return false;
+        let Merged {
+            changed,
+            added,
+            capped,
+        } = results.merge_batch(batch);
+        if capped {
+            self.emit(SearchEvent::SearchResultSkipped {
+                search_id: self.search_id,
+                reason: SearchResultSkipReason::RowCap,
+            })
+            .await;
         }
-        self.emit(SearchEvent::SearchResultsReceived {
-            search_id: self.search_id,
-            results: results.snapshot(),
-        })
-        .await;
-        true
+        if !changed.is_empty() {
+            self.emit(SearchEvent::SearchResultsReceived {
+                search_id: self.search_id,
+                results: changed,
+            })
+            .await;
+        }
+        added > 0
     }
 
     async fn emit(&self, event: SearchEvent) {
-        let _ = self.evt_tx.send(event.into()).await;
+        self.evt_tx.send(event.into());
     }
 
     /// Move the leg picture and say so, once per real change.
@@ -424,31 +435,76 @@ async fn late_leg<T>(
     }
 }
 
+/// The rows one search keeps. An honest sweep is 300 servers answering much the
+/// same 200 rows; a listed server that keeps answering would otherwise grow the
+/// set for as long as the search lives.
+const SEARCH_ROW_CAP: usize = 5_000;
+
+/// The bytes of a counterparty's text one search keeps: a name is as long as a
+/// frame allows, so the row cap alone is gigabytes.
+const SEARCH_BYTE_BUDGET: usize = 32 * 1024 * 1024;
+
+/// What a batch did to the set.
+#[derive(Debug, Default)]
+struct Merged {
+    /// The rows it added or changed, whole and as merged, in set order.
+    changed: Vec<SearchResult>,
+    /// How many of those it added. Only these hold the quiet window open: a
+    /// repeat of a row changes its counts and could otherwise hold it for ever.
+    added: usize,
+    /// Whether this batch is the first to meet the cap.
+    capped: bool,
+}
+
 #[derive(Default)]
 struct SearchResultSet {
     order: Vec<SearchResult>,
     by_key: HashMap<SearchResultKey, usize>,
+    held_bytes: usize,
+    capped: bool,
 }
 
 impl SearchResultSet {
-    fn merge_batch(&mut self, batch: Vec<SearchResult>) -> bool {
-        let mut accepted = false;
+    fn merge_batch(&mut self, batch: Vec<SearchResult>) -> Merged {
+        let mut merged = Merged::default();
+        let mut touched = BTreeSet::new();
         for result in batch {
-            accepted = true;
             let key = result.key();
             if let Some(index) = self.by_key.get(&key).copied() {
-                self.order[index].merge_aliases_from(&result);
-            } else {
+                self.fold(index, &result);
+                touched.insert(index);
+            } else if self.has_room_for(&result) {
+                self.held_bytes += result.held_bytes();
                 let index = self.order.len();
                 self.order.push(result);
                 self.by_key.insert(key, index);
+                touched.insert(index);
+                merged.added += 1;
+            } else {
+                merged.capped |= !std::mem::replace(&mut self.capped, true);
             }
         }
-        accepted
+        merged.changed = touched
+            .into_iter()
+            .map(|index| self.order[index].clone())
+            .collect();
+        merged
     }
 
-    fn snapshot(&self) -> Vec<SearchResult> {
-        self.order.clone()
+    /// Fold `report` into a held row, within what the budget leaves.
+    fn fold(&mut self, index: usize, report: &SearchResult) {
+        if self.held_bytes.saturating_add(report.held_bytes()) > SEARCH_BYTE_BUDGET {
+            return;
+        }
+        let row = &mut self.order[index];
+        let before = row.held_bytes();
+        row.merge_aliases_from(report);
+        self.held_bytes += row.held_bytes() - before;
+    }
+
+    fn has_room_for(&self, row: &SearchResult) -> bool {
+        self.order.len() < SEARCH_ROW_CAP
+            && self.held_bytes.saturating_add(row.held_bytes()) <= SEARCH_BYTE_BUDGET
     }
 
     fn len(&self) -> usize {

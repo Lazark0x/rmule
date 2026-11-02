@@ -35,7 +35,6 @@ async fn a_real_core_share_round_trips_through_seam_bridge_and_fold() {
         .send(CoreCommand::Scan(ScanCommand::AddSharedDirectory {
             path: dir.path().to_path_buf(),
         }))
-        .await
         .expect("command lands through the seam");
 
     let mut state = UiState::default();
@@ -49,7 +48,6 @@ async fn a_real_core_share_round_trips_through_seam_bridge_and_fold() {
                         dir: dir.clone(),
                         share: true,
                     }))
-                    .await
                     .expect("the confirm lands through the seam");
             }
             let shared = matches!(
@@ -103,7 +101,6 @@ async fn the_injected_server_list_store_is_what_the_servers_tab_renders() {
         .send(CoreCommand::ServerList(ServerListCommand::AddServer {
             server: ManagedServer::listed(added.clone()),
         }))
-        .await
         .expect("command lands through the seam");
 
     // The level (data tick) and the edge (event stream) are two lanes with no
@@ -224,7 +221,10 @@ async fn the_armed_kad_join_starts_a_real_node_and_the_panel_fact_goes_live() {
     // (stdout is the alternate screen), so the seed outcome rides the same two
     // surfaces a core event's would — the log pane and the info feed.
     state.apply(
-        Action::Note(rmule::words::kad::seed_outcome_words(&outcome)),
+        Action::Note(
+            rmule::words::severity::Severity::Info,
+            rmule::words::kad::seed_outcome_words(&outcome),
+        ),
         Instant::now(),
     );
     assert_eq!(
@@ -266,6 +266,7 @@ async fn the_armed_kad_join_starts_a_real_node_and_the_panel_fact_goes_live() {
 async fn the_options_row_constraints_arrive_as_a_decodable_expression_tree() {
     use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers};
     use rmule::state::SessionConfig;
+    use rmule::views::View;
     use rmule::views::ViewOutcome;
     use rmule::views::searches::SearchesView;
     use rmule_core::{SearchCommand, SearchEvent};
@@ -289,10 +290,10 @@ async fn the_options_row_constraints_arrive_as_a_decodable_expression_tree() {
     .expect("a loopback endpoint");
 
     let mut state = UiState {
-        session: Some(SessionConfig {
+        session: SessionConfig {
             server: Some(endpoint.clone()),
             download_dir: None,
-        }),
+        },
         ..UiState::default()
     };
 
@@ -344,11 +345,10 @@ async fn the_options_row_constraints_arrive_as_a_decodable_expression_tree() {
             server: server.endpoint(),
         },
     ] {
-        handle.send(connect).await.expect("the connect lands");
+        handle.send(connect).expect("the connect lands");
     }
     handle
         .send(command)
-        .await
         .expect("command lands through the seam");
 
     tokio::time::timeout(HANG_GUARD, async {
@@ -395,16 +395,7 @@ async fn the_options_row_constraints_arrive_as_a_decodable_expression_tree() {
 struct NeverFetches;
 
 impl rmule_bootstrap::Fetcher for NeverFetches {
-    fn get(
-        &self,
-        url: &str,
-        _max_bytes: usize,
-    ) -> impl std::future::Future<Output = Result<Vec<u8>, rmule_bootstrap::FetchError>> + Send
-    {
+    fn get<'a>(&'a self, url: &'a str, _max_bytes: usize) -> rmule_bootstrap::FetchFuture<'a> {
         panic!("the default-OFF nodes.dat switch must not fetch: {url}");
-        #[expect(unreachable_code, reason = "the panic above is the assertion")]
-        async {
-            unreachable!()
-        }
     }
 }

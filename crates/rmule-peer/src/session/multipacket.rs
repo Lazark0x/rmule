@@ -3,42 +3,117 @@
 //! fanned back out as one composed answer.
 //!
 //! A bundle answers only once every sub-item it actually asked for has an
-//! answer; sub-items the bundle omitted never appear in the composition.
+//! answer; sub-items the bundle omitted never appear in the composition, and
+//! their standalone asks are answered standalone, open bundle or not. Core
+//! answers a link's asks in order, so a bundle's own answers reach it first.
 
 use rmule_primitives::{AichRootHash, Ed2kText, FileHash};
 
 use super::{PeerEvent, PeerSession};
-use crate::file::PartBitmap;
 use crate::file_request::{FileStatus, ReqFileNameAnswer};
 use crate::multipacket::{
     AnswerItem, BundledAsk, MultiPacketAnswer, MultiPacketRequest, RequestItem,
 };
+use crate::wire_status::WireStatus;
 use crate::{NoticeEvent, RequesterEvent, ServerEvent};
+
+/// Which answers a bundled request flushes on. `Name` and `Status` are the hard
+/// gate: real requests always carry `Name`, so this is the trigger that actually
+/// fires in practice. AICH is deliberately never part of that gate: core may
+/// answer an AICH-root request long after, or never (the hashset is still being
+/// built, ADR-0038), and ADR-0054 calls for silent omission in that case rather
+/// than an answer the rest of the bundle waits for. Only a bundle that asked for
+/// neither flushes on AICH alone; one that asked for none of the three (Source
+/// subs only) opens no entry at all.
+#[derive(Clone, Copy, Debug)]
+enum FlushGate {
+    Name,
+    Status,
+    NameAndStatus,
+    AichAlone,
+}
+
+impl FlushGate {
+    /// The gate a request's sub-items set, or `None` when no answer composes.
+    fn for_items(items: &[RequestItem]) -> Option<Self> {
+        let asked = |item: fn(&RequestItem) -> bool| items.iter().any(item);
+        let name = asked(|i| matches!(i, RequestItem::Name { .. }));
+        let status = asked(|i| matches!(i, RequestItem::SetReqId));
+        match (name, status) {
+            (true, true) => Some(Self::NameAndStatus),
+            (true, false) => Some(Self::Name),
+            (false, true) => Some(Self::Status),
+            (false, false) => {
+                asked(|i| matches!(i, RequestItem::AichRoot)).then_some(Self::AichAlone)
+            }
+        }
+    }
+}
 
 /// Accumulates the standalone-shaped serve answers a bundled
 /// `OP_MULTIPACKET`/`OP_MULTIPACKET_EXT` request is owed, so they can compose
-/// into one `OP_MULTIPACKETANSWER` instead of separate packets (ADR-0054).
-/// `wants_*` records which sub-items the *request* carried; the
+/// into one `OP_MULTIPACKETANSWER` instead of separate packets (ADR-0054). The
 /// `Option` fields fill in as core's existing `Answer*` commands arrive, in
-/// whatever order.
-///
-/// `wants_name`/`wants_status` are the hard completion gate — real requests
-/// always carry `Name`, so this is the trigger that actually fires in
-/// practice. `wants_aich` is deliberately never part of that gate: core may
-/// legitimately never answer an AICH-root request (the hashset isn't
-/// complete), and ADR-0054 calls for silent omission in that case rather than
-/// an answer that never arrives. When `wants_name` and `wants_status` are both
-/// false, AICH becomes the sole trigger (see
-/// [`PeerSession::try_flush_multipacket_answer`]); a bundle that asked for
-/// none of the three (Source subs only) never opens an entry at all.
-#[derive(Debug, Default)]
+/// whatever order; each holds at most the one answer its bundle asked for.
+#[derive(Debug)]
 pub(super) struct PendingMultipacketAnswer {
-    pub(super) wants_name: bool,
-    pub(super) wants_status: bool,
-    pub(super) wants_aich: bool,
-    pub(super) name: Option<Ed2kText>,
-    pub(super) status: Option<PartBitmap>,
-    pub(super) aich: Option<AichRootHash>,
+    gate: FlushGate,
+    asks_aich: bool,
+    name: Option<Ed2kText>,
+    status: Option<WireStatus>,
+    aich: Option<AichRootHash>,
+}
+
+impl PendingMultipacketAnswer {
+    fn opened(gate: FlushGate, items: &[RequestItem]) -> Self {
+        Self {
+            gate,
+            asks_aich: items.iter().any(|i| matches!(i, RequestItem::AichRoot)),
+            name: None,
+            status: None,
+            aich: None,
+        }
+    }
+
+    /// Take `name` when the bundle still owes one, else hand it back to go
+    /// out standalone.
+    pub(super) fn take_name(&mut self, name: Ed2kText) -> Option<Ed2kText> {
+        let owed = matches!(self.gate, FlushGate::Name | FlushGate::NameAndStatus);
+        if owed && self.name.is_none() {
+            self.name = Some(name);
+            return None;
+        }
+        Some(name)
+    }
+
+    /// As [`Self::take_name`], for a part status.
+    pub(super) fn take_status(&mut self, status: WireStatus) -> Option<WireStatus> {
+        let owed = matches!(self.gate, FlushGate::Status | FlushGate::NameAndStatus);
+        if owed && self.status.is_none() {
+            self.status = Some(status);
+            return None;
+        }
+        Some(status)
+    }
+
+    /// As [`Self::take_name`], for an AICH root.
+    pub(super) fn take_aich(&mut self, root: AichRootHash) -> Option<AichRootHash> {
+        if self.asks_aich && self.aich.is_none() {
+            self.aich = Some(root);
+            return None;
+        }
+        Some(root)
+    }
+
+    /// Whether every answer the gate names has arrived.
+    const fn ready(&self) -> bool {
+        match self.gate {
+            FlushGate::Name => self.name.is_some(),
+            FlushGate::Status => self.status.is_some(),
+            FlushGate::NameAndStatus => self.name.is_some() && self.status.is_some(),
+            FlushGate::AichAlone => self.aich.is_some(),
+        }
+    }
 }
 
 impl PeerSession {
@@ -52,27 +127,11 @@ impl PeerSession {
     /// answer is a *separate*, throttled `0x82` / `0x84` (aMule answers
     /// source subs out-of-band as well, ADR-0055).
     pub(super) fn on_multipacket_request(&mut self, req: MultiPacketRequest) {
-        let wants_name = req
-            .items
-            .iter()
-            .any(|i| matches!(i, RequestItem::Name { .. }));
-        let wants_status = req.items.iter().any(|i| matches!(i, RequestItem::SetReqId));
-        let wants_aich = req.items.iter().any(|i| matches!(i, RequestItem::AichRoot));
-        if wants_name || wants_status || wants_aich {
+        if let Some(gate) = FlushGate::for_items(&req.items) {
             self.served_multipacket.insert(
                 req.file_hash,
-                PendingMultipacketAnswer {
-                    wants_name,
-                    wants_status,
-                    wants_aich,
-                    ..Default::default()
-                },
+                PendingMultipacketAnswer::opened(gate, &req.items),
             );
-        }
-        if wants_aich {
-            // `OP_AICHFILEHASHANS` names no file: remember which one this
-            // bundle asked about, for `answer_aich_file_hash` to route.
-            self.served_aich_request = Some(req.file_hash);
         }
         let mut asks = Vec::with_capacity(req.items.len());
         for item in &req.items {
@@ -84,14 +143,12 @@ impl PeerSession {
                 RequestItem::AichRoot => BundledAsk::AichRoot,
                 // A plain `Sources` sub carries no version (`0`, SX1 path);
                 // `Sources2` carries the SX2 `<ver>` the serve pick reads.
-                RequestItem::Sources => {
-                    self.note_source_ask(req.file_hash, 0);
-                    BundledAsk::Sources
-                }
-                RequestItem::Sources2 { version, .. } => {
-                    self.note_source_ask(req.file_hash, *version);
-                    BundledAsk::Sources
-                }
+                RequestItem::Sources => BundledAsk::Sources {
+                    form: self.served_sources_version(0),
+                },
+                RequestItem::Sources2 { version, .. } => BundledAsk::Sources {
+                    form: self.served_sources_version(*version),
+                },
             });
         }
         self.core
@@ -114,10 +171,15 @@ impl PeerSession {
     /// Fan a bundled `OP_MULTIPACKETANSWER` (ADR-0054) into the exact same
     /// handlers a standalone `ReqFileNameAnswer`/`FileStatus`/`AichFileHashAns`
     /// would reach, so a bundle upgrades per-file probe state identically to
-    /// the separate-packet sequence — including when unsolicited.
+    /// the separate-packet sequence. `frame_gate` has refused an answer about
+    /// a file this link never asked, before any item reaches here.
     pub(super) fn on_multipacket_answer(&mut self, ans: MultiPacketAnswer) {
         let file_hash = ans.file_hash;
         for item in ans.items {
+            // A refused status closed the session: nothing after it is read.
+            if self.core.is_closed() {
+                return;
+            }
             match item {
                 AnswerItem::Name(file_name) => self.on_req_filename_answer(ReqFileNameAnswer {
                     file_hash,
@@ -128,7 +190,7 @@ impl PeerSession {
                 }
                 AnswerItem::AichRoot(root) => {
                     self.core.push_event(PeerEvent::Requester(
-                        RequesterEvent::AichFileHashReceived { root },
+                        RequesterEvent::AichFileHashReceived { file_hash, root },
                     ));
                 }
             }
@@ -145,24 +207,15 @@ impl PeerSession {
 
     /// Compose and send the pending `OP_MULTIPACKETANSWER` for `file_hash` once
     /// every sub-item its request hard-requires has answered (ADR-0054). See
-    /// [`PendingMultipacketAnswer`] for the completion rule; a no-op while the
+    /// [`FlushGate`] for the completion rule; a no-op while the
     /// gate isn't met yet, and idempotent once already flushed (the entry is
     /// gone).
     pub(super) fn try_flush_multipacket_answer(&mut self, file_hash: FileHash) {
-        let Some(pending) = self.served_multipacket.get(&file_hash) else {
-            return;
-        };
-        let hard_required = pending.wants_name || pending.wants_status;
-        let ready = if hard_required {
-            (!pending.wants_name || pending.name.is_some())
-                && (!pending.wants_status || pending.status.is_some())
-        } else {
-            // Nothing hard-required: AICH is the sole trigger.
-            // `on_multipacket_request` never opens an entry that wants none
-            // of the three, so `wants_aich` is true whenever this arm runs.
-            pending.wants_aich && pending.aich.is_some()
-        };
-        if !ready {
+        if !self
+            .served_multipacket
+            .get(&file_hash)
+            .is_some_and(PendingMultipacketAnswer::ready)
+        {
             return;
         }
         let pending = self

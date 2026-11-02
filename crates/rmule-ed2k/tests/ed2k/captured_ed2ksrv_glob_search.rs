@@ -4,9 +4,8 @@
 //! capture, 2026-08-02).
 //!
 //! Both halves of this exchange were **ADR-0045-EXEMPT**: Lugdunum
-//! won't answer a `0x98` at all, and eNode implements a `0x99` handler but
-//! crashes on the login its precondition needs — so no admissible counterparty
-//! had ever produced the frame. This server serves the leg end to end, and the
+//! won't answer a `0x98` at all, so no admissible counterparty had ever
+//! produced the frame. This server serves the leg end to end, and the
 //! bytes below are the first `0x99` any bench run has held. Per ADR-0045
 //! point 2 the same datagram is also the emit row's evidence: the `0x99` *is*
 //! the counterparty's observable reaction to rmule's `0x98`.

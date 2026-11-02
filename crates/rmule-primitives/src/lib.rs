@@ -8,15 +8,18 @@
 
 #![warn(missing_docs)]
 
+mod address;
 mod aich;
 mod capabilities;
 mod datagram_obfuscation;
 mod endpoint;
 mod error;
+mod event_row;
 mod file_class;
 mod file_name;
 mod hash;
 mod identity;
+mod ip_word;
 mod ipv6_dialect;
 mod link;
 mod obfuscation;
@@ -30,11 +33,13 @@ mod secure_ident;
 mod server;
 pub mod session;
 mod source;
+mod splitmix;
 mod tag;
 mod text;
 mod wire_reader;
 
-pub use aich::{AichHashSet, EMBLOCKSIZE};
+pub use address::{Informant, is_reserved_address, is_reserved_ipv4, is_reserved_ipv6};
+pub use aich::{AichHashSet, EMBLOCKSIZE, aich_block_hash};
 pub use capabilities::{Capabilities, CryptStance};
 pub use datagram_obfuscation::{
     ClientDecryptKeys, ClientEncryptKey, DatagramKeyFamily, DatagramNonce, DatagramSenderAddress,
@@ -46,13 +51,17 @@ pub use datagram_obfuscation::{
 };
 pub use endpoint::{AddressFamily, Ipv4Endpoint, Ipv6Endpoint};
 pub use error::{PrimitiveError, Result};
+pub use event_row::{EventRow, RowValue};
 pub use file_class::Ed2kFileClass;
-pub use file_name::SafeFileName;
+pub use file_name::{SafeFileName, fold_as_a_volume, is_unprintable};
 pub use hash::{
-    AichRootHash, ED2K_PART_SIZE, FileHash, FileHashSummary, MAX_ED2K_FILE_SIZE, PartHash,
-    PartHashSet, ServerHash, UserHash, kad_wire_id, part_count,
+    AichRootHash, ED2K_PART_SIZE, FileHash, FileHashSummary, MAX_ED2K_FILE_SIZE, OwnFileHasher,
+    OwnFileMap, OwnFileSet, PartHash, PartHashList, PartHashSet, ServerHash, UserHash,
+    ed2k_status_part_count, kad_wire_id, part_count,
 };
+pub use hash::{OLD_MAX_FILE_SIZE, is_large_file};
 pub use identity::{ClientId, ClientIdentity, ServerEndpoint};
+pub use ip_word::{Ed2kIp, HybridId, KadIp};
 pub use ipv6_dialect::{
     AccountingKey, CT_EMULE_SERVINGBUDDYIPV6, CT_MOD_IP_V6, CT_MOD_MISCOPTIONS, CT_MOD_SVR_IP_V6,
     CT_MOD_YOUR_IP, ST_IPV6, ST_IPV6_STATUS, ServerIpv6Status, ipv6_address_tag,
@@ -63,12 +72,12 @@ pub use link::{
     LinkSourceExpiry, LinkSources,
 };
 pub use obfuscation::{
-    DH_PRIME_SIZE, ENM_OBFUSCATION, MAGICVALUE_REQUESTER, MAGICVALUE_SERVER, MAGICVALUE_SYNC,
-    ObfuscationDhKeypair, ObfuscationKeys, ObfuscationRole, Rc4, derive_peer_keys,
-    derive_server_keys, is_plaintext_marker,
+    DH_PRIME_SIZE, ENM_OBFUSCATION, HandshakeScan, MAGICVALUE_REQUESTER, MAGICVALUE_SERVER,
+    MAGICVALUE_SYNC, ObfuscationDhKeypair, ObfuscationHandshake, ObfuscationKeys, ObfuscationRole,
+    ObfuscationStream, Rc4, derive_peer_keys, derive_server_keys, is_plaintext_marker,
 };
 pub use packed_frame::{SkipReason, inflate, pack_if_smaller};
-pub use packet::{Packet, PacketProtocol};
+pub use packet::{FrameCeiling, Packet, PacketProtocol, WrongFrame};
 pub use peer::PeerEndpoint;
 pub use peer_crypt::{OutboundCrypt, PeerCrypt};
 pub use search::{
@@ -77,14 +86,15 @@ pub use search::{
 };
 pub use secure_ident::{SUI_RSA_KEY_BITS, SecureIdentKey, SecureIdentPublicKey};
 pub use server::{
-    ServerIdentSource, ServerIdentity, ServerStatusReport, ServerTcpFlag, ServerTcpFlags,
-    ServerUdpFlag, ServerUdpFlags,
+    ServerIdentity, ServerStatusReport, ServerTcpFlag, ServerTcpFlags, ServerUdpFlag,
+    ServerUdpFlags,
 };
 pub use session::{SessionCore, SessionOutput};
 pub use source::{
-    PeerSource, SightedBuddy, SourceCryptOptions, SourceListTail, SourceLookupTarget, SourceRoad,
-    SourceSighting,
+    PeerSource, SightedBuddy, SourceClaim, SourceCryptOptions, SourceListTail, SourceLookupTarget,
+    SourceRoad, SourceSighting,
 };
+pub use splitmix::splitmix64;
 pub use tag::{HASH_TAG_LEN, Tag, TagName, TagNameEncoding, TagValue};
-pub use text::Ed2kText;
+pub use text::{Ed2kText, WIRE_STRING_MAX, fold_accents_and_case, write_wire_string};
 pub use wire_reader::{WireReader, WireTruncated};

@@ -6,14 +6,17 @@
 //! order the operator sees is decided here, and the cursor survives a batch
 //! because it names a file, not a position.
 
+use crate::stored_keys as column_keys;
+use crate::words::columns;
 use std::borrow::Cow;
 
 use rmule_primitives::{Ed2kFileClass, FileHash, SearchResult};
 
 use super::SearchesView;
 use super::results::result_source_count;
+use crate::row_filter::keeps_row;
 use crate::state::UiState;
-use crate::table_sort::{ColumnKind, ColumnSpec, SortValue, SortedTable};
+use crate::table_sort::{ColumnKind, ColumnSpec, SortValue, SortedTable, TableSort};
 use crate::views::ViewOutcome;
 
 /// A result's type as a rank: aMule's `EED2KFileType` value
@@ -58,19 +61,36 @@ impl SortedTable for ResultsTable {
     type Row = SearchResult;
     type Column = ResultColumn;
     type Identity = ResultId;
-    const TABLE: &'static str = "search";
+    const TABLE: &'static str = column_keys::TABLE_SEARCH;
     const COLUMNS: &'static [ColumnSpec<ResultColumn>] = &[
-        ColumnSpec::new(ResultColumn::Name, "name", "Name", ColumnKind::Text),
-        ColumnSpec::new(ResultColumn::Size, "size", "Size", ColumnKind::Quantity),
         ColumnSpec::new(
-            ResultColumn::Sources,
-            "sources",
-            "Sources",
+            ResultColumn::Name,
+            column_keys::NAME,
+            columns::NAME,
+            ColumnKind::Text,
+        ),
+        ColumnSpec::new(
+            ResultColumn::Size,
+            column_keys::SIZE,
+            columns::SIZE,
             ColumnKind::Quantity,
         ),
-        ColumnSpec::new(ResultColumn::Type, "type", "Type", ColumnKind::Rank),
+        ColumnSpec::new(
+            ResultColumn::Sources,
+            column_keys::SOURCES,
+            columns::SOURCES,
+            ColumnKind::Quantity,
+        ),
+        ColumnSpec::new(
+            ResultColumn::Type,
+            column_keys::TYPE,
+            columns::TYPE,
+            ColumnKind::Rank,
+        ),
     ];
     const NAME: ResultColumn = ResultColumn::Name;
+    /// A result is picked by its availability: most sources first.
+    const OPENS_BY: ResultColumn = ResultColumn::Sources;
 
     fn value(column: ResultColumn, row: &SearchResult) -> Option<SortValue<'_>> {
         Some(match column {
@@ -89,16 +109,45 @@ impl SortedTable for ResultsTable {
     }
 }
 
+/// What a search's derived rows stand on: the rows, which search, the sort.
+pub(super) type OrderKey = (
+    u64,
+    Option<rmule_core::SearchId>,
+    TableSort<ResultsTable>,
+    u64,
+);
+
 impl SearchesView {
+    /// What the current search's order stands on.
+    pub(super) fn order_key(&self, state: &UiState) -> OrderKey {
+        (
+            state.searches.revision(),
+            self.held.current().map(|entry| entry.id),
+            self.sort,
+            self.held
+                .current()
+                .map_or(0, |entry| entry.filter.generation()),
+        )
+    }
+
     /// The current held search's results in display order.
     pub(super) fn ordered<'a>(&self, state: &'a UiState) -> Vec<&'a SearchResult> {
         let Some(pane) = self.held.current_pane(state) else {
             return Vec::new();
         };
-        self.sort
-            .order(&pane.results)
-            .into_iter()
-            .map(|at| &pane.results[at])
+        self.order_memo
+            .get(self.order_key(state), || {
+                let order = self.sort.order(&pane.results);
+                match self.held.current() {
+                    Some(entry) if !entry.filter.is_empty() => order
+                        .into_iter()
+                        .filter(|at| keeps_row::<ResultsTable>(&entry.filter, &pane.results[*at]))
+                        .collect(),
+                    _ => order,
+                }
+            })
+            .iter()
+            .map(|at| &pane.results[*at])
             .collect()
     }
 
@@ -124,35 +173,9 @@ impl SearchesView {
     /// A click on the header row: sort by the column under it. `None` when
     /// the click was not on a header cell.
     pub(super) fn header_click(&mut self, column: u16, row: u16) -> Option<ViewOutcome> {
-        self.sort.header_click(
-            self.header_area,
-            &self.header_cols,
-            super::results::COL_SPACING_CELLS,
-            column,
-            row,
-        )
-    }
-
-    /// The display row a click on the table's rows region lands on, walking
-    /// the drawn rows' heights — a wrapped name makes one row several lines.
-    pub(super) fn row_at(&self, column: u16, row: u16) -> Option<usize> {
-        let area = self.rows_area;
-        let inside = column >= area.x
-            && column < area.x.saturating_add(area.width)
-            && row >= area.y
-            && row < area.y.saturating_add(area.height);
-        if !inside {
-            return None;
-        }
-        let mut line = row - area.y;
-        let offset = self.results_state.offset();
-        for (index, height) in self.row_heights.iter().enumerate().skip(offset) {
-            if line < *height {
-                return Some(index);
-            }
-            line -= height;
-        }
-        None
+        let (area, widths) = self.drawn.header();
+        self.sort
+            .header_click(area, widths, crate::table::GAP, column, row)
     }
 }
 
@@ -169,7 +192,7 @@ mod tests {
     use crate::fixture::*;
     use crate::golden::assert_golden;
     use crate::state::SearchStatus;
-    use crate::table_sort::{Direction, TableSort, TableSorts};
+    use crate::table_sort::{Direction, TableSorts};
 
     fn names(view: &mut SearchesView, state: &UiState) -> Vec<String> {
         view.held.bind(state);
@@ -199,14 +222,26 @@ mod tests {
         state_with(three_tier_results(), SearchStatus::Completed { total: 3 })
     }
 
+    /// A result is picked by its availability, so a search opens with the
+    /// most sources on top, whatever order core sent them in.
     #[test]
-    fn s_moves_the_sort_along_the_columns_and_capital_s_reverses_it() {
+    fn a_search_opens_by_sources_most_first() {
         let state = tiers();
         let mut view = SearchesView::new();
         assert_eq!(
             names(&mut view, &state),
+            ["distro_hot.iso", "song_mid.mp3", "clip_low.avi"],
+        );
+    }
+
+    #[test]
+    fn s_moves_the_sort_along_the_columns_and_capital_s_reverses_it() {
+        let state = tiers();
+        let mut view = SearchesView::by_name();
+        assert_eq!(
+            names(&mut view, &state),
             ["clip_low.avi", "distro_hot.iso", "song_mid.mp3"],
-            "the default is name ascending, not core's source order"
+            "by name, not core's source order"
         );
 
         match view.handle_key(press(KeyCode::Char('s')), &state) {
@@ -248,7 +283,7 @@ mod tests {
             ],
             SearchStatus::Completed { total: 6 },
         );
-        let mut view = SearchesView::new();
+        let mut view = SearchesView::by_name();
         while view.sort.column() != ResultColumn::Type {
             view.handle_key(press(KeyCode::Char('s')), &state);
         }
@@ -271,7 +306,7 @@ mod tests {
 
     #[test]
     fn with_no_results_s_is_not_the_views_key() {
-        let mut view = SearchesView::new();
+        let mut view = SearchesView::by_name();
         assert!(matches!(
             view.handle_key(press(KeyCode::Char('s')), &UiState::default()),
             ViewOutcome::Ignored
@@ -281,8 +316,8 @@ mod tests {
     #[test]
     fn a_header_click_sorts_by_its_column_and_again_reverses_at_two_widths() {
         let state = tiers();
-        for width in [78, 50] {
-            let mut view = SearchesView::new();
+        for width in [78, 64] {
+            let mut view = SearchesView::by_name();
             let lines = screen_lines(&draw_searches(&mut view, &state, width, GOLDEN_H));
             let (x, y) = header_cell(&lines, "Sources");
             assert!(matches!(
@@ -312,7 +347,7 @@ mod tests {
     #[test]
     fn the_cursor_follows_its_result_when_a_batch_replaces_the_set() {
         let mut state = tiers();
-        let mut view = SearchesView::new();
+        let mut view = SearchesView::by_name();
         screen_lines(&draw_searches(&mut view, &state, 78, GOLDEN_H));
         view.handle_key(press(KeyCode::Char('j')), &state); // onto distro_hot
         let search_id = search_id(1);
@@ -322,9 +357,9 @@ mod tests {
         let mut batch = three_tier_results();
         batch.push(server_result(0x44, "alpha.mkv", 10, 2, 0));
         batch.push(server_result(0x55, "beta.mkv", 10, 2, 0));
-        state.searches.get_mut(&search_id).expect("pane").results = batch;
+        state.searches.get_mut(&search_id).expect("pane").results = batch.into();
         screen_lines(&draw_searches(&mut view, &state, 78, GOLDEN_H));
-        assert_eq!(view.results_state.selected(), Some(3));
+        assert_eq!(view.selected, Some(3));
         assert_eq!(
             view.selected_result(&state)
                 .map(|result| result.primary_name().to_display_string()),
@@ -335,7 +370,7 @@ mod tests {
     #[test]
     fn an_untouched_cursor_rests_on_the_first_row_as_batches_arrive() {
         let mut state = tiers();
-        let mut view = SearchesView::new();
+        let mut view = SearchesView::by_name();
         screen_lines(&draw_searches(&mut view, &state, 78, GOLDEN_H));
         let search_id = search_id(1);
         state
@@ -343,9 +378,9 @@ mod tests {
             .get_mut(&search_id)
             .expect("pane")
             .results
-            .push(server_result(0x44, "alpha.mkv", 10, 2, 0));
+            .absorb([server_result(0x44, "alpha.mkv", 10, 2, 0)]);
         screen_lines(&draw_searches(&mut view, &state, 78, GOLDEN_H));
-        assert_eq!(view.results_state.selected(), Some(0));
+        assert_eq!(view.selected, Some(0));
         assert_eq!(
             view.selected_result(&state)
                 .map(|result| result.primary_name().to_display_string()),
@@ -357,7 +392,7 @@ mod tests {
     fn the_sort_survives_a_restart_through_the_config_store() {
         let config = SharedConfig::open(rmule_testkit::memory_store());
         let state = tiers();
-        let mut view = SearchesView::new();
+        let mut view = SearchesView::by_name();
         view.handle_key(press(KeyCode::Char('s')), &state);
         let ViewOutcome::Emit(Action::Preference(edit)) =
             view.handle_key(press(KeyCode::Char('s')), &state)
@@ -366,7 +401,7 @@ mod tests {
         };
         config.commit(&edit).expect("commit");
 
-        let mut restarted = SearchesView::new();
+        let mut restarted = SearchesView::by_name();
         restarted.restore_sort(&config.load(None).expect("load").table_sorts);
         assert_eq!(restarted.sort, view.sort);
         assert_eq!(
@@ -375,15 +410,35 @@ mod tests {
             "sources descending"
         );
         // Nothing stored yet: the default.
-        let mut fresh = SearchesView::new();
+        let mut fresh = SearchesView::by_name();
         fresh.restore_sort(&TableSorts::default());
         assert_eq!(fresh.sort, TableSort::default());
+    }
+
+    /// With results on screen `/` filters them; `i` is the way to the query.
+    #[test]
+    fn slash_filters_held_results_and_i_goes_to_the_query() {
+        let state = tiers();
+        let mut view = SearchesView::by_name().having_sent("ubuntu");
+        view.handle_key(press(KeyCode::Char('/')), &state);
+        assert!(view.typing());
+        assert!(!view.input_focused, "the query stands");
+        for letter in "song".chars() {
+            view.handle_key(press(KeyCode::Char(letter)), &state);
+        }
+        assert_eq!(view.result_ids(&state).len(), 1);
+        view.handle_key(press(KeyCode::Enter), &state);
+        assert!(!view.typing());
+        view.handle_key(press(KeyCode::Esc), &state);
+        assert_eq!(view.result_ids(&state).len(), 3);
+        view.handle_key(press(KeyCode::Char('i')), &state);
+        assert!(view.input_focused);
     }
 
     #[test]
     fn golden_searches_sorted_by_sources() {
         let state = tiers();
-        let mut view = SearchesView::new().having_sent("ubuntu");
+        let mut view = SearchesView::by_name().having_sent("ubuntu");
         view.handle_key(press(KeyCode::Char('s')), &state);
         view.handle_key(press(KeyCode::Char('s')), &state);
         assert_golden("searches_sorted_sources", GOLDEN_W, GOLDEN_H, |frame| {

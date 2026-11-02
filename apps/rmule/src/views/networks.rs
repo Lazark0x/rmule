@@ -25,17 +25,22 @@
 use std::time::Instant;
 
 use ratatui::Frame;
-use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind};
-use ratatui::layout::{Constraint, Layout, Rect};
+use ratatui::crossterm::event::{KeyCode, KeyEvent};
+use ratatui::layout::{Constraint, Layout, Position, Rect};
 
 use rmule_core::diagnostics::ServerDiagnostics;
 use rmule_primitives::ServerEndpoint;
 
 use crate::action::Action;
+use crate::row_filter::RowFilter;
+use crate::row_selection::tags::Tags;
+use crate::row_selection::viewport::Viewport;
 use crate::state::UiState;
+use crate::table::Drawn;
 use crate::table_sort::{RowCursor, RowMove, TableSort};
 use crate::theme::Theme;
-use crate::views::{DrawnRows, ViewOutcome, connect_toggle};
+use crate::views::{View, ViewOutcome, connect_toggle, say_gave_way};
+use crate::words::severity::Severity;
 use form::{ServerForm, draw_form};
 use kad::draw_kad;
 use menu::{Confirm, Menu, draw_confirm, draw_menu};
@@ -56,10 +61,16 @@ mod sort;
 /// Nine inner rows is exactly what the Kad panel's body needs — status, six
 /// facts, and the Received and Sent traffic rows.
 const BOTTOM_H: u16 = 11;
+/// The narrowest tab that keeps the Kad panel beside the log; narrower, the
+/// log needs the width and the panel gives way, saying so.
+const KAD_PANE_MIN_TAB_W: u16 = 78;
 /// Width of the Kad panel — its longest value row ("firewalled · not checked
 /// yet", the verdict and why on one line) under a ten-column label, plus
 /// borders.
 const KAD_PANE_W: u16 = 40;
+
+/// How the bottom border names the panel when it gave way.
+const KAD: &str = crate::words::networks::KAD;
 
 /// The two focusable panes (spec §3.4: the Kad panel is display-only).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -85,36 +96,36 @@ pub struct NetworksView {
     focus: Pane,
     /// The server table's order.
     sort: TableSort<ServersTable>,
+    /// `/`: the servers it keeps.
+    filter: RowFilter,
+    /// `/` over the log.
+    log_filter: RowFilter,
+    /// The rows `Space` tagged.
+    tags: Tags<ServerEndpoint>,
     /// The selected server, by endpoint.
     cursor: RowCursor<ServerEndpoint>,
     /// The selected server's position in the current order — `cursor`
     /// re-placed before every key and draw.
     server_sel: usize,
-    /// First listed row rendered — the table scrolls by *entry*, because a
-    /// wrapped row must not be split across the pane edge.
-    server_offset: usize,
-    /// The server rows as last drawn: the map a row click needs once rows
-    /// can be more than one line tall.
-    server_rows: DrawnRows,
-    /// The header as last drawn, and its column widths: a click there sorts.
-    header_area: Rect,
-    header_cols: Vec<usize>,
-    /// Display lines scrolled up from the newest; `0` pins the log to the
-    /// bottom. Counted in *wrapped* lines, not entries.
-    log_offset: usize,
-    /// Inner log height from the last draw, for input-time scroll clamping.
-    log_rows: usize,
-    /// Wall clock stamped by the app each frame (`None` in goldens/tests → a
-    /// fixed fallback, keeping renders deterministic). Log lines carry only
-    /// injected `Instant`s; the wall stamp is derived at draw time as
-    /// `wall_now − age`, so state stays clock-free.
-    pub(crate) wall_now: Option<chrono::DateTime<chrono::FixedOffset>>,
-    /// Wrapped display-line count from the last draw; `0` before the first
-    /// one, where the entry count is the honest estimate.
-    log_lines: usize,
+    /// What part of the server table is on screen.
+    viewport: Viewport,
+    /// The table as last drawn, for clicks.
+    drawn: Drawn,
+    /// What part of the log is on screen, in *wrapped* lines, not entries:
+    /// it opens on the newest line and keeps it in view until scrolled back.
+    log_viewport: Viewport,
+    /// The least severe line the log shows: `f` walks it.
+    log_floor: Severity,
+    /// Where the log's filter wants the terminal's cursor.
+    log_caret: Option<Position>,
     menu: Option<Menu>,
     confirm: Option<Confirm>,
     form: Option<ServerForm>,
+    /// `z`: the focused pane has the whole tab.
+    zoomed: bool,
+    /// The selected server's details modal (`d`), while it is up; what part
+    /// of it is on screen in a frame too short for it.
+    details: Option<std::cell::Cell<Viewport>>,
     /// Pane areas cached at draw time for click hit-testing.
     servers_area: Rect,
     log_area: Rect,
@@ -125,19 +136,21 @@ impl Default for NetworksView {
         Self {
             focus: Pane::Servers,
             sort: TableSort::default(),
+            filter: RowFilter::default(),
+            log_filter: RowFilter::default(),
+            tags: Tags::default(),
             cursor: RowCursor::default(),
             server_sel: 0,
-            server_offset: 0,
-            server_rows: DrawnRows::default(),
-            header_area: Rect::default(),
-            header_cols: Vec::new(),
-            log_offset: 0,
-            log_rows: 4,
-            log_lines: 0,
-            wall_now: None,
+            viewport: Viewport::default(),
+            drawn: Drawn::default(),
+            log_viewport: Viewport::at_end(),
+            log_floor: Severity::Info,
+            log_caret: None,
             menu: None,
             confirm: None,
             form: None,
+            zoomed: false,
+            details: None,
             servers_area: Rect::default(),
             log_area: Rect::default(),
         }
@@ -178,9 +191,6 @@ impl NetworksView {
     fn clamp_selection(&mut self, state: &UiState) {
         let ids = self.server_ids(state);
         self.server_sel = self.cursor.place(&ids).unwrap_or(0);
-        if self.server_offset > self.server_sel {
-            self.server_offset = self.server_sel;
-        }
     }
 
     /// The operator put the cursor on display row `index` (clamped).
@@ -200,13 +210,41 @@ impl NetworksView {
         }
     }
 
+    fn move_selection(&mut self, movement: RowMove, state: &UiState) -> ViewOutcome {
+        match self.focus {
+            Pane::Servers => {
+                let before = self.server_sel;
+                let page = self.viewport.page();
+                self.cursor.apply(&self.server_ids(state), movement, page);
+                self.clamp_selection(state);
+                if self.server_sel == before {
+                    ViewOutcome::Ignored
+                } else {
+                    ViewOutcome::Redraw
+                }
+            }
+            // The log scrolls rather than selects: down is toward newer, and
+            // the ends are the oldest and the newest line.
+            Pane::Log => {
+                if self.log_viewport.scroll(movement) {
+                    ViewOutcome::Redraw
+                } else {
+                    ViewOutcome::Ignored
+                }
+            }
+        }
+    }
+}
+
+impl View for NetworksView {
+    fn handle_paste(&mut self, text: &str, _state: &UiState) -> ViewOutcome {
+        self.paste(text)
+    }
+
     /// Offer one key the globals did not claim. A modal captures
     /// first; otherwise the focused pane navigates, and anything unclaimed
     /// bubbles back out as [`ViewOutcome::Ignored`].
-    pub fn handle_key(&mut self, key: KeyEvent, state: &UiState) -> ViewOutcome {
-        if key.kind == KeyEventKind::Release {
-            return ViewOutcome::Ignored;
-        }
+    fn handle_key(&mut self, key: KeyEvent, state: &UiState) -> ViewOutcome {
         self.clamp_selection(state);
 
         // Modals capture input (globals must not fire underneath them), in
@@ -220,9 +258,26 @@ impl NetworksView {
         if self.menu.is_some() {
             return self.handle_menu_key(key, state);
         }
+        if self.details.is_some() {
+            return self.handle_details_key(key);
+        }
 
+        let filtered = match self.focus {
+            Pane::Servers => self.filter.key(&key, !servers(state).is_empty()),
+            Pane::Log => self.log_filter.key(&key, !state.log.is_empty()),
+        };
+        if let Some(outcome) = filtered {
+            return outcome;
+        }
         if let Some(movement) = RowMove::of(key.code) {
             return self.move_selection(movement, state);
+        }
+        if self.focus == Pane::Servers {
+            let ids = self.server_ids(state);
+            if let Some(outcome) = self.tags.key(key.code, &ids, &mut self.cursor) {
+                self.clamp_selection(state);
+                return outcome;
+            }
         }
         match key.code {
             KeyCode::Tab | KeyCode::BackTab => {
@@ -235,6 +290,14 @@ impl NetworksView {
                 self.cursor.pin(&self.server_ids(state));
                 self.open_menu(state)
             }
+            KeyCode::Char('z') => {
+                self.zoomed = !self.zoomed;
+                ViewOutcome::Redraw
+            }
+            KeyCode::Char('f') if self.focus == Pane::Log => self.narrow_log(),
+            KeyCode::Char('d') if self.focus == Pane::Servers => self.open_details(state),
+            // `x` is the row's way out everywhere; it asks first.
+            KeyCode::Char('x') if self.focus == Pane::Servers => self.ask_remove(state),
             KeyCode::Char('s') if self.focus == Pane::Servers && !servers(state).is_empty() => {
                 self.sort.key(true)
             }
@@ -260,52 +323,52 @@ impl NetworksView {
         }
     }
 
-    fn move_selection(&mut self, movement: RowMove, state: &UiState) -> ViewOutcome {
-        match self.focus {
-            Pane::Servers => {
-                let before = self.server_sel;
-                self.cursor.apply(&self.server_ids(state), movement);
-                self.clamp_selection(state);
-                if self.server_sel == before {
-                    ViewOutcome::Ignored
-                } else {
-                    ViewOutcome::Redraw
-                }
-            }
-            // The log scrolls rather than selects: down is toward newer, which
-            // is a smaller offset, and the ends are the newest and oldest line.
-            Pane::Log => {
-                let max = self.max_log_offset(state);
-                let next = match movement {
-                    RowMove::Step(delta) => self
-                        .log_offset
-                        .saturating_add_signed(delta.saturating_neg())
-                        .min(max),
-                    RowMove::First => max,
-                    RowMove::Last => 0,
-                };
-                if next == self.log_offset {
-                    ViewOutcome::Ignored
-                } else {
-                    self.log_offset = next;
-                    ViewOutcome::Redraw
-                }
-            }
-        }
+    /// A wheel notch at (`column`, `row`), read as `key` on the pane under the
+    /// pointer; the focus stays where it is. A modal takes it as a key.
+    fn handle_wheel(
+        &mut self,
+        (column, row): (u16, u16),
+        key: KeyEvent,
+        state: &UiState,
+    ) -> ViewOutcome {
+        let modal = self.menu.is_some()
+            || self.confirm.is_some()
+            || self.form.is_some()
+            || self.details.is_some();
+        let under = if modal {
+            None
+        } else if crate::views::pane_hit(self.servers_area, column, row) {
+            Some(Pane::Servers)
+        } else if crate::views::pane_hit(self.log_area, column, row) {
+            Some(Pane::Log)
+        } else {
+            None
+        };
+        let Some(under) = under else {
+            return self.handle_key(key, state);
+        };
+        let focus = std::mem::replace(&mut self.focus, under);
+        let outcome = self.handle_key(key, state);
+        self.focus = focus;
+        outcome
     }
 
     /// Click routing (ADR-0072, Row Selection): server rows select + focus, the
     /// log pane focuses (its rows scroll, they don't select). The Kad panel
-    /// is display-only. Modals stay keyboard-only in v1.
-    pub fn handle_click(&mut self, column: u16, row: u16, state: &UiState) -> ViewOutcome {
-        if self.menu.is_some() || self.confirm.is_some() || self.form.is_some() {
+    /// is display-only. The row menu takes its clicks; other modals keep to
+    /// the keyboard.
+    fn handle_click(&mut self, column: u16, row: u16, state: &UiState) -> ViewOutcome {
+        if self.confirm.is_none() && self.form.is_none() && self.menu.is_some() {
+            return self.click_menu(column, row, state);
+        }
+        if self.confirm.is_some() || self.form.is_some() || self.details.is_some() {
             return ViewOutcome::Ignored;
         }
         if let Some(outcome) = self.header_click(column, row) {
             self.focus = Pane::Servers;
             return outcome;
         }
-        if let Some(index) = self.server_rows.hit(column, row) {
+        if let Some(index) = self.drawn.hit(column, row) {
             self.focus = Pane::Servers;
             self.select_server(state, index);
             return ViewOutcome::Redraw;
@@ -324,36 +387,78 @@ impl NetworksView {
     /// Render one frame into `area` (spec §3.4): the server table over the
     /// log and Kad panes. Caches each pane's rect for click hit-testing, so a
     /// click can only ever land on the layout actually drawn.
-    pub fn draw(
+    fn draw(
         &mut self,
         frame: &mut Frame,
         area: Rect,
         state: &UiState,
         theme: &Theme,
-        now: Instant,
-    ) {
+        _now: Instant,
+    ) -> Option<Position> {
         self.clamp_selection(state);
 
         let [servers_area, bottom] =
             Layout::vertical([Constraint::Min(0), Constraint::Length(BOTTOM_H)]).areas(area);
+        let kad_w = if area.width < KAD_PANE_MIN_TAB_W {
+            0
+        } else {
+            KAD_PANE_W
+        };
         let [log_area, kad_area] =
-            Layout::horizontal([Constraint::Min(0), Constraint::Length(KAD_PANE_W)]).areas(bottom);
+            Layout::horizontal([Constraint::Min(0), Constraint::Length(kad_w)]).areas(bottom);
+        let (servers_area, log_area, kad_area) = match (self.zoomed, self.focus) {
+            (false, _) => (servers_area, log_area, kad_area),
+            (true, Pane::Servers) => (area, Rect::default(), Rect::default()),
+            (true, Pane::Log) => (Rect::default(), area, Rect::default()),
+        };
         self.servers_area = servers_area;
         self.log_area = log_area;
+        self.drawn = Drawn::default();
 
-        self.draw_servers(frame, servers_area, state, theme);
-        draw_kad(frame, kad_area, state, theme);
-        self.draw_log(frame, log_area, state, theme, now);
+        if !servers_area.is_empty() {
+            self.draw_servers(frame, servers_area, state, theme);
+        }
+        if !kad_area.is_empty() {
+            draw_kad(frame, kad_area, state, theme);
+        }
+        if !log_area.is_empty() {
+            self.draw_log(frame, log_area, state, theme);
+        }
+        if kad_w == 0 && !self.zoomed {
+            say_gave_way(frame, crate::views::bottom_border(log_area), &[KAD], theme);
+        }
 
+        if let (Some(viewport), Some(row)) = (self.details.as_ref(), self.selected(state)) {
+            menu::draw_details(frame, area, row, state, viewport, theme);
+        }
         if let Some(menu) = self.menu.as_ref() {
             draw_menu(frame, area, menu, theme);
         }
-        if let Some(form) = self.form.as_ref() {
-            draw_form(frame, area, form, theme);
-        }
+        let caret = self
+            .form
+            .as_ref()
+            .and_then(|form| draw_form(frame, area, form, theme));
+        let caret = caret.or(match self.focus {
+            Pane::Servers => self.drawn.caret,
+            Pane::Log => self.log_caret,
+        });
         if let Some(confirm) = self.confirm.as_ref() {
             draw_confirm(frame, area, confirm, theme);
         }
+        caret
+    }
+
+    /// Whether a form or a Row Filter holds the keyboard.
+    fn text_open(&self, _state: &UiState) -> bool {
+        let filter = match self.focus {
+            Pane::Servers => &self.filter,
+            Pane::Log => &self.log_filter,
+        };
+        let open = self.menu.is_none() && self.confirm.is_none() && self.details.is_none();
+        if open && self.form.is_none() && filter.typing() {
+            return true;
+        }
+        self.form.is_some()
     }
 }
 
@@ -372,6 +477,40 @@ mod tests {
         assert_eq!(view.focus, Pane::Log);
         view.handle_key(press(KeyCode::BackTab), &state);
         assert_eq!(view.focus, Pane::Servers);
+    }
+
+    /// Every list reads its page keys in one place, so one table proves them.
+    #[test]
+    fn the_page_and_end_keys_move_the_cursor() {
+        let state = listed_servers();
+        let mut view = NetworksView::new();
+        view.handle_key(press(KeyCode::End), &state);
+        assert_eq!(view.server_sel, 3);
+        view.handle_key(press(KeyCode::Home), &state);
+        assert_eq!(view.server_sel, 0);
+        view.handle_key(press(KeyCode::PageDown), &state);
+        assert_eq!(
+            view.server_sel, 1,
+            "a page of the one row a fresh view knows"
+        );
+        view.handle_key(press(KeyCode::PageUp), &state);
+        assert_eq!(view.server_sel, 0);
+    }
+
+    /// The wheel scrolls what the pointer is over, and the focus stays put.
+    #[test]
+    fn the_wheel_moves_the_pane_under_the_pointer_not_the_focused_one() {
+        let state = listed_servers();
+        let mut view = NetworksView::new();
+        view.servers_area = Rect::new(0, 0, 80, 10);
+        view.log_area = Rect::new(0, 10, 40, 10);
+        let log = view.log_viewport;
+        view.handle_wheel((5, 14), press(KeyCode::Down), &state);
+        assert_eq!(view.server_sel, 0, "the focused table stayed");
+        assert_eq!(view.focus, Pane::Servers);
+        assert_eq!(view.log_viewport.first(), log.first());
+        view.handle_wheel((5, 4), press(KeyCode::Down), &state);
+        assert_eq!(view.server_sel, 1);
     }
 
     #[test]
@@ -459,13 +598,11 @@ mod tests {
                     &state,
                     &Theme::default_dark(),
                     Instant::now(),
-                )
+                );
             })
             .expect("draw");
         view.focus = Pane::Log;
-        // The second listed row's first display line, whatever height the
-        // rows above it wrapped to.
-        let row1 = view.server_rows.line_of(1).expect("row 1 on screen");
+        let row1 = view.drawn.line_of(1).expect("row 1 on screen");
         assert!(
             matches!(view.handle_click(3, row1, &state), ViewOutcome::Redraw),
             "servers pane"

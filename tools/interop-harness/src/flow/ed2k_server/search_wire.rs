@@ -31,7 +31,7 @@ use anyhow::{Context, Result, bail};
 use crate::artifacts::RunLayout;
 use crate::docker::RunContainer;
 use crate::flow::bench::{Bench, CaptureSidecar, DEFAULT_TAP_INTERFACE, amulecmd_command};
-use crate::flow::ed2ksrv::Ed2ksrvImage;
+use crate::flow::ed2ksrv::ED2KSRV;
 use crate::flow::gate::wait_for_container_log;
 use crate::flow::logs::retain_artifact;
 use crate::rmule::RmuleClientContainer;
@@ -336,7 +336,7 @@ pub(crate) fn start_ed2ksrv(
     fs::write(&config_path, rendered.join("\n"))
         .with_context(|| format!("write {}", config_path.display()))?;
     let name = format!("{}-ed2ksrv", bench.names.server_container_name);
-    let ed2ksrv = Ed2ksrvImage::check(&bench.docker, image)?;
+    let ed2ksrv = ED2KSRV.check(&bench.docker, image)?;
     bench.start_extra(
         &name,
         ed2ksrv
@@ -543,7 +543,8 @@ fn run_leg(
 }
 
 /// Hold until the tap shows `sharer` has offered the server every file in
-/// `share`: aMule offers at most 200 a minute, so a large share reaches the
+/// `share` (a directory an aMule shares whole, or the one file a sharer
+/// names): aMule offers at most 200 a minute, so a large share reaches the
 /// server over minutes, and a search sent before then is answered short.
 /// `flow` prefixes the progress line.
 pub(crate) fn wait_for_offers(
@@ -553,9 +554,13 @@ pub(crate) fn wait_for_offers(
     share: &Path,
     timeout: Duration,
 ) -> Result<()> {
-    let held = fs::read_dir(share)
-        .with_context(|| format!("list {}", share.display()))?
-        .count() as u64;
+    let held = if share.is_file() {
+        1
+    } else {
+        fs::read_dir(share)
+            .with_context(|| format!("list {}", share.display()))?
+            .count() as u64
+    };
     let deadline = Instant::now() + timeout;
     loop {
         let offered = server_tap::offered_files(pcap, sharer)?;

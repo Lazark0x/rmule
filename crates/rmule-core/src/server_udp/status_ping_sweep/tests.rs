@@ -13,6 +13,7 @@ use super::super::tests::{
 use super::*;
 use crate::server_list::{ManagedServer, ServerAuxPorts, test_facts, test_facts_rows};
 
+mod ping_state;
 mod sealed;
 mod vouch;
 
@@ -60,6 +61,7 @@ async fn the_sweep_pings_one_server_per_tick_a_named_one_at_its_address() {
         first_contact_tick: Duration::from_millis(250),
         tick: Duration::from_secs(5),
         reask: Duration::from_secs(16_200),
+        key_floor: Duration::from_secs(1_200),
         crypt: plain_arm(),
         resolver: crate::name_resolver::FakeNameResolver::knowing(&[(
             "srv.example.org",
@@ -72,7 +74,7 @@ async fn the_sweep_pings_one_server_per_tick_a_named_one_at_its_address() {
         sweep.ping_next(&mut state).await;
     }
 
-    let sends = transport.sends.lock().unwrap().clone();
+    let sends = transport.sends.lock().clone();
     let ping = vec![0xE3, 0x96, 0xCD, 0xAB, 0xAA, 0x55];
     assert_eq!(
         sends,
@@ -108,6 +110,7 @@ async fn the_sweep_walks_past_recently_pinged_servers_until_reask_elapses() {
         first_contact_tick: Duration::from_millis(250),
         tick: Duration::from_secs(5),
         reask,
+        key_floor: Duration::from_secs(1_200),
         crypt: plain_arm(),
         resolver: crate::name_resolver::FakeNameResolver::knowing(&[]),
     };
@@ -117,7 +120,7 @@ async fn the_sweep_walks_past_recently_pinged_servers_until_reask_elapses() {
         sweep.ping_next(&mut state).await;
     }
     assert_eq!(
-        transport.sends.lock().unwrap().len(),
+        transport.sends.lock().len(),
         2,
         "both pinged once; the third tick idles inside the re-ask window"
     );
@@ -125,7 +128,7 @@ async fn the_sweep_walks_past_recently_pinged_servers_until_reask_elapses() {
     tokio::time::advance(reask).await;
     sweep.ping_next(&mut state).await;
     assert_eq!(
-        transport.sends.lock().unwrap().len(),
+        transport.sends.lock().len(),
         3,
         "the window's lapse re-admits the walk"
     );
@@ -149,6 +152,7 @@ fn crypt_sweep(
         first_contact_tick: Duration::from_millis(250),
         tick: Duration::from_secs(5),
         reask: Duration::from_secs(16_200),
+        key_floor: Duration::from_secs(1_200),
         crypt,
         resolver: crate::name_resolver::FakeNameResolver::knowing(&[]),
     }
@@ -171,13 +175,13 @@ async fn an_enabled_crypt_arm_probes_the_obfuscation_port_first() {
     // A raw crypt-ping — challenge 0x0BADF00D (LE) + the two padding bytes —
     // at the server's standard port + 12, and no plain 0x96.
     assert_eq!(
-        transport.obfuscated.lock().unwrap().clone(),
+        transport.obfuscated.lock().clone(),
         vec![(
             udp(&server("10.0.0.1", 4661), 12),
             vec![0x0D, 0xF0, 0xAD, 0x0B, 0xDE, 0xAD]
         )],
     );
-    assert!(transport.sends.lock().unwrap().is_empty(), "no plain ping");
+    assert!(transport.sends.lock().is_empty(), "no plain ping");
     // The challenge is registered as the crypt reply's decrypt key.
     assert_eq!(
         challenges.crypt_base_key(Ipv4Endpoint::new(Ipv4Addr::new(10, 0, 0, 1), 4661)),
@@ -204,27 +208,20 @@ async fn a_live_policy_change_reaches_the_next_servers_probe() {
 
     let mut state = SweepState::default();
     sweep.ping_next(&mut state).await;
-    assert!(
-        transport.obfuscated.lock().unwrap().is_empty(),
-        "off: no probe"
-    );
-    assert_eq!(transport.sends.lock().unwrap().len(), 1, "a plain 0x96");
+    assert!(transport.obfuscated.lock().is_empty(), "off: no probe");
+    assert_eq!(transport.sends.lock().len(), 1, "a plain 0x96");
 
     policy.set(Some(rmule_net::peer::ObfuscationPolicy::Requested));
     sweep.ping_next(&mut state).await;
     assert_eq!(
-        transport.obfuscated.lock().unwrap().clone(),
+        transport.obfuscated.lock().clone(),
         vec![(
             udp(&server("10.0.0.2", 4661), 12),
             vec![0x0D, 0xF0, 0xAD, 0x0B, 0xDE, 0xAD]
         )],
         "set: the next server is probed obfuscated first"
     );
-    assert_eq!(
-        transport.sends.lock().unwrap().len(),
-        1,
-        "and not pinged plain"
-    );
+    assert_eq!(transport.sends.lock().len(), 1, "and not pinged plain");
 }
 
 #[tokio::test]
@@ -250,14 +247,10 @@ async fn the_crypt_probe_stays_plain_while_the_public_ip_is_unknown() {
     sweep.ping_next(&mut state).await;
 
     assert!(
-        transport.obfuscated.lock().unwrap().is_empty(),
+        transport.obfuscated.lock().is_empty(),
         "no obfuscated probe without a known public IP"
     );
-    assert_eq!(
-        transport.sends.lock().unwrap().len(),
-        1,
-        "a plain 0x96 instead"
-    );
+    assert_eq!(transport.sends.lock().len(), 1, "a plain 0x96 instead");
 }
 
 #[tokio::test(start_paused = true)]
@@ -275,20 +268,16 @@ async fn a_timed_out_crypt_ping_falls_back_to_a_plain_ping() {
     // Probe, then a within-grace tick walks past (no re-send)…
     sweep.ping_next(&mut state).await;
     sweep.ping_next(&mut state).await;
-    assert_eq!(transport.obfuscated.lock().unwrap().len(), 1);
-    assert!(transport.sends.lock().unwrap().is_empty());
+    assert_eq!(transport.obfuscated.lock().len(), 1);
+    assert!(transport.sends.lock().is_empty());
 
     // …the grace elapses with no reply settling the challenge, so the next
     // tick falls back to a plain 0x96 (aMule's `CryptPingReplyPending`).
     tokio::time::advance(Duration::from_secs(20)).await;
     sweep.ping_next(&mut state).await;
+    assert_eq!(transport.obfuscated.lock().len(), 1, "no second probe");
     assert_eq!(
-        transport.obfuscated.lock().unwrap().len(),
-        1,
-        "no second probe"
-    );
-    assert_eq!(
-        transport.sends.lock().unwrap().clone(),
+        transport.sends.lock().clone(),
         vec![(
             udp(&server("10.0.0.1", 4661), 4),
             vec![0xE3, 0x96, 0xCD, 0xAB, 0xAA, 0x55]
@@ -317,12 +306,12 @@ async fn an_answered_crypt_ping_skips_the_plain_fallback() {
     tokio::time::advance(Duration::from_secs(20)).await;
     sweep.ping_next(&mut state).await;
     assert!(
-        transport.sends.lock().unwrap().is_empty(),
+        transport.sends.lock().is_empty(),
         "an answered probe needs no plain fallback"
     );
     // The server is now on the plain re-ask clock: it is walked past.
     sweep.ping_next(&mut state).await;
-    assert!(transport.sends.lock().unwrap().is_empty());
+    assert!(transport.sends.lock().is_empty());
 }
 
 // ----- first-contact burst, steady refresh -----
@@ -345,10 +334,12 @@ async fn an_imported_list_is_probed_in_a_burst_then_refreshed_at_the_steady_pace
         seal: plain_seal(Arc::clone(&transport)),
         facts: test_facts(&servers).0,
         challenges: StatusChallenges::default(),
-        entropy: fixed_entropy,
+        // A whole hour of jitter is none: every server comes due at the window.
+        entropy: || 3600,
         first_contact_tick,
         tick,
         reask,
+        key_floor: Duration::from_secs(1_200),
         crypt: plain_arm(),
         resolver: crate::name_resolver::FakeNameResolver::knowing(&[]),
     };
@@ -357,7 +348,7 @@ async fn an_imported_list_is_probed_in_a_burst_then_refreshed_at_the_steady_pace
     // The start delay is one steady tick; the burst follows it.
     tokio::time::sleep(tick + first_contact_tick * 12 + Duration::from_millis(100)).await;
     assert_eq!(
-        transport.sends.lock().unwrap().len(),
+        transport.sends.lock().len(),
         12,
         "every listed server gets its first probe inside the burst"
     );
@@ -366,7 +357,7 @@ async fn an_imported_list_is_probed_in_a_burst_then_refreshed_at_the_steady_pace
     // ticks' worth of refreshes fit before this wake, a burst would be twelve.
     tokio::time::sleep(reask + tick * 2).await;
     assert_eq!(
-        transport.sends.lock().unwrap().len(),
+        transport.sends.lock().len(),
         15,
         "refreshes run at one per steady tick"
     );
@@ -402,6 +393,7 @@ async fn at_attach_the_burst_takes_the_stale_and_the_unanswered_and_holds_the_fr
         first_contact_tick: Duration::from_millis(250),
         tick: Duration::from_secs(5),
         reask,
+        key_floor: Duration::from_secs(1_200),
         crypt: plain_arm(),
         resolver: crate::name_resolver::FakeNameResolver::knowing(&[]),
     };
@@ -411,13 +403,7 @@ async fn at_attach_the_burst_takes_the_stale_and_the_unanswered_and_holds_the_fr
         sweep.ping_next(&mut state).await;
     }
     let pinged = |transport: &ScriptedTransport| -> Vec<Ipv4Endpoint> {
-        transport
-            .sends
-            .lock()
-            .unwrap()
-            .iter()
-            .map(|(to, _)| *to)
-            .collect()
+        transport.sends.lock().iter().map(|(to, _)| *to).collect()
     };
     assert_eq!(
         pinged(&transport),
@@ -466,6 +452,7 @@ async fn dead_servers_are_pinged_at_the_steady_pace_only() {
         first_contact_tick,
         tick,
         reask: Duration::from_secs(20 * 60),
+        key_floor: Duration::from_secs(1_200),
         crypt: plain_arm(),
         resolver: crate::name_resolver::FakeNameResolver::knowing(&[]),
     };
@@ -474,7 +461,6 @@ async fn dead_servers_are_pinged_at_the_steady_pace_only() {
         transport
             .sends
             .lock()
-            .unwrap()
             .iter()
             .map(|(to, _)| *to)
             .collect::<Vec<_>>()
@@ -518,13 +504,7 @@ async fn a_plain_ping_to_an_aux_port_row_aims_at_its_standard_port() {
 
     sweep.ping_next(&mut SweepState::default()).await;
 
-    let sent: Vec<Ipv4Endpoint> = transport
-        .sends
-        .lock()
-        .unwrap()
-        .iter()
-        .map(|(to, _)| *to)
-        .collect();
+    let sent: Vec<Ipv4Endpoint> = transport.sends.lock().iter().map(|(to, _)| *to).collect();
     assert_eq!(sent, vec![udp(&server("10.0.0.1", 4661), 4)]);
     assert!(
         challenges
@@ -554,7 +534,6 @@ async fn an_obfuscated_ping_to_an_aux_port_row_is_keyed_on_its_standard_port() {
     let aimed: Vec<Ipv4Endpoint> = transport
         .obfuscated
         .lock()
-        .unwrap()
         .iter()
         .map(|(to, _)| *to)
         .collect();

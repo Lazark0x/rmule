@@ -52,6 +52,33 @@ fn recruit(buddy_id: KadId, requester: Ipv4Endpoint) -> FindBuddyReq {
     }
 }
 
+/// Recruit `buddy_id` at `link`, and let its dial fill the slot.
+fn seat(svc: &mut BuddyService, buddy_id: KadId, link: Ipv4Endpoint, now: Instant) {
+    let req = recruit(buddy_id, link);
+    svc.consider_findbuddy(&req, &open_posture(), our_identity(), now);
+    assert!(svc.attach(req.requester_hash, link.ip.into(), now));
+}
+
+/// Past the table's size the oldest recruit goes, so a forger rotating
+/// addresses costs memory nothing and a recruit its wait, never the slot.
+#[test]
+fn past_their_table_the_oldest_recruit_goes() {
+    let mut svc = BuddyService::new();
+    let t0 = Instant::now();
+    let requests: Vec<_> = (0..=RECRUIT_ROWS as u32)
+        .map(|n| recruit(kad_id(0x11), Ipv4Endpoint::new(Ipv4Addr::from(n + 1), 5000)))
+        .collect();
+    for req in &requests {
+        svc.consider_findbuddy(req, &open_posture(), our_identity(), t0);
+    }
+
+    assert_eq!(svc.recruits.len(), RECRUIT_ROWS);
+    assert!(!svc.has_buddy());
+    let (oldest, newest) = (&requests[0], &requests[RECRUIT_ROWS]);
+    assert!(!svc.attach(oldest.requester_hash, oldest.requester.ip.into(), t0));
+    assert!(svc.attach(newest.requester_hash, newest.requester.ip.into(), t0));
+}
+
 #[test]
 fn a_fresh_service_has_no_buddy_and_the_single_slot_refuses_a_second_recruit() {
     let mut svc = BuddyService::new();
@@ -75,6 +102,12 @@ fn a_fresh_service_has_no_buddy_and_the_single_slot_refuses_a_second_recruit() {
             our_tcp_port: our_identity().our_tcp_port,
         })
     );
+    assert!(!svc.has_buddy(), "a recruit holds nothing until it dials");
+    assert!(svc.attach(
+        UserHash::from_bytes(*first.as_bytes()),
+        endpoint(1, 5000).ip.into(),
+        t0
+    ));
     assert!(svc.has_buddy());
     assert_eq!(svc.buddy_id(), Some(first));
     assert_eq!(
@@ -116,6 +149,11 @@ fn a_fresh_service_has_no_buddy_and_the_single_slot_refuses_a_second_recruit() {
             our_tcp_port: our_identity().our_tcp_port,
         })
     );
+    assert!(svc.attach(
+        UserHash::from_bytes(*second.as_bytes()),
+        endpoint(2, 5001).ip.into(),
+        t0
+    ));
     assert_eq!(svc.buddy_id(), Some(second));
 }
 
@@ -215,12 +253,7 @@ fn the_relay_verifies_the_buddy_id_on_both_the_callback_and_the_reask_opcodes() 
     // Recruit a buddy (id 0x11, its endpoint the relay link).
     let buddy = kad_id(0x11);
     let link = endpoint(1, 5000);
-    svc.consider_findbuddy(
-        &recruit(buddy, link),
-        &open_posture(),
-        our_identity(),
-        Instant::now(),
-    );
+    seat(&mut svc, buddy, link, Instant::now());
 
     // Both opcodes relay when the claimed buddy-ID matches, forwarding to the
     // buddy's link with the requester injected and the payload carried through.
@@ -231,6 +264,7 @@ fn the_relay_verifies_the_buddy_id_on_both_the_callback_and_the_reask_opcodes() 
                 buddy_link: link,
                 callback: RelayedCallback {
                     kind,
+                    buddy_id: buddy,
                     requester,
                     forwarded: forwarded.clone(),
                 },
@@ -255,12 +289,14 @@ fn the_relay_verifies_the_buddy_id_on_both_the_callback_and_the_reask_opcodes() 
 /// **Source-derived**: a requester that read our buddy's
 /// aMule-spelled `TAG_BUDDYHASH` the eMule 0.70b / eMuleAI way claims the
 /// registered buddy ID with each four-byte word reversed. On the `0x52` that
-/// is still our buddy — relayed verbatim, as aMule relays every `0x52`, and
-/// flagged so it is counted apart; the buddy's own `0x99` check decides the
-/// rest. The `0x94` keeps its exact match (aMule's own check there), and any
-/// third ID is still a mismatch.
+/// is still our buddy — relayed under the ID we registered, which an exact
+/// `0x99` check takes where the other form would be dropped, and flagged so it
+/// is counted apart. A `0x94` matches in either layout too, as at aMule 3.2.0
+/// (`6f47e2bad1` `ClientUDPSocket.cpp`), and goes uncounted: its big-endian key
+/// is every requester's form, not another family's. Any third ID is still a
+/// mismatch.
 #[test]
-fn source_derived_the_callback_relay_accepts_the_other_spelling_of_our_buddys_id() {
+fn source_derived_a_relay_accepts_either_layout_and_names_the_registered_id() {
     let requester = endpoint(9, 4662);
     let make = |kind, id| BuddyRelayRequest {
         kind,
@@ -275,12 +311,7 @@ fn source_derived_the_callback_relay_accepts_the_other_spelling_of_our_buddys_id
     ]);
     let link = endpoint(1, 5000);
     let mut svc = BuddyService::new();
-    svc.consider_findbuddy(
-        &recruit(buddy, link),
-        &open_posture(),
-        our_identity(),
-        Instant::now(),
-    );
+    seat(&mut svc, buddy, link, Instant::now());
 
     assert_eq!(
         svc.relay(&make(RelayKind::Callback, buddy.word_swapped())),
@@ -288,14 +319,28 @@ fn source_derived_the_callback_relay_accepts_the_other_spelling_of_our_buddys_id
             buddy_link: link,
             callback: RelayedCallback {
                 kind: RelayKind::Callback,
+                buddy_id: buddy,
                 requester,
                 forwarded: Vec::new(),
             },
             swapped_spelling: true,
         }
     );
+    assert_eq!(
+        svc.relay(&make(RelayKind::ReaskCallback, buddy.word_swapped())),
+        RelayVerdict::Relay {
+            buddy_link: link,
+            callback: RelayedCallback {
+                kind: RelayKind::ReaskCallback,
+                buddy_id: buddy,
+                requester,
+                forwarded: Vec::new(),
+            },
+            swapped_spelling: false,
+        }
+    );
     for (kind, id) in [
-        (RelayKind::ReaskCallback, buddy.word_swapped()),
+        (RelayKind::ReaskCallback, kad_id(0x22)),
         (RelayKind::Callback, kad_id(0x22)),
     ] {
         assert_eq!(
@@ -316,12 +361,7 @@ fn keepalive_pongs_our_buddy_extends_the_link_and_refuses_a_stranger() {
     // A silent buddy goes stale after the keepalive window and frees the slot.
     let mut svc = BuddyService::new();
     let t0 = Instant::now();
-    svc.consider_findbuddy(
-        &recruit(kad_id(0x11), link),
-        &open_posture(),
-        our_identity(),
-        t0,
-    );
+    seat(&mut svc, kad_id(0x11), link, t0);
     assert!(
         !svc.drop_stale(t0 + window - Duration::from_secs(1), window),
         "still inside the window"
@@ -338,12 +378,7 @@ fn keepalive_pongs_our_buddy_extends_the_link_and_refuses_a_stranger() {
     // TCP link), never the advertised port the recruit registered — the
     // IP-based match must still honor it.
     let mut svc = BuddyService::new();
-    svc.consider_findbuddy(
-        &recruit(kad_id(0x11), link),
-        &open_posture(),
-        our_identity(),
-        t0,
-    );
+    seat(&mut svc, kad_id(0x11), link, t0);
     let pinged = t0 + window - Duration::from_secs(1);
     let dialed_from = peer(1, 61234);
     assert_ne!(
@@ -367,12 +402,7 @@ fn keepalive_pongs_our_buddy_extends_the_link_and_refuses_a_stranger() {
 
     // A ping from a stranger is refused and never touches our buddy slot.
     let mut svc = BuddyService::new();
-    svc.consider_findbuddy(
-        &recruit(kad_id(0x11), link),
-        &open_posture(),
-        our_identity(),
-        t0,
-    );
+    seat(&mut svc, kad_id(0x11), link, t0);
     assert_eq!(
         svc.on_buddy_ping(stranger, t0),
         BuddyPingOutcome::NotOurBuddy

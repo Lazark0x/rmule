@@ -8,7 +8,7 @@ use std::net::Ipv4Addr;
 use std::time::Instant;
 
 use rmule_primitives::{
-    ClientId, Ed2kFileLink, Ed2kText, FileHash, Ipv4Endpoint, PeerEndpoint, PeerSource,
+    ClientId, Ed2kFileLink, Ed2kText, FileHash, Informant, Ipv4Endpoint, PeerEndpoint, PeerSource,
     SourceSighting,
 };
 use tokio::sync::mpsc;
@@ -30,15 +30,12 @@ use crate::{PeerWorkerEvent, VerificationAuthority};
 const LOW_ID: u32 = 0x0003_1A2B;
 
 fn file() -> Ed2kFileLink {
-    Ed2kFileLink {
-        name: Ed2kText::from_utf8("adopted.bin"),
-        size: 1_000,
-        file_hash: FileHash::from_bytes([0x5E; FileHash::BYTE_LEN]),
-        part_hash_set: None,
-        aich_root: None,
-        ipv6_sources: Vec::new(),
-        sources: Default::default(),
-    }
+    Ed2kFileLink::new(
+        Ed2kText::from_utf8("adopted.bin"),
+        1_000,
+        FileHash::from_bytes([0x5E; FileHash::BYTE_LEN]),
+    )
+    .expect("a size eD2k addresses")
 }
 
 fn high(last: u8) -> PeerEndpoint {
@@ -48,7 +45,7 @@ fn high(last: u8) -> PeerEndpoint {
 /// The key the accept-router reports: the connected server it saw the peer
 /// logged into, which the brain resolves to its connected-server callback.
 fn reported() -> CallbackKey {
-    CallbackKey {
+    CallbackKey::Server {
         server: Some(Ipv4Endpoint::new(Ipv4Addr::new(198, 51, 100, 23), 4661)),
         low_id: ClientId::from_u32(LOW_ID),
     }
@@ -67,8 +64,10 @@ fn brain(sightings: Vec<SourceSighting>, peer_concurrency: usize, at: Instant) -
                 authority: VerificationAuthority::FileHashOnly,
                 hashes: Vec::new(),
             },
-            trusted_aich_root: None,
+            aich_root: crate::download::state::AichRootAuthority::Rootless,
             verified_parts: Vec::new(),
+            arrived: Vec::new(),
+            order: crate::scheduler::PartOrder::Rarest,
         },
         StartingFacts {
             distrusted: HashSet::new(),
@@ -81,12 +80,13 @@ fn brain(sightings: Vec<SourceSighting>, peer_concurrency: usize, at: Instant) -
             client_udp: false,
         },
         std::time::Duration::from_secs(30),
-        peer_concurrency,
+        crate::download::connection_budget::BudgetSeat::ceiling(peer_concurrency),
     );
     let filter = IpFilter::default();
     let gate = Gate {
         filter: &filter,
         dial: crate::dialable::DialPosition::default(),
+        own: Default::default(),
     };
     let _ = state.on_sightings(at, Channel::Server, sightings, &gate);
     let _ = state.start(at);
@@ -94,7 +94,10 @@ fn brain(sightings: Vec<SourceSighting>, peer_concurrency: usize, at: Instant) -
 }
 
 fn low_id_source() -> SourceSighting {
-    SourceSighting::plain(PeerSource::new(ClientId::from_u32(LOW_ID), 4662))
+    SourceSighting::plain(
+        PeerSource::new(ClientId::from_u32(LOW_ID), 4662),
+        Informant::Own,
+    )
 }
 
 /// A worker the accept-router built from a connection at `peer`, and the
@@ -154,10 +157,13 @@ async fn a_surplus_connection_leaves_the_live_worker_its_channel() {
         &file,
         brain(
             vec![
-                SourceSighting::plain(PeerSource::HighId(match high(9) {
-                    PeerEndpoint::V4(v4) => v4,
-                    PeerEndpoint::V6(_) => unreachable!(),
-                })),
+                SourceSighting::plain(
+                    PeerSource::HighId(match high(9) {
+                        PeerEndpoint::V4(v4) => v4,
+                        PeerEndpoint::V6(_) => unreachable!(),
+                    }),
+                    Informant::Own,
+                ),
                 low_id_source(),
             ],
             2,

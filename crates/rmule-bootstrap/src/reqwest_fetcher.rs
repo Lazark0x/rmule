@@ -9,12 +9,14 @@
 //!
 //! The redirect, timeout, and size caps together bound a hostile mirror: a
 //! redirect loop, a hung connection, and an unbounded body each fail closed
-//! rather than tying up or exhausting the client.
+//! rather than tying up or exhausting the client. A redirect from `https` to
+//! `http` is refused (ADR-0120): following it gives back what the first hop
+//! gained.
 
 use std::time::Duration;
 
 use crate::config::BootstrapConfig;
-use crate::fetcher::{FetchError, Fetcher};
+use crate::fetcher::{FetchError, FetchFuture, Fetcher};
 
 /// A reqwest-backed [`Fetcher`] with redirect + timeout caps baked into the
 /// client and the body cap enforced per-request while streaming.
@@ -37,7 +39,17 @@ impl ReqwestFetcher {
     /// cannot be constructed (e.g. no usable rustls backend).
     pub fn new(max_redirects: usize, request_timeout: Duration) -> Result<Self, FetchError> {
         let client = reqwest::Client::builder()
-            .redirect(reqwest::redirect::Policy::limited(max_redirects))
+            .redirect(reqwest::redirect::Policy::custom(move |attempt| {
+                let hops = attempt.previous().len();
+                if hops > max_redirects {
+                    return attempt.error(RedirectRefused::TooMany);
+                }
+                let from = attempt.previous().last().map(reqwest::Url::scheme);
+                if is_downgrade(from, attempt.url().scheme()) {
+                    return attempt.error(RedirectRefused::Downgrade);
+                }
+                attempt.follow()
+            }))
             .timeout(request_timeout)
             .build()
             .map_err(|error| FetchError::Transport {
@@ -56,6 +68,20 @@ impl ReqwestFetcher {
     }
 }
 
+/// Why a redirect was not followed.
+#[derive(Debug, thiserror::Error)]
+enum RedirectRefused {
+    #[error("too many redirects")]
+    TooMany,
+    #[error("a redirect from https to http")]
+    Downgrade,
+}
+
+/// Whether a hop from scheme `from` to scheme `to` gives up TLS.
+fn is_downgrade(from: Option<&str>, to: &str) -> bool {
+    from == Some("https") && to != "https"
+}
+
 /// Map a `reqwest` error onto the seam's HTTP-type-free vocabulary.
 fn map_error(url: &str, error: &reqwest::Error) -> FetchError {
     if error.is_timeout() {
@@ -71,28 +97,21 @@ fn map_error(url: &str, error: &reqwest::Error) -> FetchError {
 }
 
 impl Fetcher for ReqwestFetcher {
-    fn get(
-        &self,
-        url: &str,
-        max_bytes: usize,
-    ) -> impl std::future::Future<Output = Result<Vec<u8>, FetchError>> + Send {
-        // Own the request inputs so the returned future does not borrow `self`
-        // or `url` — it can be awaited freely by an actor that moved on.
-        let client = self.client.clone();
-        let url = url.to_owned();
-        async move {
-            let mut response = client
-                .get(&url)
+    fn get<'a>(&'a self, url: &'a str, max_bytes: usize) -> FetchFuture<'a> {
+        Box::pin(async move {
+            let mut response = self
+                .client
+                .get(url)
                 .send()
                 .await
-                .map_err(|error| map_error(&url, &error))?;
+                .map_err(|error| map_error(url, &error))?;
 
             let status = response.status();
             if !status.is_success() {
                 // A mirror's 404/500 error page must reject, never parse as a
                 // server list.
                 return Err(FetchError::Status {
-                    url,
+                    url: url.to_owned(),
                     status: status.as_u16(),
                 });
             }
@@ -103,7 +122,7 @@ impl Fetcher for ReqwestFetcher {
             while let Some(chunk) = response
                 .chunk()
                 .await
-                .map_err(|error| map_error(&url, &error))?
+                .map_err(|error| map_error(url, &error))?
             {
                 if body.len() + chunk.len() > max_bytes {
                     return Err(FetchError::TooLarge { cap: max_bytes });
@@ -111,6 +130,19 @@ impl Fetcher for ReqwestFetcher {
                 body.extend_from_slice(&chunk);
             }
             Ok(body)
-        }
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_a_hop_out_of_https_gives_up_tls() {
+        assert!(is_downgrade(Some("https"), "http"));
+        assert!(!is_downgrade(Some("https"), "https"));
+        assert!(!is_downgrade(Some("http"), "https"));
+        assert!(!is_downgrade(Some("http"), "http"));
     }
 }

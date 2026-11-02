@@ -10,20 +10,26 @@ mod login;
 mod peer_reach;
 mod scan;
 mod search;
+mod slot_roads;
 mod source_ends;
 
 pub use buddy::BuddyDialFailure;
-pub use download::{DownloadEvent, PartsLost, RestartOutcome, SourceWait};
-pub use lifecycle::{KadStopReason, QuitStep, ServeStopReason};
+pub use download::LinkTurn;
+pub use download::{
+    CompletionStep, DownloadEvent, PartsLost, RestartOutcome, SourceWait, VolumeStop,
+};
+pub use lifecycle::{KadStopReason, LongTask, QuitStep, ServeStopReason};
 pub use login::{
     DialFailure, IdAssignment, Ipv6Probe, LoginClaim, LoginCloseCause, LoginLink, LoginStep,
     PlainLinkReason, PortTestAdmission, PortTestClosedBy, PortTestEnd, PortTestLateAdmission,
 };
 pub use peer_reach::{
     NatTraversalUnavailableReason, PeerBuddy, PeerReach, PeerReachDropReason, PeerReachRoute,
+    ReachAddress,
 };
 pub use scan::ScanEvent;
 pub use search::{LegNotSent, SearchEvent, SearchFailure, SearchLegState, SearchLegs, SweepTally};
+pub use slot_roads::{BlockAskFault, DeadDialSign, DialBackEnd, GrantRoad};
 pub use source_ends::{DialEnd, IgnoredReaskReply, PurgedSource, SourcePurgeReason};
 
 use std::net::SocketAddrV4;
@@ -65,6 +71,32 @@ pub enum ServeEvent {
     FileOffered {
         /// The content identity offered again.
         file_hash: FileHash,
+    },
+    /// A download began to offer the parts it verified: a **Partial Share**
+    /// (ADR-0113). It is the download's own, never a registry row.
+    PartialOffered {
+        /// The content identity whose verified parts are offered.
+        file_hash: FileHash,
+    },
+    /// A Partial Share stopped being offered.
+    PartialWithdrawn {
+        /// The content identity no longer offered in part.
+        file_hash: FileHash,
+        /// Why.
+        cause: crate::PartialEnd,
+    },
+    /// A restarted download's **Offer Check** finished (ADR-0113 §"A paused
+    /// download"): the parts it recorded were read again and hashed against
+    /// their records before it may be offered. Said once for each check
+    /// whose result is applied, whatever it found, with what the read cost.
+    OfferChecked {
+        /// The content identity whose recorded parts were read.
+        file_hash: FileHash,
+        /// The bytes read from the part file.
+        bytes_read: u64,
+        /// How long the read took, from taking the scans' hashing turn to
+        /// its last part.
+        took: std::time::Duration,
     },
     /// The folders of the shared files outside the download directory cannot
     /// be watched; the log says why. A file that goes from one is noticed at
@@ -114,7 +146,8 @@ pub enum ServeEvent {
         /// Why the server was not told them.
         reason: SharesWithheld,
     },
-    /// A requesting peer was granted an upload slot for `file_hash`.
+    /// A requesting peer was granted an upload slot for `file_hash`: the
+    /// `OP_ACCEPTUPLOADREQ` went on its link.
     UploadSlotGranted {
         /// The peer now allowed to pull bytes.
         peer: rmule_primitives::PeerEndpoint,
@@ -123,6 +156,30 @@ pub enum ServeEvent {
         /// The client the peer's hello named; `None` when the serve side
         /// holds no hello for it.
         software: Option<rmule_peer::ClientSoftware>,
+        /// The road the slot took to it: on a link it held, or on one rmule
+        /// dialed back or it came back on (ADR-0057).
+        road: GrantRoad,
+    },
+    /// rmule dials `peer`, a waiter it promoted while no link of it was up,
+    /// to grant it the slot it now holds for `file_hash`: the **Dial-Back
+    /// Grant** (ADR-0057). The grant follows on the first link whose hello
+    /// names it ([`Self::UploadSlotGranted`]), or ends unsent
+    /// ([`Self::UploadDialBackFailed`]).
+    UploadDialBack {
+        /// The waiter, keyed by the link it waited on.
+        peer: rmule_primitives::PeerEndpoint,
+        /// The file the held slot is for.
+        file_hash: FileHash,
+        /// The client the waiter's hello named.
+        software: Option<rmule_peer::ClientSoftware>,
+    },
+    /// A **Dial-Back Grant** ended without reaching its waiter: the waiter
+    /// lost its place, and the slot went on to the next waiter (ADR-0057).
+    UploadDialBackFailed {
+        /// The waiter, keyed by the link it waited on.
+        peer: rmule_primitives::PeerEndpoint,
+        /// Why the grant ended unsent.
+        cause: DialBackEnd,
     },
     /// A requesting peer is waiting at queue position `rank` for `file_hash`.
     /// Raised again whenever the rank or the file moves: a waiter follows the
@@ -183,22 +240,80 @@ pub enum ServeEvent {
         /// The peer that was turned away.
         peer: rmule_primitives::PeerEndpoint,
     },
+    /// A slot holder's block request ended its slot before anything of it was
+    /// read (ADR-0031): a range past the file's end, longer than three
+    /// blocks, or outside a Partial Share's **Verified Range**. Nothing of the
+    /// request was sent; its [`Self::UploadSlotReleased`] follows. Its link
+    /// stays and its address is not banned.
+    BlockAskRefused {
+        /// The slot holder that asked.
+        peer: rmule_primitives::PeerEndpoint,
+        /// The file the request named.
+        file_hash: FileHash,
+        /// What ended the slot.
+        fault: BlockAskFault,
+    },
     /// A peer left the queue/slot; its slot (if held) is freed for promotion.
     UploadSlotReleased {
         /// The peer that left.
         peer: rmule_primitives::PeerEndpoint,
     },
     /// A wait-list entry left the queue without ever holding a slot — the
-    /// Waiter relation's terminal (ADR-0059 "Roster relations"). Distinct
-    /// from [`Self::UploadSlotReleased`], which only a slot holder earns: the
-    /// reclaimed dial-back leg of the purge sweep emits that one alone, never
-    /// this too. A promotion is not a leave — the waiter becomes
-    /// a holder (`UploadSlotGranted`).
+    /// Waiter relation's terminal (ADR-0059). Distinct
+    /// from [`Self::UploadSlotReleased`], which only a slot holder earns, and
+    /// from [`Self::UploadDialBackFailed`], a held grant's end. A promotion is
+    /// not a leave — the waiter becomes a holder (`UploadSlotGranted`).
     WaiterLeft {
         /// The waiter that left.
         peer: rmule_primitives::PeerEndpoint,
         /// Why it left.
         cause: crate::WaiterLeaveCause,
+    },
+    /// A client of the upload queue came back on a new link and keeps its
+    /// standing — its place, its held grant or its slot: the new link's
+    /// hello named the client held at `from`, whose link had ended, or the
+    /// peer opened the new link from the same address and listen port (aMule
+    /// attaches the new socket to the client it knows,
+    /// `ClientList.cpp:371-412`, and a client already queued keeps its place,
+    /// `UploadQueue.cpp:395-431`). Every row and mark keyed by `from` is now
+    /// keyed by `to`; a `from` still live is closed after this.
+    WaiterRelinked {
+        /// The link the waiter waited on.
+        from: rmule_primitives::PeerEndpoint,
+        /// The link it waits on now.
+        to: rmule_primitives::PeerEndpoint,
+    },
+    /// The hello on the link `peer` opened to us was held unanswered: rmule's
+    /// own dial to the same client has its hello out, and the client must
+    /// finish its hellos only on the link it keeps (ADR-0107 invariant 7).
+    CrossedHelloHeld {
+        /// The link the peer opened, as it came in.
+        peer: rmule_primitives::PeerEndpoint,
+    },
+    /// The link `peer` opened to us closed with its hello held: the client
+    /// attached rmule's dial, so its standing stays there (ADR-0107
+    /// invariant 7).
+    CrossedDialKept {
+        /// The link the peer opened, as it came in.
+        peer: rmule_primitives::PeerEndpoint,
+    },
+    /// The client answered rmule's dial and left the link `peer` it opened up
+    /// past the close bound: it refused the attach, its real client waits on
+    /// that link, and the dial gives way to it (ADR-0107 invariant 7).
+    CrossedDialRefused {
+        /// The link the peer opened, as it came in.
+        peer: rmule_primitives::PeerEndpoint,
+    },
+    /// The link rmule dialed to a client, `peer`, was let go as a **Dead
+    /// Dial** when the client's own link came in from the same address and
+    /// listen port: the far end keeps one socket per client
+    /// (`ClientList.cpp:400-403`), and it had dropped this one, so the
+    /// client's standing moves onto its own link (ADR-0107 invariant 7).
+    DeadDialLetGo {
+        /// The link rmule dialed, where it dialed.
+        peer: rmule_primitives::PeerEndpoint,
+        /// What showed it dead at the far end.
+        sign: DeadDialSign,
     },
     /// A peer's source-exchange request was answered with `count` sources
     /// (ADR-0055 §Serving) — the serve-side mirror of a download's
@@ -243,7 +358,7 @@ pub enum ServeStartFailure {
 }
 
 /// Why the **Announce Policy** kept the share set from the connected server
-/// (ADR-0099, "What is announced to a server that answers related searches").
+/// (ADR-0099).
 /// Both are the operator's preference meeting the server's related-search
 /// grant (`SRV_TCPFLG_RELATEDSEARCH`, `0x40`); they differ in what the
 /// server already holds.
@@ -293,6 +408,13 @@ pub enum ServerListEvent {
         /// The server that left the list.
         server: ServerEndpoint,
     },
+    /// A stored row no server can be at left the list as the core loaded it
+    /// (ADR-0085): its address lies in a Reserved Range other than loopback,
+    /// which an intake from before that check let in.
+    ReservedServerDropped {
+        /// The row that left the list.
+        server: ServerEndpoint,
+    },
     /// A listed server's `ST_PREFERENCE` was set, which is what auto-connect
     /// server ordering reads.
     ServerPriorityChanged {
@@ -325,6 +447,22 @@ pub enum ServerListEvent {
         updated: usize,
         /// The list's size after the install.
         total: usize,
+    },
+    /// An [`AutoUpdateServerList`](crate::ServerListCommand::AutoUpdateServerList)
+    /// walk was accepted (ADR-0065): these URLs are walked in order, none when
+    /// the list is empty, which fetches nothing.
+    ServerListAutoUpdateStarted {
+        /// The URLs the walk fetches, in order.
+        urls: Vec<String>,
+    },
+    /// One URL of an auto-update walk was fetched: what its list merged, or
+    /// why it gave none. The walk goes on either way, and installs once after
+    /// its last URL ([`ServerListUpdated`](Self::ServerListUpdated)).
+    ServerListAutoUpdateFetched {
+        /// The URL fetched.
+        url: String,
+        /// What it gave.
+        outcome: crate::server_list::AutoUpdateFetch,
     },
     /// The update produced no new list. The old one is untouched — the fetch
     /// parses before it installs (ADR-0065).
@@ -458,7 +596,7 @@ pub enum ServerConnectFailure {
 
 /// Top-level event from the core actor: a per-activity event, or a
 /// cross-activity fact. Thin wrapper so serve events are a new arm.
-// CoreEvent is sent over a low-frequency mpsc channel; the size imbalance
+// CoreEvent passes through the Outbox by value; the size imbalance
 // between Download(DownloadEvent) and the small cross-activity arms is
 // intentional (mirrors CoreCommand), so boxing would add indirection for no
 // measurable gain.
@@ -505,7 +643,7 @@ pub enum CoreEvent {
     /// all ask the same selector, so they all report here.
     PeerReachRouted {
         /// The peer the route was chosen for.
-        peer: rmule_primitives::PeerEndpoint,
+        peer: ReachAddress,
         /// The chosen route, and for route 2 whether it could be enacted.
         route: PeerReachRoute,
     },
@@ -583,13 +721,21 @@ pub enum CoreEvent {
         /// went wrong.
         refusal: rmule_peer::HelloRefusal,
     },
+    /// A peer link ended because the peer broke the protocol, under the code
+    /// that says how. Cross-activity, and like [`Self::PeerHelloRefused`] it
+    /// carries no peer address.
+    PeerLinkBroken {
+        /// What the peer did.
+        violation: rmule_peer::PeerViolation,
+    },
     /// Diagnostic echo of the current [`DiagnosticsSnapshot`](crate::diagnostics::DiagnosticsSnapshot) in response to
     /// [`CoreCommand::DumpDiagnostics`](crate::CoreCommand::DumpDiagnostics) (ADR-0028). Domain consumers may
     /// ignore this variant; it is intended for hang investigation by tools
     /// and tests. Cross-activity.
     DiagnosticsSnapshot {
-        /// The levels as they read at the moment the dump was served.
-        snapshot: crate::diagnostics::DiagnosticsSnapshot,
+        /// The levels as they read at the moment the dump was served. Boxed:
+        /// every queued event pays for the largest variant.
+        snapshot: Box<crate::diagnostics::DiagnosticsSnapshot>,
     },
     /// The **File History** as the store holds it, answering
     /// [`CoreCommand::DumpFileHistory`](crate::CoreCommand::DumpFileHistory)
@@ -616,6 +762,14 @@ pub enum CoreEvent {
     Quitting {
         /// The step now running.
         step: QuitStep,
+    },
+    /// A long task no ledger retires panicked (ADR-0118). The panic hook's
+    /// record says where; this says what stopped working for the rest of the
+    /// run. [`LongTask::Core`] is the core's end, whatever still holds the
+    /// event stream open.
+    TaskDied {
+        /// The task that stopped.
+        task: LongTask,
     },
     /// A step of a login to `server` between its session edges (ADR-0075,
     /// Run Log): evidence for a reachability diagnosis, never a level.
@@ -661,16 +815,30 @@ pub enum CoreEvent {
         /// What became of it.
         admission: PortTestLateAdmission,
     },
-}
-
-impl CoreEvent {
-    /// The CLI's sentence for [`Self::ClientUdpBindFailed`]. The TUI words the
-    /// event's port and error kind itself, since it owns every word it shows.
-    pub fn client_udp_bind_failed_message(port: u16, kind: std::io::ErrorKind) -> String {
-        format!(
-            "UDP port {port} could not be bound ({kind}) — Kad, reask and NAT traversal are off until restart"
-        )
-    }
+    /// A port-mapping release sent no delete (ADR-0086, "A release takes
+    /// down only rmule's own mapping"): the gateway's entry for the external
+    /// port did not name rmule's own internal address and port, and a UPnP
+    /// delete names no internal client, so it would have taken down whoever
+    /// holds the port. Written in session and at quit alike; no level moves
+    /// with it.
+    MappingReleaseKept {
+        /// The row the release was for.
+        mapping: crate::port_mapping::DesiredMapping,
+        /// The protocol that held the grant.
+        protocol: crate::port_mapping::MappingProtocol,
+        /// The external port the release named.
+        external_port: u16,
+        /// Why no delete went out.
+        kept: crate::port_mapping::ReleaseKept,
+    },
+    /// The reader fell so far behind that the Outbox dropped `count` Levels
+    /// and Notes (ADR-0069, "The room"): per-peer detail a front end holds
+    /// may be stale from here on. Every Edge is still delivered, and the Run
+    /// Log has what was dropped.
+    EventsShed {
+        /// How many events were dropped.
+        count: u64,
+    },
 }
 
 impl From<DownloadEvent> for CoreEvent {

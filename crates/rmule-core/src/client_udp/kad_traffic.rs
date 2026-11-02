@@ -48,6 +48,7 @@ async fn one_exchange(obfuscated: bool) -> (Vec<u8>, Vec<Vec<u8>>, KadTrafficTot
         DiagnosticsState::default(),
         reply_tx,
         kad_inlet.clone(),
+        crate::ban_store::SharedBanStore::default(),
     );
     tokio::spawn(engine.run());
 

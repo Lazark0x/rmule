@@ -12,7 +12,8 @@
 //! the name sub, phantom part included (run `1790228582`).
 
 use crate::fixture::load;
-use rmule_peer::{ExtendedRequests, MultiPacketRequest, PartBitmap, PeerPacket, RequestItem};
+use rmule_peer::WireStatus;
+use rmule_peer::{ExtendedRequests, MultiPacketRequest, PeerPacket, RequestItem};
 use rmule_primitives::{ED2K_PART_SIZE, FileHash, Packet};
 
 const FIXTURE_DIR: &str = "fixtures/reverse_serve/captured/amule-233-serve-consume-20260726/";
@@ -124,8 +125,8 @@ fn amule_writes_its_status_with_the_phantom_part_to_a_v1_claimant() {
 
     assert_eq!(request.file_hash, FileHash::from_bytes(V1_FILE_HASH));
     assert_eq!(request.file_size, Some(ED2K_PART_SIZE));
-    let status = PartBitmap::downloader_empty(ED2K_PART_SIZE);
-    assert_eq!(status.part_count(), 2, "size / PARTSIZE + 1");
+    let status = WireStatus::downloader_empty(ED2K_PART_SIZE);
+    assert_eq!(status.count(), 2, "size / PARTSIZE + 1");
     assert_eq!(status.encode(), [0x02], "the phantom part reads held");
     assert_eq!(
         request.items,

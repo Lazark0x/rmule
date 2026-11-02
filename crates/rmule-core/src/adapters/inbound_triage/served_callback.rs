@@ -11,7 +11,7 @@
 //!
 //! The dial-back is plaintext for the wire's reason, not ours: the `0x99`
 //! body names no user hash and no connect-options, so no crypt key exists to
-//! derive (ADR-0061, "The `0x99` relay cannot be obfuscated").
+//! derive (ADR-0061).
 
 use rmule_kad::KadId;
 use rmule_peer::Callback;

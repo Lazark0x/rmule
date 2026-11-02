@@ -13,7 +13,7 @@
 //! keyword search after each step. The probe's frames are Stimulus; the
 //! servers' `OP_SEARCHRESULT` payloads, retained as hex in each
 //! `searcher.jsonl`, are the evidence. Each server's `offer-set-summary` line
-//! lands in `announce-switch/verdict.txt`, followed, when asked, by rmule's
+//! lands in `announce-switch/announce-switch-verdict.toml`, followed, when asked, by rmule's
 //! own legs (`rmule_legs`): what rmule offers each server across a switch,
 //! plain and withholding. The same probe also runs in `markers` mode against
 //! each server: it offers one whole file and one part-file the way aMule marks
@@ -33,6 +33,7 @@ use crate::artifacts::RunLayout;
 use crate::docker::RunContainer;
 use crate::flow::bench::{Bench, run_checked};
 use crate::flow::ed2k_server::search_wire::{ED2KSRV_IP, SUBNET, start_ed2ksrv};
+use crate::verdict::{self, Verdict};
 
 /// The probe both roles run, written into the run dir and mounted.
 const OFFER_PROBE: &str = include_str!("announce_switch/offer_probe.py");
@@ -167,9 +168,8 @@ pub fn run_announce_switch(options: AnnounceSwitchOptions<'_>) -> Result<()> {
     }
     bench.cleanup_best_effort();
     let summaries = result?;
-    let verdict = root.join("verdict.txt");
-    fs::write(&verdict, summaries.join("\n") + "\n")
-        .with_context(|| format!("write {}", verdict.display()))?;
+    let report = summaries.join("\n") + "\n";
+    verdict::write_report(&root, "announce-switch", Verdict::Observed, &report)?;
     for line in &summaries {
         println!("{line}");
     }

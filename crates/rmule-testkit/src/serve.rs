@@ -12,10 +12,7 @@ use rmule_core::{
 use rmule_ed2k::OfferedFile;
 use rmule_net::peer::{ConnectOptions, Connection, PeerListener};
 use rmule_peer::{PeerEvent, PeerHandshakeContext};
-use rmule_primitives::{
-    ClientId, ClientIdentity, Ed2kFileLink, Ed2kText, PeerEndpoint, PeerSource, SourceLookupTarget,
-    UserHash,
-};
+use rmule_primitives::{ClientId, Ed2kFileLink, PeerEndpoint, PeerSource, SourceLookupTarget};
 use tokio::sync::{mpsc, oneshot};
 use tokio::time::{Duration, timeout};
 
@@ -46,20 +43,10 @@ impl PeerTransferService for RefusingPeerTransfer {
     }
 }
 
-/// A `ClientIdentity` for tests: `seed` fills the user hash, `name` the nick.
-pub fn test_identity(seed: u8, name: &str, tcp_port: u16) -> ClientIdentity {
-    ClientIdentity::new(
-        UserHash::from_bytes([seed; UserHash::BYTE_LEN]),
-        Ed2kText::from_utf8(name),
-        tcp_port,
-        60,
-    )
-}
-
 /// A `PeerHandshakeContext` for tests, High-ID, no connected server.
 pub fn test_handshake_ctx(seed: u8, name: &str) -> PeerHandshakeContext {
     PeerHandshakeContext {
-        identity: test_identity(seed, name, 4662),
+        identity: crate::test_identity(seed, name, 4662),
         client_id: ClientId::from_u32(0x0100_007F),
         ed2k_client_id: ClientId::from_u32(0x0100_007F),
         public_ip: None,
@@ -104,7 +91,7 @@ impl ServeRuntimeService for LoopbackServeRuntime {
     ) -> Result<SocketAddrV4, CoreError> {
         let listener = PeerListener::bind(listen_addr)
             .await
-            .map_err(|e| CoreError::Repository(e.to_string()))?;
+            .map_err(|_| CoreError::ListenerBind(std::io::ErrorKind::AddrNotAvailable))?;
         let bound = SocketAddrV4::new(*listen_addr.ip(), listener.local_port());
         if let Some(tx) = self.bound_tx.take() {
             let _ = tx.send(bound);

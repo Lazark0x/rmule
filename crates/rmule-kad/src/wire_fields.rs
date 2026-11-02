@@ -3,7 +3,7 @@
 
 use std::net::Ipv4Addr;
 
-use rmule_primitives::{WireReader, WireTruncated};
+use rmule_primitives::{KadIp, WireReader, WireTruncated};
 
 use crate::KadId;
 
@@ -34,8 +34,8 @@ impl KadWireFields for WireReader<'_> {
         &mut self,
         field: &'static str,
     ) -> Result<Ipv4Addr, WireTruncated> {
-        let [a, b, c, d] = self.read_array(field)?;
-        Ok(Ipv4Addr::new(d, c, b, a))
+        self.read_u32_le(field)
+            .map(|word| KadIp::from_wire(word).ip())
     }
 
     fn read_ipv4_natural_order(&mut self, field: &'static str) -> Result<Ipv4Addr, WireTruncated> {

@@ -45,10 +45,35 @@ pub enum CoreError {
     /// so either the record or the size is wrong and neither can be trusted.
     #[error("verified part is outside the declared file size")]
     PartOutOfBounds,
-    /// The store itself failed (I/O, a SQL error, a poisoned lock). The string
-    /// is the backend's own message and is for a log, not for matching on.
-    #[error("download repository error: {0}")]
+    /// The store itself failed. The string is the engine's own message and
+    /// is for a log, not for matching on: [`rmule_store::StoreError`] holds
+    /// the engine's error, which neither clones nor compares.
+    #[error("store error: {0}")]
     Repository(String),
+    /// A file of a download or a share would not read or write. The string is
+    /// the operating system's message.
+    #[error("file error: {0}")]
+    File(String),
+    /// A folder has no UTF-8 spelling, and what keeps it keeps text.
+    #[error("{} is not valid UTF-8", .0.display())]
+    PathNotUtf8(std::path::PathBuf),
+    /// The node's secure-ident key could not be made, or the stored one does
+    /// not read. The string is the key library's own message.
+    #[error("secure-ident key: {0}")]
+    SecureIdentKey(String),
+    /// A part of the running node this call needs is not there. Nothing on
+    /// disk is wrong, and a retry finds the same until that part is back.
+    #[error(transparent)]
+    ServiceGone(#[from] GoneService),
+    /// The Durable Store would not open: why, for the operator's words, and
+    /// what the engine said, for the log.
+    #[error("the store would not open: {reason}")]
+    StoreRefused {
+        /// What refused it.
+        refusal: rmule_store::OpenRefusal,
+        /// The store's own message.
+        reason: String,
+    },
     /// A second provisional part hash set was offered for a download that
     /// already has one. Only one provisional authority can be in force, since
     /// two would disagree about what a verified part means.
@@ -69,6 +94,20 @@ pub enum CoreError {
     /// later send fails the same way.
     #[error("core service stopped")]
     ServiceStopped,
+}
+
+/// Which live part of the node an ask found missing.
+#[derive(Clone, Copy, Debug, thiserror::Error, PartialEq, Eq)]
+pub enum GoneService {
+    /// The server session closed.
+    #[error("server session closed")]
+    ServerSession,
+    /// The serve activity was never started.
+    #[error("serve not started")]
+    Serve,
+    /// One inbound serve connection is over.
+    #[error("serve connection closed")]
+    ServeConnection,
 }
 
 /// Why a running download stopped. Delivered on the event stream long after the
@@ -126,8 +165,9 @@ pub enum DownloadFailure {
     #[error("stored download content does not match its verified-part records: {0}")]
     StorageIntegrityFailed(StorageIntegrityFault),
     /// Every part verified and the whole file hashed, but a file already
-    /// stands at the final path, and rmule never overwrites one. The verified
-    /// parts are kept: a Restart once the path is free completes the file.
+    /// stood at the final path, and rmule never overwrites one. No longer
+    /// produced — a taken name now takes the next free one (ADR-0115) — and
+    /// still read from a row that holds it.
     #[error("a file already stands at the download's final path")]
     FinalPathTaken,
     /// Every part verified and the whole file hashed, but the part file could
@@ -142,32 +182,36 @@ pub enum DownloadFailure {
     /// the run could not keep what it earned or learn what it holds.
     #[error("the download's store record could not be read or written")]
     StoreFailed,
+    /// Every part verified and the whole file hashed, the destination lies on
+    /// another volume, and the Completion Copy onto it failed — a full disk,
+    /// an I/O error (ADR-0115). The partial copy is deleted, the part file
+    /// and every verified part are kept.
+    #[error("the finished file could not be copied to its final path{}", OsCode(*.os_code))]
+    CompletionCopyFailed {
+        /// The OS's error number, when there is one.
+        os_code: Option<i32>,
+    },
+    /// The run's task panicked (ADR-0118). A defect in rmule, written to the
+    /// Run Log; the verified parts are kept and a Restart runs it again.
+    #[error("the download's task panicked")]
+    TaskPanicked,
 }
 
-/// Why [`DownloadRepository::finalize`](crate::DownloadRepository::finalize)
-/// did not promote a download: each cause is its own, since only a file that
-/// does not hash is a matter for the parts.
+/// Why the completion move's check did not pass a finished file (ADR-0115,
+/// step 1): each cause is its own, since only a file that does not hash is a
+/// matter for the parts.
 #[derive(Clone, Debug, thiserror::Error, PartialEq, Eq)]
 pub enum FinalizeError {
     /// The assembled file does not hash to the file's hash.
     #[error("the assembled file does not hash to the file's hash")]
     Mismatch,
-    /// A file already stands at the final path.
-    #[error("a file already stands at the final path")]
-    FinalPathTaken,
     /// The part file could not be read whole.
     #[error("the part file could not be read{}", OsCode(*.os_code))]
     Unreadable {
         /// The OS's error number, when there is one.
         os_code: Option<i32>,
     },
-    /// The rename onto the final path failed.
-    #[error("the part file could not be moved to its final path{}", OsCode(*.os_code))]
-    NotMoved {
-        /// The OS's error number, when there is one.
-        os_code: Option<i32>,
-    },
-    /// The store failed around the rename.
+    /// The store failed around the check.
     #[error(transparent)]
     Store(#[from] CoreError),
 }

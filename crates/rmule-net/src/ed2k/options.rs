@@ -48,6 +48,9 @@ pub struct ConnectOptions {
     /// capability claim (ADR-0091). Set only by a caller holding a bound
     /// client-UDP socket; `None` sends no tag.
     pub udp_ports: Option<rmule_ed2k::UdpPortsAdvert>,
+    /// Ask for OFFERFILES v1 in the login (ADR-0099). Off, the login is
+    /// aMule's byte for byte.
+    pub offer_pace: bool,
 }
 
 impl Default for ConnectOptions {
@@ -60,6 +63,7 @@ impl Default for ConnectOptions {
             obfuscated_port: None,
             advertised_ipv6: None,
             udp_ports: None,
+            offer_pace: false,
         }
     }
 }

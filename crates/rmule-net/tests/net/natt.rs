@@ -11,15 +11,16 @@
 //! Live evidence — a punch through real gateways — is the interop harness's,
 //! not this file's.
 
+use parking_lot::Mutex;
 use std::io;
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::task::{Context, Poll};
 use std::time::{Duration, Instant};
 
 use rmule_net::natt::{
-    Admission, NattCrypt, NattDatagramSink, NattDemux, NattDisposition, NattIdentity, NattOwnHash,
-    NattSender, Tunnel, TunnelRegistry, TunnelSlot, TunnelTransport,
+    Admission, KEY_FRAME_INTERVAL, NattCrypt, NattDatagramSink, NattDemux, NattDisposition,
+    NattIdentity, NattOwnHash, NattSender, Tunnel, TunnelRegistry, TunnelSlot, TunnelTransport,
 };
 use rmule_net::peer::{ConnectOptions, Connection, PeerStreamRole};
 use rmule_peer::natt::{
@@ -55,7 +56,7 @@ impl NattDatagramSink for FakeWire {
 
     fn try_send_to(&self, peer: PeerEndpoint, datagram: &[u8]) -> io::Result<usize> {
         let frame = (self.me, peer, datagram.to_vec());
-        self.log.lock().expect("wire log").push(frame.clone());
+        self.log.lock().push(frame.clone());
         let _ = self.tx.send(frame);
         Ok(datagram.len())
     }
@@ -126,13 +127,13 @@ impl SettableHash {
     }
 
     fn set(&self, hash: UserHash) {
-        *self.0.lock().expect("settable hash") = Some(hash);
+        *self.0.lock() = Some(hash);
     }
 }
 
 impl NattOwnHash for SettableHash {
     fn user_hash(&self) -> Option<UserHash> {
-        *self.0.lock().expect("settable hash")
+        *self.0.lock()
     }
 }
 
@@ -195,7 +196,7 @@ impl FakeNetwork {
     fn between(local: HelloNattClaim, armed: bool, a_at: PeerEndpoint, b_at: PeerEndpoint) -> Self {
         let (tx, mut rx) = mpsc::unbounded_channel::<Datagram>();
         let log = Arc::new(Mutex::new(Vec::new()));
-        let front = |me: PeerEndpoint, own: UserHash, registry: &Arc<Mutex<TunnelRegistry>>| {
+        let front = |me: PeerEndpoint, own: UserHash| {
             // The key is our own external address in the family the datagram
             // leaves by, and the recipient keys its decrypt on the source
             // address it observes — so on this wire the two are the same
@@ -222,15 +223,14 @@ impl FakeNetwork {
                     NattIdentity { local },
                     Arc::new(SettableHash::known(own)) as Arc<dyn NattOwnHash>,
                     sender,
-                    Arc::clone(registry),
                 )
                 .expect("both engines start"),
             )
         };
-        let a_registry = Arc::new(Mutex::new(TunnelRegistry::new()));
-        let b_registry = Arc::new(Mutex::new(TunnelRegistry::new()));
-        let a = front(a_at, hash(0xAA), &a_registry);
-        let b = front(b_at, hash(0xBB), &b_registry);
+        let a = front(a_at, hash(0xAA));
+        let b = front(b_at, hash(0xBB));
+        let a_registry = a.sender().registry();
+        let b_registry = b.sender().registry();
         let (route_a, route_b) = (Arc::clone(&a), Arc::clone(&b));
         let router = tokio::spawn(async move {
             while let Some((from, to, datagram)) = rx.recv().await {
@@ -257,7 +257,9 @@ impl FakeNetwork {
                     },
                 )
                 .map_or(datagram, |decrypted| decrypted.payload);
-                front.on_datagram(from, &plain, Instant::now()).await;
+                front
+                    .on_datagram(from, &plain, &any_source, Instant::now())
+                    .await;
             }
         });
         Self {
@@ -274,8 +276,14 @@ impl FakeNetwork {
 
     /// Every datagram either node has emitted, in order.
     fn wire(&self) -> Vec<Datagram> {
-        self.log.lock().expect("wire log").clone()
+        self.log.lock().clone()
     }
+}
+
+/// Every source expected: these legs are about what a tunnel does once its
+/// opener is admitted, not about who may open one.
+fn any_source(_: std::net::IpAddr) -> bool {
+    true
 }
 
 fn ctx(user_hash: UserHash, nickname: &str) -> PeerHandshakeContext {
@@ -348,8 +356,9 @@ async fn a_peer_session_runs_unchanged_inside_a_tunnel() {
     assert_eq!(seen_by_b, hash(0xAA), "the responder identified the dialer");
 
     // And the datagrams that carried it were NAT-T frames: a KEY frame first
-    // (the opening `ST_SYN` asserted our hash), then obfuscated transport
-    // frames, none of which leads with a whitelisted protocol byte.
+    // (the opening `ST_SYN` asserted our hash), then transport frames the
+    // accepting side keeps plain, because nothing has told its registry who
+    // the endpoint is (ADR-0091, security rule 11).
     let wire = net.wire();
     assert!(
         wire.iter()
@@ -358,12 +367,25 @@ async fn a_peer_session_runs_unchanged_inside_a_tunnel() {
     );
     assert!(
         wire.iter()
-            .any(|(_, _, bytes)| !is_udp_plaintext_marker(bytes[0])),
-        "once each side learned a key, transport frames went out obfuscated"
+            .all(|(_, _, bytes)| is_udp_plaintext_marker(bytes[0])),
+        "no frame goes out obfuscated before the hello is reported"
     );
 
-    initiator.shutdown().await.expect("shutdown");
+    // The triage reports the hello it read: from here the key it landed with
+    // keys the accepting side's frames, and the dialer's dual path opens them.
+    net.b
+        .sender()
+        .registry()
+        .lock()
+        .identified(net.a_at, hash(0xAA), Instant::now());
     responder.shutdown().await.expect("shutdown");
+    initiator.shutdown().await.expect("shutdown");
+    assert!(
+        net.wire()
+            .iter()
+            .any(|(_, _, bytes)| !is_udp_plaintext_marker(bytes[0])),
+        "once the hello named the endpoint, transport frames went out obfuscated"
+    );
 }
 
 /// The same tunnel carries an obfuscated eD2k stream: `CryptStream` is generic
@@ -421,7 +443,7 @@ async fn an_ipv6_tunnel_frees_its_registry_slot_when_it_is_dropped() {
     let dialed = dialed.expect("the v6 dial completed over the fake wire");
     let accepted = accepted.expect("the responder accepted the v6 SYN");
     assert_eq!(accepted.peer(), net.a_at);
-    let slot_at_b = || net.b_registry.lock().expect("registry").slot(net.a_at);
+    let slot_at_b = || net.b_registry.lock().slot(net.a_at);
     assert_eq!(slot_at_b(), Some(TunnelSlot::Held));
 
     // What core's `adopt` does with a tunnel on a path no punch opened.
@@ -430,15 +452,14 @@ async fn an_ipv6_tunnel_frees_its_registry_slot_when_it_is_dropped() {
     assert_eq!(
         net.b_registry
             .lock()
-            .expect("registry")
-            .admit(net.a_at, false, Instant::now()),
+            .admit(net.a_at, false, any_source, Instant::now()),
         Admission::Drop,
         "a late non-SYN from the closed source is a stranger's again"
     );
 
     drop(dialed);
     assert_eq!(
-        net.a_registry.lock().expect("registry").slot(net.b_at),
+        net.a_registry.lock().slot(net.b_at),
         None,
         "a dialed tunnel's slot goes with it too"
     );
@@ -457,7 +478,7 @@ async fn the_demux_routes_every_frame_type_and_gates_the_transport_arms() {
     data[0] = 0x01; // ST_DATA
     assert_eq!(
         net.b
-            .on_datagram(net.a_at, &NattFrame::Utp(&data).encode(), now)
+            .on_datagram(net.a_at, &NattFrame::Utp(&data).encode(), &any_source, now)
             .await,
         NattDisposition::Utp(Admission::Drop)
     );
@@ -467,13 +488,13 @@ async fn the_demux_routes_every_frame_type_and_gates_the_transport_arms() {
     syn[0] = 0x41; // ST_SYN
     assert_eq!(
         net.b
-            .on_datagram(net.a_at, &NattFrame::Utp(&syn).encode(), now)
+            .on_datagram(net.a_at, &NattFrame::Utp(&syn).encode(), &any_source, now)
             .await,
         NattDisposition::Utp(Admission::Opened)
     );
     assert_eq!(
         net.b
-            .on_datagram(net.a_at, &NattFrame::Utp(&data).encode(), now)
+            .on_datagram(net.a_at, &NattFrame::Utp(&data).encode(), &any_source, now)
             .await,
         NattDisposition::Utp(Admission::Inject)
     );
@@ -481,7 +502,12 @@ async fn the_demux_routes_every_frame_type_and_gates_the_transport_arms() {
     // A QUIC frame with no QUIC runtime is dropped, not answered.
     assert_eq!(
         net.b
-            .on_datagram(net.a_at, &NattFrame::Quic(&[0xC0, 0x00]).encode(), now)
+            .on_datagram(
+                net.a_at,
+                &NattFrame::Quic(&[0xC0, 0x00]).encode(),
+                &any_source,
+                now
+            )
             .await,
         NattDisposition::QuicUnavailable
     );
@@ -489,7 +515,12 @@ async fn the_demux_routes_every_frame_type_and_gates_the_transport_arms() {
     // A KEY frame teaches the endpoint's hash.
     assert_eq!(
         net.b
-            .on_datagram(net.a_at, &NattFrame::Key(hash(0xAA)).encode(), now)
+            .on_datagram(
+                net.a_at,
+                &NattFrame::Key(hash(0xAA)).encode(),
+                &any_source,
+                now
+            )
             .await,
         NattDisposition::KeyLearned(hash(0xAA))
     );
@@ -497,13 +528,44 @@ async fn the_demux_routes_every_frame_type_and_gates_the_transport_arms() {
     // Anything that does not decode is dropped in silence — no reply frame
     // exists in this dialect, so inventing one would make rmule a reflector.
     assert!(matches!(
-        net.b.on_datagram(net.a_at, &[0xB2, 0x7F, 0x00], now).await,
+        net.b
+            .on_datagram(net.a_at, &[0xB2, 0x7F, 0x00], &any_source, now)
+            .await,
         NattDisposition::Malformed(_)
     ));
     assert!(matches!(
-        net.b.on_datagram(net.a_at, &[0xB2], now).await,
+        net.b.on_datagram(net.a_at, &[0xB2], &any_source, now).await,
         NattDisposition::Malformed(_)
     ));
+}
+
+/// An `ST_SYN` from a source nobody expects opens nothing and draws nothing:
+/// it never reaches the engine, so no `ST_STATE` and no KEY frame leave
+/// (ADR-0091, security rule 10). The same opener from an expected source
+/// opens the slot.
+#[tokio::test]
+async fn an_opener_from_an_unexpected_ip_is_dropped_with_no_answer() {
+    let net = FakeNetwork::build(UTP_ONLY, true);
+    let mut syn = [0u8; 20];
+    syn[0] = 0x41; // ST_SYN
+    let frame = NattFrame::Utp(&syn).encode();
+    let nobody = |_: std::net::IpAddr| false;
+    assert_eq!(
+        net.b
+            .on_datagram(net.a_at, &frame, &nobody, Instant::now())
+            .await,
+        NattDisposition::Utp(Admission::Drop)
+    );
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(net.wire().is_empty(), "nothing left the gated node");
+    assert_eq!(net.b_registry.lock().slot(net.a_at), None);
+
+    assert_eq!(
+        net.b
+            .on_datagram(net.a_at, &frame, &any_source, Instant::now())
+            .await,
+        NattDisposition::Utp(Admission::Opened)
+    );
 }
 
 /// A CAPS probe is answered exactly once, with a CAPS-ACK that is never itself
@@ -521,7 +583,12 @@ async fn a_caps_probe_is_answered_once_and_a_misaddressed_one_is_not() {
 
     let answered = net
         .b
-        .on_datagram(net.a_at, &NattFrame::Caps(probe(hash(0xBB))).encode(), now)
+        .on_datagram(
+            net.a_at,
+            &NattFrame::Caps(probe(hash(0xBB))).encode(),
+            &any_source,
+            now,
+        )
         .await;
     assert_eq!(
         answered,
@@ -550,6 +617,7 @@ async fn a_caps_probe_is_answered_once_and_a_misaddressed_one_is_not() {
         .on_datagram(
             net.a_at,
             &NattFrame::CapsAck(probe(hash(0xBB))).encode(),
+            &any_source,
             now,
         )
         .await;
@@ -567,7 +635,12 @@ async fn a_caps_probe_is_answered_once_and_a_misaddressed_one_is_not() {
     // identity to whoever misrouted it.
     let not_ours = net
         .b
-        .on_datagram(net.a_at, &NattFrame::Caps(probe(hash(0x77))).encode(), now)
+        .on_datagram(
+            net.a_at,
+            &NattFrame::Caps(probe(hash(0x77))).encode(),
+            &any_source,
+            now,
+        )
         .await;
     assert_eq!(not_ours, NattDisposition::CapsNotOurs);
     assert_eq!(
@@ -604,7 +677,6 @@ async fn a_caps_probe_is_silent_before_identity_and_answered_once_it_arrives() {
         NattIdentity { local: UTP_ONLY },
         Arc::new(own_hash.clone()) as Arc<dyn NattOwnHash>,
         sender,
-        Arc::new(Mutex::new(TunnelRegistry::new())),
     )
     .expect("the uTP engine starts");
 
@@ -618,18 +690,25 @@ async fn a_caps_probe_is_silent_before_identity_and_answered_once_it_arrives() {
     let now = Instant::now();
 
     let before = demux
-        .on_datagram(peer, &NattFrame::Caps(probe(acquired)).encode(), now)
+        .on_datagram(
+            peer,
+            &NattFrame::Caps(probe(acquired)).encode(),
+            &any_source,
+            now,
+        )
         .await;
     assert_eq!(before, NattDisposition::CapsBeforeIdentity);
-    assert!(
-        log.lock().expect("wire log").is_empty(),
-        "no answer while identity is unknown"
-    );
+    assert!(log.lock().is_empty(), "no answer while identity is unknown");
 
     own_hash.set(acquired);
 
     let answered = demux
-        .on_datagram(peer, &NattFrame::Caps(probe(acquired)).encode(), now)
+        .on_datagram(
+            peer,
+            &NattFrame::Caps(probe(acquired)).encode(),
+            &any_source,
+            now,
+        )
         .await;
     assert_eq!(
         answered,
@@ -638,7 +717,7 @@ async fn a_caps_probe_is_silent_before_identity_and_answered_once_it_arrives() {
             transport: Some(NattTransport::Utp),
         }
     );
-    let answers = log.lock().expect("wire log").clone();
+    let answers = log.lock().clone();
     assert_eq!(answers.len(), 1, "exactly one CAPS-ACK");
     let decoded = match NattFrame::decode(&answers[0].2).expect("our own frame decodes") {
         NattFrame::CapsAck(caps) => caps,
@@ -651,7 +730,12 @@ async fn a_caps_probe_is_silent_before_identity_and_answered_once_it_arrives() {
 
     // Identity now exists, but this frame does not name it.
     let not_ours = demux
-        .on_datagram(peer, &NattFrame::Caps(probe(hash(0x11))).encode(), now)
+        .on_datagram(
+            peer,
+            &NattFrame::Caps(probe(hash(0x11))).encode(),
+            &any_source,
+            now,
+        )
         .await;
     assert_eq!(not_ours, NattDisposition::CapsNotOurs);
 }
@@ -699,7 +783,7 @@ async fn a_quic_failure_clears_the_quic_bit_for_that_endpoint_only() {
 
     net.b.quic_failed(net.a_at, now);
     net.b
-        .on_datagram(net.a_at, &NattFrame::Caps(probe).encode(), now)
+        .on_datagram(net.a_at, &NattFrame::Caps(probe).encode(), &any_source, now)
         .await;
     let answer = net
         .wire()
@@ -722,7 +806,12 @@ async fn a_quic_failure_clears_the_quic_bit_for_that_endpoint_only() {
     // A different endpoint is unaffected: the blacklist is a fact about one
     // mapping, not about this build.
     net.b
-        .on_datagram(endpoint(9), &NattFrame::Caps(probe).encode(), now)
+        .on_datagram(
+            endpoint(9),
+            &NattFrame::Caps(probe).encode(),
+            &any_source,
+            now,
+        )
         .await;
     let other = net
         .wire()
@@ -805,4 +894,55 @@ async fn a_quic_proof_for_another_node_raises_no_tunnel() {
         "a proof addressed to 0x77 must not raise a tunnel to 0xBB"
     );
     assert!(accepting.await.expect("accept task").is_err());
+}
+
+/// A CAPS body naming no recipient, which the dialect reads as addressed to
+/// whoever hears it.
+fn null_caps() -> Vec<u8> {
+    NattFrame::Caps(CapsFrame {
+        connect_options: NattConnectOptions::advertise(0x01, true, false),
+        sender: hash(0x66),
+        expected_recipient: UserHash::from_bytes([0; UserHash::BYTE_LEN]),
+        file_hash: FileHash::from_bytes([0; FileHash::BYTE_LEN]),
+    })
+    .encode()
+}
+
+/// `0xB2 0xFF` or a null-recipient CAPS from a source nothing expects is the
+/// same stranger an `ST_SYN` is: no row, no answer (ADR-0091, security rule 10).
+#[tokio::test]
+async fn a_stranger_key_or_caps_leaves_no_row_and_draws_no_answer() {
+    let net = FakeNetwork::build(UTP_ONLY, false);
+    let nobody = |_: std::net::IpAddr| false;
+    let stranger = endpoint(9);
+    let now = Instant::now();
+    net.b
+        .on_datagram(stranger, &NattFrame::Key(hash(0x66)).encode(), &nobody, now)
+        .await;
+    assert_eq!(net.b.sender().send_key(stranger, now), None);
+
+    net.b
+        .on_datagram(stranger, &null_caps(), &nobody, now)
+        .await;
+    assert!(net.log.lock().is_empty(), "no CAPS-ACK");
+}
+
+/// An expected address is still a claimed one, so CAPS frames from it draw
+/// one answer per window, the rate the KEY frame already keeps.
+#[tokio::test]
+async fn a_caps_flood_from_one_endpoint_draws_one_answer_per_window() {
+    let net = FakeNetwork::build(UTP_ONLY, false);
+    let source = endpoint(9);
+    let now = Instant::now();
+    for _ in 0..50 {
+        net.b
+            .on_datagram(source, &null_caps(), &any_source, now)
+            .await;
+    }
+    let answers = || net.log.lock().len();
+    assert_eq!(answers(), 1);
+    net.b
+        .on_datagram(source, &null_caps(), &any_source, now + KEY_FRAME_INTERVAL)
+        .await;
+    assert_eq!(answers(), 2, "the window passed");
 }

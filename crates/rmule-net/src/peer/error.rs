@@ -60,6 +60,13 @@ pub enum PeerNetError {
     #[error("peer and local crypt stances are incompatible; dial refused")]
     CryptIncompatible,
 
+    /// The peer took an obfuscated dial's connection and never answered its
+    /// crypt handshake inside
+    /// [`ConnectOptions::crypt_timeout`](crate::peer::ConnectOptions::crypt_timeout):
+    /// a connect failure, as aMule's socket times out (`ClientTCPSocket.cpp:201-222`).
+    #[error("peer never answered the obfuscation handshake")]
+    CryptUnanswered,
+
     /// A failure of the shared driver harness (connect timeout, driver
     /// liveness, teardown, socket I/O).
     #[error(transparent)]

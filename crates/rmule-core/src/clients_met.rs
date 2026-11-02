@@ -27,15 +27,15 @@
 //! | `nKeySize`      | 1     | secure-ident DER length; `> 80` ⇒ file corrupt  |
 //! | `abySecureIdent`| 80    | the `MAXPUBKEYSIZE` public-key buffer, verbatim |
 //!
-//! ## Documented divergence — `nLastSeen` stamped at save, not per touch
+//! ## `nLastSeen`
 //!
-//! aMule stamps `nLastSeen` on every credit access (`GetCredit` →
-//! `SetLastSeen`). rmule's credit ring is clock-free (explicit-time), so the
-//! save edge stamps `nLastSeen = now` for every persisted record instead. The
-//! 150-day expiry therefore keys on "not *persisted* in 150 days" rather than
-//! aMule's "not *seen* in 150 days" — the same observable effect for a
-//! continuously-running or normally-restarted daemon, and a record carried
-//! verbatim from an aMule-written file keeps aMule's own stamp.
+//! The credit ring ages its own rows (150 days from the last accrual or proof,
+//! at open), so a record is written with the row's stamp and this file carries
+//! it, not the time of the save. A row that holds no stamp takes the save's. A
+//! hello alone stamps nothing here, where aMule's `GetCredit` does: a peer that
+//! neither moved a byte nor proved a key ages out on a row that holds nothing
+//! it earned since. A record carried verbatim from an aMule-written file keeps
+//! aMule's own stamp.
 
 use std::path::Path;
 
@@ -113,7 +113,7 @@ pub struct CreditRecord {
 
 impl CreditRecord {
     /// Build an on-disk record from a live ring [`PeerCredit`] snapshot,
-    /// stamping `last_seen = now` (see the module's divergence note). The bound
+    /// stamped with its own `last_seen`, or `now` when it holds none. The bound
     /// SUI public key, if any, lands in the `nKeySize` + `abySecureIdent`
     /// buffer; a peer with no proven key writes a zero buffer, exactly as aMule
     /// does for an unsecured peer.
@@ -129,7 +129,10 @@ impl CreditRecord {
             key: peer.key,
             uploaded: peer.totals.uploaded,
             downloaded: peer.totals.downloaded,
-            last_seen: now,
+            last_seen: u32::try_from(peer.last_seen)
+                .ok()
+                .filter(|stamp| *stamp != 0)
+                .unwrap_or(now),
             reserved3: 0,
             key_size,
             secure_ident,
@@ -298,11 +301,12 @@ pub fn seed_credit_ring(
         if known.uploaded != 0 || known.downloaded != 0 || store.public_key(record.key)?.is_some() {
             continue;
         }
-        store.record_upload(record.key, record.uploaded)?;
-        store.record_download(record.key, record.downloaded)?;
+        // The key first: binding a first key over received bytes wipes them.
         if let Some(der) = record.public_key() {
             store.bind_public_key(record.key, der)?;
         }
+        store.record_upload(record.key, record.uploaded)?;
+        store.record_download(record.key, record.downloaded)?;
         seeded += 1;
     }
     Ok(seeded)
@@ -496,6 +500,7 @@ mod tests {
                 downloaded: 8192,
             },
             public_key: Some(der.clone()),
+            last_seen: 0,
         };
         let record = CreditRecord::from_peer_credit(&peer, 1_777_777_777);
         assert_eq!(record.key_size, 59);
@@ -513,6 +518,7 @@ mod tests {
                 downloaded: 0,
             },
             public_key: None,
+            last_seen: 0,
         };
         assert_eq!(CreditRecord::from_peer_credit(&bare, 0).public_key(), None);
     }

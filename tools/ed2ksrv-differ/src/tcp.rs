@@ -30,8 +30,8 @@ use rmule_ed2k::{
     GetSourcesRequest, LoginRequest, OfferFiles, OfferedFile, SearchRequest, ServerGrants,
 };
 use rmule_primitives::{
-    Capabilities, ClientId, ClientIdentity, CryptStance, Ed2kText, FileHash, Packet,
-    PacketProtocol, KeywordQuery, SourceLookupTarget, Tag, TagValue, UserHash,
+    Capabilities, ClientId, ClientIdentity, CryptStance, Ed2kText, FileHash, KeywordQuery, Packet,
+    PacketProtocol, SourceLookupTarget, Tag, TagValue, UserHash,
 };
 
 use crate::report::{Origin, Reading, Report, Row, guarded, hex, read};
@@ -241,7 +241,13 @@ fn offer_files(report: &mut Report) {
             Ed2kText::from_utf8("Linux Mint 22.iso"),
         ),
     ];
-    let offer = OfferFiles::announce(ServerGrants::default(), ClientId::from_u32(0), ClientId::from_u32(0), 4662, &files);
+    let offer = OfferFiles::announce(
+        ServerGrants::default(),
+        ClientId::from_u32(0),
+        ClientId::from_u32(0),
+        4662,
+        &files,
+    );
     let packet = offer.encode_packet();
     let payload = packet.payload().to_vec();
 
@@ -307,7 +313,8 @@ fn get_sources(report: &mut Report) {
         (
             "getsources/v2-32bit-size",
             GetSourcesRequest::Normal {
-                target: SourceLookupTarget::new(file_hash(0x32), 4_096),
+                file_hash: file_hash(0x32),
+                file_size: 4_096,
             },
             Some(4_096u64),
         ),
@@ -326,10 +333,9 @@ fn get_sources(report: &mut Report) {
         let packet = request.encode_packet();
         let payload = packet.payload().to_vec();
         let hash = match request {
-            GetSourcesRequest::Legacy { file_hash } => file_hash,
-            GetSourcesRequest::Normal { target } | GetSourcesRequest::Large { target } => {
-                target.file_hash()
-            }
+            GetSourcesRequest::Legacy { file_hash }
+            | GetSourcesRequest::Normal { file_hash, .. } => file_hash,
+            GetSourcesRequest::Large { target } => target.file_hash(),
         };
 
         let ours = read([

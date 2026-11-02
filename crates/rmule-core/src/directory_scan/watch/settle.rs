@@ -52,9 +52,13 @@ impl Settle {
         }
     }
 
-    /// From now on, events for these part files are dropped at the queue.
+    /// From now on, events for these part files are dropped at the queue,
+    /// and one that is settling stops: a completing download's destination
+    /// found by a round that read what was known before the download stored
+    /// it is the download's own from the round that knows it (ADR-0115).
     pub(super) fn ignore(&mut self, parts: &PartFiles) {
         self.ignored = parts.live.union(&parts.left).cloned().collect();
+        self.settling.retain(|path, _| !self.ignored.contains(path));
     }
 
     /// Something at `path` moved. A path outside the directory, one whose

@@ -21,9 +21,11 @@
 //!   durable identity + data dir, resolve its seeds through the core's own
 //!   ADR-0067 policy, and send the one `EnableKad` the app owes core — armed
 //!   by the run's first eD2k login, never at startup.
-//! - [`connect`] — the connect at start (ADR-0095): off unless the operator
-//!   turned it on, and then the operator's own `ConnectToServer` to the
-//!   server they last connected to — nothing else in the app ever dials.
+//! - [`connect`] — the connect at start (ADR-0095): on unless the operator
+//!   turned it off, the operator's own `ConnectToServer` to the server they
+//!   last connected to — nothing else in the app ever dials.
+//! - [`player`] — the Player Command (ADR-0114): the operator's player as
+//!   words split by POSIX rules, never a shell line.
 //! - [`config`] — front-end-owned configuration (ADR-0069): the app-config
 //!   seam over the one Durable Store that core's server-list seam and the
 //!   Settings tab share, the preference snapshot, and the edit vocabulary that
@@ -34,7 +36,10 @@
 //! - [`args`] — the command line, read before anything touches the data
 //!   directory, and the one rule that resolves that directory.
 //! - [`tui`] — terminal lifecycle: raw mode, alternate screen, and the
-//!   optional enhancements this terminal admits to supporting.
+//!   optional enhancements this terminal admits to supporting, with every
+//!   byte written on a thread of its own.
+//! - [`stop`] — the one stop path: every way out of a run, and its deadline.
+//! - [`job`] — the shell's job control, heard as actions on the bus.
 //! - [`input`] — key and mouse events mapped to [`action::Action`]s against
 //!   the current chrome, so no view sees a raw terminal event.
 //! - [`app`] — the loop: one `select!` over the action bus and the render
@@ -44,11 +49,13 @@
 //!   action flash.
 //! - [`view`] / [`views`] — which tab is up, and the six that draw into it.
 //! - [`theme`] — the semantic palette every widget reads roles off.
+//! - [`probe`] / [`capability`] — the terminal's answers and what it can show;
+//!   [`glyphs`] — the last pass on a frame, for one that shows less.
 //! - [`row_selection`] — the one mark every table puts on its selected row.
 //! - `form` — the one field-list editor the add-server modal, the search
 //!   options and the Settings tab all run on; validation stays with the view.
-//! - `wrap` — width-budgeted wrapping, so a line that does not fit is folded
-//!   rather than cut.
+//! - `table` — the one table: greedy widths, a row on one line, the cut.
+//! - `wrap` — prose that folds onto further lines where it does not fit.
 
 #![warn(missing_docs)]
 
@@ -57,16 +64,28 @@ pub mod app;
 pub mod args;
 pub mod attach;
 pub mod bridge;
+pub mod capability;
 pub mod chrome;
 pub mod client;
 pub mod config;
 pub mod connect;
+pub mod fault;
 pub(crate) mod form;
+pub mod glyphs;
 pub mod input;
+pub mod job;
 pub mod kad;
+pub(crate) mod line_edit;
+pub mod player;
+pub mod probe;
 pub mod rates;
+pub(crate) mod row_filter;
 pub mod row_selection;
+pub mod start_notes;
 pub mod state;
+pub mod stop;
+mod stored_keys;
+pub(crate) mod table;
 pub mod table_sort;
 pub mod theme;
 pub mod tui;

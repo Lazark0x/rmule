@@ -9,9 +9,10 @@
 //! after the challenge gate; a server with no record simply has no proven
 //! capabilities yet (emit paths then use their legacy/baseline forms).
 
+use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::net::Ipv4Addr;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use rmule_ed2k::{GlobServStatRes, ServerDescTags, ServerUdpFlags};
 use rmule_primitives::{Ipv4Endpoint, ServerEndpoint};
@@ -132,7 +133,6 @@ pub(crate) fn capability_flags(
 ) -> Option<ServerUdpFlags> {
     capabilities
         .lock()
-        .unwrap()
         .get(&server_tcp_key(server)?)
         .and_then(|caps| caps.udp_flags)
 }

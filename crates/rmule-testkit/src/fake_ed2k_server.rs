@@ -16,14 +16,15 @@ use std::time::Duration;
 
 use rmule_ed2k::{
     CallbackRequest, FoundSources, GetSourcesRequest, IdChange, LoginRequest, Opcode, PeerCallback,
-    SearchRequest, SearchResults, ServerTcpFlags,
+    SearchRequest, SearchResults, ServerIdent, ServerTcpFlags,
 };
 use rmule_net::driver::CryptStream;
 use rmule_net::ed2k::ServerObfuscationTransport;
 use rmule_peer::HelloAnswer;
 use rmule_primitives::{
     ClientId, FileHash, Ipv4Endpoint, KeywordQuery, Packet, PacketProtocol, PeerSource,
-    PrimitiveError, SearchResult, ServerEndpoint, UserHash, is_plaintext_marker,
+    PrimitiveError, SearchResult, ServerEndpoint, ServerHash, TagValue, UserHash,
+    is_plaintext_marker,
 };
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
@@ -35,6 +36,11 @@ use tokio::task::JoinHandle;
 /// unbound port is refused and a live driver answers near-instantly, so this
 /// only bounds the pathological case (the real Lugdunum allows ~10 s).
 const PROBE_TIMEOUT: Duration = Duration::from_millis(500);
+
+/// `SRVCAP_NATTRAVERSAL`, the `CT_SERVER_FLAGS` bit that claims Lugdunum's NAT
+/// callback. rmule speaks no such thing (ADR-0091), so a login setting it is a
+/// client lying about itself.
+const SRVCAP_NATTRAVERSAL: u32 = 0x1000;
 
 /// A stand-in routable id handed to reachable (High-ID) clients. Any value
 /// `>= ClientId::LOW_ID_THRESHOLD` works; rmule never dials it for a callback.
@@ -61,6 +67,9 @@ struct Shared {
     /// Back-Connect Probe (every client gets High-ID) and answer
     /// `OP_GETSOURCES` with this list instead of the Low-ID registry.
     scripted_sources: Option<Vec<PeerSource>>,
+    /// What replaces `scripted_sources` once the next `OP_GETSOURCES` has
+    /// been answered, when a test scripts a source appearing between two asks.
+    later_sources: Option<Vec<PeerSource>>,
     /// Scripted `OP_SEARCHREQUEST` answer (empty result set by default).
     search_results: Vec<SearchResult>,
     /// Scripted delay between receiving `OP_LOGINREQUEST` and answering
@@ -101,6 +110,10 @@ struct Shared {
     /// While set ([`FakeEd2kServer::set_refusing`]), a login is closed before
     /// any id is granted — a server that accepts the socket and refuses.
     refusing: bool,
+    /// While set ([`FakeEd2kServer::set_probe_blocked`]), a login's
+    /// Back-Connect Probe reads unanswered without a dial — a client whose
+    /// firewall drops inbound TCP — so it is assigned a Low ID.
+    probe_blocked: bool,
     /// While set ([`FakeEd2kServer::set_search_silent`]), a search request is
     /// recorded and never answered — a server still thinking when its session
     /// ends.
@@ -231,6 +244,13 @@ impl FakeEd2kServer {
         self.shared.lock().await.refusing = refusing;
     }
 
+    /// Block (`true`) or open (`false`) the Back-Connect Probe of every later
+    /// login: a blocked one reads unanswered, so the client is assigned a Low
+    /// ID even while it listens — the bench's forced Low-ID, as a knob.
+    pub async fn set_probe_blocked(&self, blocked: bool) {
+        self.shared.lock().await.probe_blocked = blocked;
+    }
+
     /// Replace the scripted `OP_GETSOURCES` answer (scripted mode only).
     pub async fn set_sources(&self, sources: Vec<PeerSource>) {
         let mut state = self.shared.lock().await;
@@ -239,6 +259,12 @@ impl FakeEd2kServer {
             "set_sources is a scripted-mode seam; start with start_scripted()"
         );
         state.scripted_sources = Some(sources);
+    }
+
+    /// Answer the next `OP_GETSOURCES` as scripted, and every one after it
+    /// with `sources` (scripted mode only).
+    pub async fn set_later_sources(&self, sources: Vec<PeerSource>) {
+        self.shared.lock().await.later_sources = Some(sources);
     }
 
     /// Record every later `OP_SEARCHREQUEST` without answering it (`true`),
@@ -510,17 +536,32 @@ where
     // later ADRs settled may ride, each at most once and in this order:
     // `CT_MOD_IP_V6` (`0xAE`, ADR-0087) and `CT_EMULE_UDPPORTS` (`0xF9`,
     // ADR-0091 — present whenever a client-UDP socket is bound, which is
-    // every running core). Anything else is a violating client and is dropped
-    // before IdChange, so any test driving a session through this server
-    // fails loudly on its login wait.
+    // every running core). `CT_SERVER_FLAGS` never sets
+    // `SRVCAP_NATTRAVERSAL` (`0x1000`), with or without the IPv6 tag
+    // (ADR-0087). Anything else is a violating client and is dropped before
+    // IdChange, so any test driving a session through this server fails loudly
+    // on its login wait.
     let tag_ids: Vec<Option<u8>> = login.tags().iter().map(|t| t.name().id()).collect();
     let canonical = [Some(0x01), Some(0x11), Some(0x20), Some(0xFB)];
     let adverts: &[Option<u8>] = tag_ids.get(canonical.len()..).unwrap_or(&[]);
+    // ADR-0099's `offerfiles_v` rides last, the one text-named tag.
+    let asks_offer_pace = login.tags().last().is_some_and(|tag| {
+        tag.name().text_value() == Some("offerfiles_v") && *tag.value() == TagValue::U32(1)
+    });
+    let adverts = if asks_offer_pace {
+        adverts.split_last().map_or(adverts, |(_, rest)| rest)
+    } else {
+        adverts
+    };
     let adverts_ok = matches!(
         adverts,
         [] | [Some(0xAE)] | [Some(0xF9)] | [Some(0xAE), Some(0xF9)]
     );
-    if !tag_ids.starts_with(&canonical) || !adverts_ok {
+    let claims_nat_callback = login.tags().iter().any(|tag| {
+        tag.name().id() == Some(0x20)
+            && matches!(tag.value(), TagValue::U32(flags) if flags & SRVCAP_NATTRAVERSAL != 0)
+    });
+    if !tag_ids.starts_with(&canonical) || !adverts_ok || claims_nat_callback {
         writer.abort();
         return;
     }
@@ -538,10 +579,19 @@ where
     // your <port> port" and assigns Low-ID — so the client must be accepting
     // AND answering *during* its login. Scripted mode skips the probe: every
     // client is High-ID by construction.
-    let (scripted, login_delay, tcp_flags, obfuscation_offer, standard_port, raw_id_change) = {
+    let (
+        scripted,
+        probe_blocked,
+        login_delay,
+        tcp_flags,
+        obfuscation_offer,
+        standard_port,
+        raw_id_change,
+    ) = {
         let state = shared.lock().await;
         (
             state.scripted_sources.is_some(),
+            state.probe_blocked,
             state.login_delay,
             state.tcp_flags,
             state.obfuscation_offer,
@@ -556,7 +606,8 @@ where
     if !login_delay.is_zero() {
         tokio::time::sleep(login_delay).await;
     }
-    let reachable = scripted || port_check(peer_ip, advertised, login.user_hash()).await;
+    let reachable =
+        scripted || (!probe_blocked && port_check(peer_ip, advertised, login.user_hash()).await);
 
     let assigned = if reachable {
         ClientId::from_u32(HIGH_ID)
@@ -604,16 +655,29 @@ where
         };
         let Some(packet) = packet else { break };
         let opcode = packet.opcode();
-        if opcode == Opcode::GetSources.as_u8() {
+        if opcode == Opcode::GetServerList.as_u8() {
+            // As both measured servers answer it: the list, then the ident
+            // that names the server. An empty list, and an ident of no tags.
+            let ident = ServerIdent::new(
+                ServerHash::from_bytes([0x5E; ServerHash::BYTE_LEN]),
+                Ipv4Endpoint::new(Ipv4Addr::LOCALHOST, standard_port),
+                Vec::new(),
+            );
+            let _ = wtx.send(ident.encode_packet().encode()).await;
+        } else if opcode == Opcode::GetSources.as_u8() {
             let Ok(request) = GetSourcesRequest::decode_packet(&packet) else {
                 continue;
             };
             let sources = {
-                let state = shared.lock().await;
-                state
+                let mut state = shared.lock().await;
+                let sources = state
                     .scripted_sources
                     .clone()
-                    .unwrap_or_else(|| state.sources.clone())
+                    .unwrap_or_else(|| state.sources.clone());
+                if let Some(later) = state.later_sources.take() {
+                    state.scripted_sources = Some(later);
+                }
+                sources
             };
             if let Ok(found) = FoundSources::new(requested_hash(&request), sources) {
                 let _ = wtx.send(found.encode_packet().encode()).await;
@@ -654,9 +718,9 @@ where
 
 fn requested_hash(request: &GetSourcesRequest) -> FileHash {
     match request {
-        GetSourcesRequest::Legacy { file_hash } => *file_hash,
-        GetSourcesRequest::Normal { target } | GetSourcesRequest::Large { target } => {
-            target.file_hash()
+        GetSourcesRequest::Legacy { file_hash } | GetSourcesRequest::Normal { file_hash, .. } => {
+            *file_hash
         }
+        GetSourcesRequest::Large { target } => target.file_hash(),
     }
 }

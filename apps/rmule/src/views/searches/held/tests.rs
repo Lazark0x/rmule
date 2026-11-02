@@ -16,7 +16,7 @@ use crate::state::fold;
 /// view sent it under.
 fn send(view: &mut SearchesView, state: &UiState, query: &str) -> SearchId {
     view.input_focused = true;
-    view.query.clear();
+    view.query.set("");
     for c in query.chars() {
         view.handle_key(press(KeyCode::Char(c)), state);
     }
@@ -53,7 +53,7 @@ fn results(state: &mut UiState, id: SearchId, results: Vec<SearchResult>) {
 /// they went under, in order.
 fn holding(queries: &[&str]) -> (SearchesView, UiState, Vec<SearchId>) {
     let mut state = session_state();
-    let mut view = SearchesView::new();
+    let mut view = SearchesView::by_name();
     let mut ids = Vec::new();
     for query in queries {
         let id = send(&mut view, &state, query);
@@ -102,7 +102,7 @@ fn every_query_opens_a_new_entry_at_the_right_end_and_makes_it_current() {
 #[test]
 fn an_outcome_settles_the_entry_it_names_whatever_the_order() {
     let mut state = session_state();
-    let mut view = SearchesView::new();
+    let mut view = SearchesView::by_name();
     let first = send(&mut view, &state, "alpha");
     let second = send(&mut view, &state, "beta");
     started(&mut state, second);
@@ -128,12 +128,12 @@ fn brackets_walk_the_strip_and_the_input_follows_the_current_query() {
     let (mut view, state, ids) = holding(&["alpha", "beta", "gamma"]);
     key(&mut view, &state, KeyCode::Char('['));
     assert_eq!(current(&view), (ids[1], "beta"));
-    assert_eq!(view.query, "beta");
+    assert_eq!(view.query.text(), "beta");
     key(&mut view, &state, KeyCode::Char('['));
     key(&mut view, &state, KeyCode::Char('['));
     assert_eq!(current(&view).1, "alpha", "clamped at the left end");
     key(&mut view, &state, KeyCode::Char(']'));
-    assert_eq!(view.query, "beta");
+    assert_eq!(view.query.text(), "beta");
 }
 
 #[test]
@@ -221,7 +221,7 @@ fn x_stops_a_running_search_then_closes_it() {
     }
     assert_eq!(queries(&view), ["alpha", "gamma"]);
     assert_eq!(current(&view).1, "gamma", "the right neighbour");
-    assert_eq!(view.query, "gamma");
+    assert_eq!(view.query.text(), "gamma");
 }
 
 #[test]
@@ -296,26 +296,25 @@ fn a_click_on_an_entry_selects_it() {
     );
     assert!(matches!(outcome, ViewOutcome::Redraw));
     assert_eq!(current(&view).1, "alpha");
-    assert_eq!(view.query, "alpha");
+    assert_eq!(view.query.text(), "alpha");
 }
 
 #[test]
 fn a_label_is_capped_at_twenty_characters() {
     assert_eq!(label("a query of exactly 20"), "a query of exactly 2…");
     assert_eq!(label("twenty characters ok"), "twenty characters ok");
-    assert_eq!(label(""), "—");
+    assert_eq!(label(""), "no query");
 }
 
 #[test]
 fn a_related_files_search_is_labelled_by_its_file_with_a_tilde() {
     let mut state = session_state();
-    let mut view = SearchesView::new();
+    let mut view = SearchesView::by_name();
     let related = rmule_primitives::RelatedFilesQuery::new(
         rmule_primitives::FileHash::from_bytes([7; 16]),
         rmule_primitives::Ed2kText::from_utf8("abcdefghijklmnopqrstuvwxyz.avi"),
     );
-    view.held
-        .open(&related.into(), SearchMethod::default(), search_id(1));
+    view.held.open(&related.into(), search_id(1));
     started(&mut state, search_id(1));
     let strip = render_to_lines(78, 21, |frame| {
         view.draw(
@@ -396,10 +395,64 @@ fn the_strip_says_how_many_rows_answered_no_running_search_only_when_some_did() 
 #[test]
 fn a_late_event_for_a_closed_search_opens_no_entry() {
     let mut state = session_state();
-    let mut view = SearchesView::new();
+    let mut view = SearchesView::by_name();
     let id = send(&mut view, &state, "alpha");
     assert_eq!(view.held.close_current(), Some(id));
     started(&mut state, id);
     view.held.bind(&state);
     assert!(view.held.is_empty(), "the closed search was held again");
+}
+
+/// One `x` on a finished search has one undo: the entry, its place, its query
+/// and its results come back.
+#[test]
+fn u_brings_back_the_search_closed_last() {
+    let (mut view, mut state, ids) = holding(&["alpha", "beta", "gamma"]);
+    fold(
+        &mut state,
+        search_event(SearchEvent::SearchCancelled { search_id: ids[1] }),
+    );
+    key(&mut view, &state, KeyCode::Char('['));
+    let ViewOutcome::Emit(forget) = key(&mut view, &state, KeyCode::Char('x')) else {
+        panic!("x closes a stopped search");
+    };
+    state.apply(forget, Instant::now());
+    assert!(!state.searches.contains_key(&ids[1]));
+    assert_eq!(queries(&view), ["alpha", "gamma"]);
+
+    let ViewOutcome::Emit(restore) = key(&mut view, &state, KeyCode::Char('u')) else {
+        panic!("u reopens it");
+    };
+    state.apply(restore, Instant::now());
+    assert_eq!(queries(&view), ["alpha", "beta", "gamma"], "where it stood");
+    assert_eq!(current(&view), (ids[1], "beta"));
+    assert_eq!(view.query.text(), "beta");
+    assert!(state.searches.contains_key(&ids[1]), "its results are back");
+
+    assert!(
+        matches!(
+            key(&mut view, &state, KeyCode::Char('u')),
+            ViewOutcome::Ignored
+        ),
+        "one close, one undo"
+    );
+}
+
+#[test]
+fn a_late_event_for_a_reopened_search_finds_it() {
+    let (mut view, mut state, ids) = holding(&["alpha"]);
+    fold(
+        &mut state,
+        search_event(SearchEvent::SearchCancelled { search_id: ids[0] }),
+    );
+    let ViewOutcome::Emit(forget) = key(&mut view, &state, KeyCode::Char('x')) else {
+        panic!("x closes a stopped search");
+    };
+    state.apply(forget, Instant::now());
+    let ViewOutcome::Emit(restore) = key(&mut view, &state, KeyCode::Char('u')) else {
+        panic!("u reopens it");
+    };
+    state.apply(restore, Instant::now());
+    view.held.bind(&state);
+    assert_eq!(queries(&view), ["alpha"], "bound once, not held twice");
 }

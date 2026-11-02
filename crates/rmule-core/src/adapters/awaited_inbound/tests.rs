@@ -20,23 +20,20 @@ fn hash(byte: u8) -> UserHash {
 /// adoption carried.
 fn brief(seed: u8) -> AdoptionBrief {
     AdoptionBrief {
-        file: Ed2kFileLink {
-            name: Ed2kText::from_utf8("awaited"),
-            size: 4096,
-            file_hash: FileHash::from_bytes([seed; FileHash::BYTE_LEN]),
-            part_hash_set: None,
-            aich_root: None,
-            ipv6_sources: Vec::new(),
-            sources: Default::default(),
-        },
-        own_status: PartBitmap::downloader_empty(4096),
+        file: Ed2kFileLink::new(
+            Ed2kText::from_utf8("awaited"),
+            4096,
+            FileHash::from_bytes([seed; FileHash::BYTE_LEN]),
+        )
+        .expect("a size eD2k addresses"),
+        own_status: WireStatus::downloader_empty(4096),
         want_sources: true,
     }
 }
 
 /// The brain's connected-server key for `low`.
 fn callback(low: u32) -> CallbackKey {
-    CallbackKey {
+    CallbackKey::Server {
         server: None,
         low_id: ClientId::from_u32(low),
     }
@@ -45,7 +42,7 @@ fn callback(low: u32) -> CallbackKey {
 /// The same key resolved against the connected server, as a called-back
 /// peer's hello reports it.
 fn routing(low: u32) -> CallbackKey {
-    CallbackKey {
+    CallbackKey::Server {
         server: Some(Ipv4Endpoint::new(Ipv4Addr::new(45, 55, 200, 1), 4661)),
         low_id: ClientId::from_u32(low),
     }

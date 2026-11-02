@@ -25,12 +25,16 @@ in an ordinary session. It is written at one of two levels, chosen by the prefer
   output.
 - **Every core event is projected by an exhaustive match** with no wildcard arm, so a new
   variant fails to compile until it is classed.
+- **One thread owns the file, behind a bounded lane.** A stalled disk delays the log and never
+  the thread that logged: past the lane's room a line is counted and dropped, the file says
+  `run_log.dropped lines=N` before the next line that found room, and a front end leaves
+  through `run_log::drain`, which waits at most two seconds. A kill loses what was queued.
 - **The vocabulary and the sink live in core** (`rmule_core::run_log`), beside the events
   they project: `Record`, `Kind` and its class, `Level`, each event's `record()` and each
   reason's code table, and the file, opened as `RunLog::open(data_dir, level)` beside the
-  other durable files of the data directory. A front end writes the records of the events
-  it receives and owns only its own words for the operator. Core writes the reachability
-  trail itself: each level is read from its one owner when that owner's change notice
+  other durable files of the data directory. Core writes the record of every event as it
+  sends it (ADR-0069), so the log outlives any reader of the stream, and a front end owns
+  only its own words for the operator. Core writes the reachability trail too: each level is read from its one owner when that owner's change notice
   wakes, and a level that moved is written once, a wake that moved nothing never. Core's
   events have no `Display`: where core's own `tracing` names an event, it writes the
   event's record rendered at the full level, a free-form line like any other.
@@ -112,6 +116,7 @@ so a late test is reported rather than lost.
 | Serve: serving started | own listen address | none |
 | Serve: upload slot granted, peer queued, sources served | rank, count | peer address, file hash, peer software |
 | Serve: queue full, low-ID abuse refused, reask or name ask malformed, address cap reached, slot released, waiter left | cause code | peer address |
+| Peer link broken | violation code | none |
 | Search: every event | search number, counts, leg states, codes | none (results are counted, never listed) |
 | Scan: every event | counts, reason codes, OS error kind and number | directory and file paths |
 | Server list: added, updated, removed, priority, static | priority, static flag | none |

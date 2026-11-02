@@ -87,7 +87,7 @@ use super::{
     DownloadLeg, DownloadSpec, JOIN_NODE_READY_MARKER, STORER_INDEXED_MARKER, download_leg,
     join_node_args, kad_filter, lift_datagram_from, published_source, search_rows, subdir,
 };
-use crate::docker::RunContainer;
+use crate::docker::Docker;
 use crate::flow::bench::{Bench, DEFAULT_TAP_INTERFACE};
 use crate::flow::evidence::write_pcap_all_matches;
 use crate::flow::gate::wait_for_container_log;
@@ -102,6 +102,7 @@ use crate::flow::nat::dialect::verdict::{Body, Claim, Evidence};
 use crate::flow::nat::dialect::{BODY_CLIENT_UDP_PORT, BODY_PEER_TCP_PORT};
 use crate::flow::nat::synthetic::write_hashed;
 use crate::flow::pcap::udp_payloads;
+use crate::flow::pinned_image::EMULEQT;
 use crate::flow::taps::{Attachment, PerAttachmentTaps, TapRole};
 use crate::kad_seed::{KadContact, build_routing_zone_nodes_dat, storer_kad_id_for_file_hash};
 
@@ -179,11 +180,14 @@ const QT_STORER_SEARCH_RES: &str = "rmule-qt-storer-search-res-0x3b";
 const IP6_TAG_HEADER: [u8; 8] = [0x02, 0x03, 0x00, b'i', b'p', b'6', 0x20, 0x00];
 
 /// emule-qt's entry in the verdict's body list.
-pub(super) fn body(options: &Ipv6DialectOptions<'_>, stage: &Stage) -> Body {
+pub(super) fn body(docker: &Docker, options: &Ipv6DialectOptions<'_>, stage: &Stage) -> Body {
     Body {
         name: "emuleqt".to_owned(),
         image: options.emuleqt_image.to_owned(),
-        pin: "ModderMule/emule-qt 73fff714 (kad-node)".to_owned(),
+        pin: format!(
+            "{} (kad-node)",
+            EMULEQT.body_pin(docker, options.emuleqt_image)
+        ),
         address_v4: stage.v4(HOST_KAD_EMULEQT).to_owned(),
         address_v6: stage.v6(HOST_KAD_EMULEQT).to_owned(),
     }
@@ -242,9 +246,11 @@ pub(super) fn drive(
         .context("write emule-qt's nodes.dat")?;
 
     let emuleqt = container_name(options.layout, EMULEQT_ROLE)?;
+    let pinned = EMULEQT.check(&bench.docker, options.emuleqt_image)?;
     bench.start_extra(
         &emuleqt,
-        RunContainer::new(options.emuleqt_image)
+        pinned
+            .container()
             .detach()
             .name(&emuleqt)
             .network(&stage.network)

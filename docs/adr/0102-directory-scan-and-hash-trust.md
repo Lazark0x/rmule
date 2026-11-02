@@ -27,16 +27,36 @@ aMule citations are to 2.3.3 unless they say kno's fork; read, never ported (ADR
   become Had.
 - **What the scan knows without reading** comes from one **Known** view the actor answers in
   channel order: the registry rows, the spare copies (ADR-0104), and the part files the
-  download rows name.
+  download rows name. A pass reads it once its listing is done, and every watch round reads it
+  again, so a path a download names before its file lands there is known by the time the scan
+  judges that file.
+- **A file past eD2k's limit is refused before it is read.** Past `MAX_ED2K_FILE_SIZE`, 256 GiB,
+  no server, peer or Kad node can be told what the file is, so the scan rules on its stamp, hashes
+  nothing and says once which file and why (`ScanEvent::FileRefused`), as stock's hasher skips one
+  (`ThreadTasks.cpp:98` at 3.1.0). A row stored before the rule is withheld by the Registry Check
+  (ADR-0106). A `PartHashSet` exists only up to the limit, so an answer's `u16` count cannot
+  overflow whatever a store holds.
+- **A scan's writes land in commits of many.** A hashed file is two registry writes, its row and
+  its identity, a carried file is one, its moved row or its Spare Copy, and a commit is an fsync,
+  so the actor gathers them and commits up to 256 at once,
+  a quarter second after the first at most, on the blocking pool. Any other message from a worker
+  lands the batch first, so the Known view still answers in channel order, and a stop lands it too.
+  Every commit stays durable, and a file is offered and told of only behind its commit, so a kill
+  or a power cut costs the open batch a second hash and claims nothing. The per-file commit was
+  rejected because it held the actor for 52 s of a first scan of 10,000 files; a commit that is
+  not durable was rejected because the next open rolls it back after a kill.
 - **Which rows the scan owns:** every registry row under its directory, whatever its source. A file
   it hashes enters as `ShareSource::DownloadDirectory`. When content it hashes is already shared
   from another path still on disk, the first path in wins and the new path is recorded as a spare
   copy.
 - **Part files are known by their download rows**, not by a suffix: the part path of a queued,
-  active, paused or failed download is skipped silently. A part path named by a cancelled or
-  completed download with a file still on it is rmule's own partial work and is skipped and
-  reported once per scan (`ScanEvent::LeftoverParts`), never deleted. A file merely ending `.part`
-  that no row names is shared like any other.
+  active, completing, paused or failed download is skipped silently. A part path named by a
+  cancelled or completed download with a file still on it is rmule's own partial work and is
+  skipped and reported once per scan (`ScanEvent::LeftoverParts`), never deleted. A file merely
+  ending `.part` that no row names is shared like any other. A download placed in the Temp
+  Directory (ADR-0115) has no part file under a shared directory, so the rule covers older rows,
+  whose part lies beside its final path, and a `Completing` row's destination: a completing
+  download's files are the download's until its registry row is written (ADR-0113).
 - **A file that moves while it is hashed** is not shared and settles again.
 - **A subfolder that cannot be listed hides nothing:** gone, its rows are gone; refused for another
   error, each row and spare under it is looked at by its own path, and an unreadable look withholds

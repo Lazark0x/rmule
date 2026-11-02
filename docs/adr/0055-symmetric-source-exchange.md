@@ -71,8 +71,9 @@ admission rule leaves open (ADR-0039, ADR-0061, ADR-0091).
 - **Pools**, as aMule builds them: for a shared complete file, upload-engaged clients
   (uploading or queued), with a source of unknown status included
   ([KnownFile.cpp#L965](https://github.com/amule-project/amule/blob/4e8f2b3c3f90cda23765730546b04c684a92e4f5/src/KnownFile.cpp#L965));
-  for a download in progress, the file's sources that are downloading or queued, with
-  unknown status excluded
+  for a download in progress, the file's sources that are downloading or queued and not
+  queue-full (`PartFile.cpp:2601`), with unknown status excluded, kept by the run from its
+  Source Book (ADR-0113)
   ([PartFile.cpp#L2596](https://github.com/amule-project/amule/blob/4e8f2b3c3f90cda23765730546b04c684a92e4f5/src/PartFile.cpp#L2596)).
 - **The answer rule.** The part status a peer writes into its name ask, or restates in a
   UDPv4 `OP_REASKFILEPING` (`0x90`, ADR-0057), is kept per peer and file, aMule's
@@ -150,10 +151,10 @@ in core when the count is not the file's.
 | --- | --- | --- |
 | **Name ask (`OP_REQUESTFILENAME`)** | | |
 | Shorter than a hash: disconnect | `cts:436`, `:484` | same |
-| Before the hello | `cts:307-308` throw | kept as unknown, link open (ADR-0018) |
+| Before the hello | `cts:307-308` throw | same |
 | Banned IP: silence | `cts:186`, `:433` | refused at accept |
 | Unshared file: silence, link kept | `cts:442-447` | same |
-| A downloading file over one part is answered | `cts:443-453` | only complete files are shared |
+| A downloading file over one part is answered | `cts:441-455` | same, from its Served Download; the asker becomes a candidate (ADR-0113) |
 | Sets the Asked File | `cts:462` | same |
 | Wait clock starts at the first file ask | `cts:436-438` | starts at the slot ask (divergence 3) |
 | Claim 0: status cleared, ask answered | `uc:400-406` | same |
@@ -165,9 +166,9 @@ in core when the count is not the file's.
 | **Status ask (`OP_SETREQFILEID`)** | | |
 | Not exactly a hash: disconnect | `cts:497`, `:536` | same |
 | Unshared: `OP_FILEREQANSNOFIL` | `cts:503-512` | same |
-| Shared: `OP_FILESTATUS`, a complete file as count 0; sets the Asked File | `cts:521-529` | same |
+| Shared: `OP_FILESTATUS`, a complete file as count 0, a part file as its parts (`cts:524-528`); sets the Asked File | `cts:521-529` | same; a part file's from the Verified Range, and a download not yet offered moves no standing (ADR-0113) |
 | **Bundle (`OP_MULTIPACKET` / `_EXT`)** | | |
-| Before the handshake | `cts:1050-1054` throw | kept as unknown, link open (ADR-0018) |
+| Before the handshake | `cts:1050-1054` throw | same |
 | Header cut short: disconnect | `cts:1057-1058` | same |
 | Unshared, or `_EXT` size not the file's: one `OP_FILEREQANSNOFIL`, no sub walked | `cts:1061-1085` | same |
 | Large file, asker without large-file support: not found | `cts:1070-1073` | not modelled (divergence 4) |
@@ -176,15 +177,15 @@ in core when the count is not the file's.
 | Name and status subs answered in the `0x93` | `cts:1112-1141` | same |
 | AICH sub only from a complete hashset | `cts:1122-1131` | cached root in the `0x93`, else a later standalone `0x9D` (divergence 5) |
 | Source subs answered out of band, one throttle | `cts:1144-1180` | same |
-| Unknown sub | no `default:` | stop, keep the prefix, report (ADR-0054) |
+| Unknown sub | no `default:`: the next byte is read as a sub | same, the first reported (ADR-0054) |
 | `0x93` only when something was answered | `cts:1183` | same |
 | `0x93` items in request order | `cts:1106-1182` | always name, status, AICH (divergence 6) |
 | **Slot and transfer** | | |
 | Slot ask before the handshake: silence | `cts:597-599` | kept as unknown |
-| Slot ask not exactly a hash: silence, link kept | `cts:606` | same |
+| Slot ask not exactly a hash: scored, then silence, link kept | `cts:601-606` | same (`MalformedSlotAsk`) |
 | Slot ask for an unshared file: nothing sent | `cts:607-617` | same |
 | Repeat slot ask keeps the place, moves the Asked File | `cts:613`, `uq:401-431` | same |
-| Aggressive asker banned | `cts:601`, `cus:194`, `uc:795-824` | not modelled (divergence 7) |
+| Aggressive asker banned | `cts:601`, `cus:194`, `uc:795-824`; 3.1.0 `cts:1768` | same, keyed by client; a source of ours is never banned; a reask scores apart and earns the Hush (divergence 7) |
 | Parts of a file other than the slot's | `uc:198-249` serves them | not served (divergence 8) |
 | A moved Asked File resets the status | `uc:477-479` | kept per peer and file (divergence 8) |
 | `OP_CANCELTRANSFER`: slot released, slotless a no-op, link kept, body ignored | `cts:673-678` | same (ADR-0056) |
@@ -195,7 +196,7 @@ in core when the count is not the file's.
 | Matched: standing refreshed | `cus:198-200` | same |
 | UDPv4 status through the name ask's reader; malformed: silence, counted | `cus:202-203` | same |
 | UDPv3: complete count only; hash alone silenced | `cus:204-209` | same |
-| Ack: our status for a UDPv4 pinger (complete file as count 0), then the rank | `cus:213-222` | same |
+| Ack: our status for a UDPv4 pinger (complete file as count 0, a part file as its parts), then the rank | `cus:213-222` | same; a Partial Share answers its Verified Range (ADR-0113) |
 | Unknown sender: `OP_QUEUEFULL` in plaintext when nearly full, else silence | `cus:231-236` | same |
 | One IP, several ports: silence | `cus:237-239` | same |
 | Buddy-relayed reask with a malformed body | `cts:1704-1707` drops the buddy link | ping silenced, link kept |
@@ -224,11 +225,22 @@ in core when the count is not the file's.
   aMule reads at any time (`cts:1600-1606`).
 - **Divergence 6, `0x93` order.** The composer writes name, status, AICH, aMule's own asker order
   (`DownloadClient.cpp:232-266`); every reader walks items in any order.
-- **Divergence 7, aggressive askers.** aMule bans a client asking more than once per 590 s until a
-  score reaches 10, except while downloading from it. The serve state does not see
-  rmule's download state, and a wrongly placed ban would close a download on the same
-  link. The flood is bounded by the per-address queue cap (ADR-0088), and a repeat slot
-  ask gains nothing.
+- **Divergence 7, aggressive askers.** rmule scores as aMule 3.1.0 does: a slot ask, a
+  known waiter's UDP reask or an AICH recovery ask under 590 s after the last adds 3, a
+  later one takes 1 off, and a score of 10 bans the address for two hours
+  (`UploadClient.cpp:656-683`). A reask is a datagram and proves no sender (ADR-0064), so it
+  scores on its own table and its 10 earns the Hush, the reask unanswered and the waiter's
+  place kept; forged reasks can neither ban a waiter nor bring a later TCP ask to the line. 3.1.0 charges `OP_AICHREQUEST` because each costs a walk of
+  known2; the address cap (ADR-0088) bounds wait-list places and nothing else, so it never
+  answered that cost, nor a reask's. The **Ask Pace** holds the score, per client: an
+  accounting key and a User Hash, so a NAT's clients do not share one. The divergence left
+  is the exemption. aMule spares a client while `DS_DOWNLOADING`; rmule spares any peer the
+  Peer Roster holds as a source of ours, connected or queued, and any link it dialed,
+  because a ban that comes late costs one more answer and one that lands on a source costs
+  a download. A score ages out with the client: 34 minutes unheard
+  (`ClientList.cpp:1010`), a link's end does not touch it, and a serve or process restart
+  loses it, as stock's dies with the client object. The table is bounded, its oldest entry
+  going first.
 - **Divergence 8, one file per slot.** rmule serves a slot one file at a time (ADR-0031). Parts of
   another file wait until the peer asks for a slot for it. Statuses stay per peer and
   file, and a status for one file stays true while the peer asks about another.

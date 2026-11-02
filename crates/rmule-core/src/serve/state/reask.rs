@@ -6,14 +6,16 @@
 use std::time::Instant;
 
 use rmule_peer::peer_udp::responder::{
-    self, KnownWaiter, Pinger, QueueRoom, ReaskReply, Silence, Standing,
+    self, KnownWaiter, Pinger, QueueRoom, ReaskReply, SharedFile, Silence, Standing,
 };
-use rmule_peer::{PartBitmap, PeerIdentity};
-use rmule_primitives::{ED2K_PART_SIZE, PeerEndpoint};
+use rmule_peer::{PeerIdentity, WireStatus};
+use rmule_primitives::PeerEndpoint;
 
+use super::relink::names_address;
 use super::{ServeDecision, ServeState};
 use crate::service::ServeEvent;
 use crate::upload_queue::ReaskResolution;
+use crate::upload_queue::ScoreModifiers;
 
 impl ServeState {
     /// Answer one inbound `OP_REASKFILEPING` from `udp_src` (ADR-0057
@@ -24,6 +26,7 @@ impl ServeState {
         now: Instant,
         udp_src: PeerEndpoint,
         datagram: &[u8],
+        modifiers: &dyn ScoreModifiers,
     ) -> Vec<ServeDecision> {
         let Some(ping) = responder::read(datagram) else {
             return Vec::new();
@@ -32,7 +35,15 @@ impl ServeState {
         // front hands this call the family the datagram truly arrived in, so an
         // IPv6 waiter is matched on all 128 bits and answered on the socket its
         // ping came in on.
-        let (peer, pinger) = match self.queue.resolve_reask(udp_src) {
+        let resolved = match self.queue.resolve_reask(udp_src) {
+            ReaskResolution::Unknown => self.queue.resolve_named_reask(udp_src, |waiter| {
+                self.identities
+                    .get(&waiter)
+                    .is_some_and(|known| names_address(known, udp_src))
+            }),
+            resolved => resolved,
+        };
+        let (peer, pinger) = match resolved {
             ReaskResolution::Known {
                 peer,
                 file_hash,
@@ -55,15 +66,37 @@ impl ServeState {
             ReaskResolution::AmbiguousIp => (None, Pinger::Ambiguous),
             ReaskResolution::Unknown => (None, Pinger::Unknown),
         };
+        // Only a file in the share set is answered (aMule's `sharedfiles`,
+        // `ClientUDPSocket.cpp:177`): a row with its count `0`, a Partial
+        // Share with its Verified Range.
         let file_hash = ping.file_hash();
-        let file_size = self.shared.get(&file_hash).map(|entry| entry.file_size);
+        let shared = self
+            .lookup(file_hash)
+            .filter(|found| found.offered())
+            .map(|found| SharedFile {
+                size: found.file_size(),
+                status: found.status(),
+            });
+        // A shared file's reask from a known waiter is an ask: a banned client
+        // is not answered (`ClientUDPSocket.cpp:440-452`), and one past the
+        // pace is not either, though here it earns only the Hush (ADR-0064).
+        if shared.is_some()
+            && let Some(peer) = peer
+        {
+            if self.asker.banned && !self.spares(peer) {
+                return self.on_banned(now, peer, modifiers);
+            }
+            if self.reask_hushes(now, peer) {
+                return vec![ServeDecision::Hush { peer: udp_src }];
+            }
+        }
         let room = QueueRoom {
             waiting: self.queue.waiting_len(),
-            max: self.queue.max_queue_len(),
+            max: usize::from(self.queue.max_queue_len()),
         };
-        let answer = responder::answer(&ping, &pinger, room, file_size);
+        let answer = responder::answer(&ping, &pinger, room, shared.as_ref());
 
-        if let (Some(peer), Some(file_size)) = (peer, file_size) {
+        if let (Some(peer), Some(file_size)) = (peer, shared.map(|shared| shared.size)) {
             match answer.standing {
                 Standing::Untouched => {}
                 Standing::Heard => self.queue.refresh_reask(peer, now),
@@ -93,28 +126,8 @@ impl ServeState {
     }
 }
 
-/// The ED2K part count a peer expects in an `OP_FILESTATUS` for a `file_size`-byte
-/// file: `file_size / ED2K_PART_SIZE + 1` (aMule `CKnownFile::SetFileSize`,
-/// `m_iED2KPartCount`, KnownFile.cpp). A file whose size is an exact multiple of
-/// `ED2K_PART_SIZE` carries a trailing zero-length part, so this is one more than
-/// the count of non-empty parts that a plain `ceil` (`rmule_primitives::part_count`)
-/// yields. aMule's `CUpDownClient::ProcessFileStatus` (DownloadClient.cpp) throws
-/// "wrong part number" and drops the source when the received count differs, so the
-/// serve status must use this value. It matches the count
-/// `PartHashSet::expected_hash_count` uses for a multi-part hash set, keeping
-/// `OP_FILESTATUS` and `OP_HASHSETANSWER` mutually consistent.
-pub(super) fn ed2k_status_part_count(file_size: u64) -> u32 {
-    if file_size == 0 {
-        return 0;
-    }
-    u32::try_from(file_size / ED2K_PART_SIZE + 1).unwrap_or(u32::MAX)
-}
-
-/// A bitmap with every part present, for a complete shared file. `PartBitmap`
-/// has no all-present constructor; decode tolerates the all-ones byte and
-/// zeroes the unused trailing bits, giving a canonical full bitmap.
-pub(super) fn full_bitmap(file_size: u64) -> PartBitmap {
-    let parts = ed2k_status_part_count(file_size);
-    let bytes = vec![0xFF_u8; (parts as usize).div_ceil(8)];
-    PartBitmap::decode(parts, &bytes).expect("all-ones bitmap of the exact length always decodes")
+/// A bitmap with every part present, for a complete shared file, at the count
+/// a status states for it, phantom part included.
+pub(super) fn full_bitmap(file_size: u64) -> WireStatus {
+    WireStatus::whole(file_size)
 }

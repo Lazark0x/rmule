@@ -10,7 +10,7 @@ use clap::Args;
 use rmule_interop_harness::artifacts::Ed2kHashCommand;
 use rmule_interop_harness::flow::{
     DEFAULT_REASK_WINDOW_SECS, PeerLowIdCallbackReaskOptions, run_peer_lowid_callback_reask,
-    score_lowid_callback_reask, stage_reask_emit_files,
+    score_lowid_callback_reask, score_lowid_sharer_asks, stage_reask_emit_files,
 };
 use serde::Serialize;
 
@@ -68,6 +68,10 @@ pub(crate) struct PeerLowIdCallbackReaskArgs {
     /// plus margin.
     #[arg(long, default_value_t = DEFAULT_REASK_WINDOW_SECS)]
     pub(crate) reask_window_secs: u64,
+    /// Instead of waiting for the reask, have the sharer add a file rmule
+    /// shares and ask for it on the callback link, then watch this window.
+    #[arg(long)]
+    pub(crate) sharer_asks: bool,
     /// Test hook for the ED2K hash command.
     #[arg(long, hide = true)]
     pub(crate) ed2k_hash_command: Option<PathBuf>,
@@ -87,10 +91,11 @@ struct ResolvedConfig {
     file_size: u64,
     timeout_secs: u64,
     reask_window_secs: u64,
+    sharer_asks: bool,
 }
 
 pub(crate) fn peer_lowid_callback_reask(args: PeerLowIdCallbackReaskArgs) -> Result<()> {
-    if args.reask_window_secs <= 1300 {
+    if !args.sharer_asks && args.reask_window_secs <= 1300 {
         bail!("--reask-window-secs must run past FILEREASKTIME (1300 s)");
     }
     args.bench.prepare(&[
@@ -113,13 +118,14 @@ pub(crate) fn peer_lowid_callback_reask(args: PeerLowIdCallbackReaskArgs) -> Res
             file_size: args.file_size,
             timeout_secs: args.timeout,
             reask_window_secs: args.reask_window_secs,
+            sharer_asks: args.sharer_asks,
         },
     )?;
     let hash_command = args
         .ed2k_hash_command
         .as_deref()
         .map_or_else(Ed2kHashCommand::cargo_rmule_tools, Ed2kHashCommand::new);
-    stage_reask_emit_files(&layout, args.file_size, &hash_command, false)?;
+    stage_reask_emit_files(&layout, args.file_size, &hash_command, args.sharer_asks)?;
     println!("run_dir={}", run_dir.display());
 
     run_peer_lowid_callback_reask(PeerLowIdCallbackReaskOptions {
@@ -130,6 +136,7 @@ pub(crate) fn peer_lowid_callback_reask(args: PeerLowIdCallbackReaskArgs) -> Res
         keep_containers: args.bench.keep_containers,
         timeout_secs: args.timeout,
         reask_window_secs: args.reask_window_secs,
+        sharer_asks: args.sharer_asks,
         amule_image: &args.amule.amule_image,
         amule_build_context: &args.amule.amule_build_context,
         amule_env: &args.amule.amule_env,
@@ -151,10 +158,17 @@ pub(crate) struct PeerLowIdCallbackReaskScoreArgs {
     /// The run dir to score (the one holding `lowid-callback-reask/`).
     #[arg(long)]
     pub(crate) run_dir: PathBuf,
+    /// Score the sharer-asks leg.
+    #[arg(long)]
+    pub(crate) sharer_asks: bool,
 }
 
 pub(crate) fn peer_lowid_callback_reask_score(args: PeerLowIdCallbackReaskScoreArgs) -> Result<()> {
-    let verdict = score_lowid_callback_reask(&args.run_dir)?;
+    let verdict = if args.sharer_asks {
+        score_lowid_sharer_asks(&args.run_dir)?
+    } else {
+        score_lowid_callback_reask(&args.run_dir)?
+    };
     println!("run_dir={}", args.run_dir.display());
     println!("verdict={verdict}");
     Ok(())

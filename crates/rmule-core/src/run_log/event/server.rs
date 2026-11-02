@@ -21,6 +21,9 @@ impl ServerListEvent {
             L::ServerRemoved { server } => {
                 Record::new("server_list.removed").server_endpoint("server", server)
             }
+            L::ReservedServerDropped { server } => {
+                Record::new("server_list.reserved_dropped").server_endpoint("server", server)
+            }
             L::ServerPriorityChanged { server, priority } => {
                 Record::new("server_list.priority_changed")
                     .server_endpoint("server", server)
@@ -44,6 +47,21 @@ impl ServerListEvent {
                 .count("total", *total),
             L::ServerListUpdateFailed { reason } => {
                 codes::list_update_failure(Record::new("server_list.update_failed"), *reason)
+            }
+            L::ServerListAutoUpdateStarted { urls } => {
+                Record::new("server_list.auto_update_started").count("urls", urls.len())
+            }
+            L::ServerListAutoUpdateFetched { url, outcome } => {
+                let record = Record::new("server_list.auto_update_fetched").url("url", url);
+                match outcome {
+                    crate::AutoUpdateFetch::Merged { added, updated } => record
+                        .code("outcome", "merged")
+                        .count("added", *added)
+                        .count("updated", *updated),
+                    crate::AutoUpdateFetch::Failed(reason) => {
+                        codes::list_update_failure(record.code("outcome", "failed"), *reason)
+                    }
+                }
             }
         }
     }

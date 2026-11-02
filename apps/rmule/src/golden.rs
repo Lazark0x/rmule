@@ -8,15 +8,48 @@ use std::fs;
 use std::path::PathBuf;
 
 use ratatui::backend::TestBackend;
+use ratatui::buffer::Buffer;
+use ratatui::layout::Position;
 use ratatui::{Frame, Terminal};
+
+/// Marks the caret's cell in a snapshot.
+pub(crate) const CARET: &str = "▮";
 
 /// Render one frame at `width`×`height` and return its glyphs, one line per
 /// buffer row, trailing whitespace trimmed, trailing newline present.
-pub(crate) fn render_to_lines(width: u16, height: u16, draw: impl FnOnce(&mut Frame)) -> String {
+pub(crate) fn render_to_lines<R>(
+    width: u16,
+    height: u16,
+    draw: impl FnOnce(&mut Frame) -> R,
+) -> String {
+    render_with_caret(width, height, |frame| {
+        draw(frame);
+        None
+    })
+}
+
+/// [`render_to_lines`] for a surface with a text field: the cell `draw` says
+/// the caret is in shows [`CARET`], for a snapshot of glyphs has no cursor.
+pub(crate) fn render_with_caret(
+    width: u16,
+    height: u16,
+    draw: impl FnOnce(&mut Frame) -> Option<Position>,
+) -> String {
     let backend = TestBackend::new(width, height);
     let mut terminal = Terminal::new(backend).expect("test terminal");
-    terminal.draw(draw).expect("draw frame");
-    let buffer = terminal.backend().buffer();
+    let mut caret = None;
+    terminal
+        .draw(|frame| caret = draw(frame))
+        .expect("draw frame");
+    if let Some(caret) = caret {
+        let mut marked = terminal.backend().buffer().clone();
+        marked[(caret.x, caret.y)].set_symbol(CARET);
+        return lines_of(&marked);
+    }
+    lines_of(terminal.backend().buffer())
+}
+
+fn lines_of(buffer: &Buffer) -> String {
     let area = buffer.area;
     let mut out = String::new();
     for y in area.top()..area.bottom() {
@@ -31,8 +64,32 @@ pub(crate) fn render_to_lines(width: u16, height: u16, draw: impl FnOnce(&mut Fr
 
 /// Compare a render against `tests/goldens/<name>.txt`, or (re-)bless it when
 /// `UPDATE_GOLDENS=1` is set.
-pub(crate) fn assert_golden(name: &str, width: u16, height: u16, draw: impl FnOnce(&mut Frame)) {
-    let actual = render_to_lines(width, height, draw);
+pub(crate) fn assert_golden<R>(
+    name: &str,
+    width: u16,
+    height: u16,
+    draw: impl FnOnce(&mut Frame) -> R,
+) {
+    compare(name, render_to_lines(width, height, draw));
+}
+
+/// [`assert_golden`] for a surface with a text field: `draw` returns where the
+/// caret is, and the snapshot marks that cell.
+pub(crate) fn assert_golden_caret(
+    name: &str,
+    width: u16,
+    height: u16,
+    draw: impl FnOnce(&mut Frame) -> Option<Position>,
+) {
+    compare(name, render_with_caret(width, height, draw));
+}
+
+fn compare(name: &str, actual: String) {
+    // Goldens are written with `/` separators. A fixture path joined on
+    // Windows mixes them (`/srv/rmule\Temp`) while the layout under test is
+    // the same, so a golden never holds a literal backslash.
+    #[cfg(windows)]
+    let actual = actual.replace('\\', "/");
     let raw = raw_forms(&actual);
     assert!(
         raw.is_empty(),
@@ -46,7 +103,7 @@ pub(crate) fn assert_golden(name: &str, width: u16, height: u16, draw: impl FnOn
     ]
     .iter()
     .collect();
-    if std::env::var_os("UPDATE_GOLDENS").is_some() {
+    if blesses(std::env::var("UPDATE_GOLDENS").ok().as_deref()) {
         let dir = path.parent().expect("goldens dir");
         fs::create_dir_all(dir).expect("create goldens dir");
         fs::write(&path, &actual).expect("write golden");
@@ -62,6 +119,11 @@ pub(crate) fn assert_golden(name: &str, width: u16, height: u16, draw: impl FnOn
         actual, expected,
         "golden '{name}' drifted; re-bless with UPDATE_GOLDENS=1 if intended"
     );
+}
+
+/// Whether `UPDATE_GOLDENS` holds what asks for a bless: `1`, and nothing else.
+fn blesses(update_goldens: Option<&str>) -> bool {
+    update_goldens == Some("1")
 }
 
 /// What in a rendered frame reads as code rather than words: an
@@ -119,6 +181,14 @@ mod tests {
     use ratatui::widgets::{Block, Paragraph};
 
     use super::*;
+
+    #[test]
+    fn only_one_blesses() {
+        assert!(blesses(Some("1")));
+        for value in [None, Some("0"), Some(""), Some("true")] {
+            assert!(!blesses(value), "{value:?} asks for no bless");
+        }
+    }
 
     #[test]
     fn renders_glyphs_row_by_row_with_trailing_space_trimmed() {

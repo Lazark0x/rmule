@@ -195,14 +195,10 @@ fn from_identity_preserves_non_utf8_nickname_bytes() {
 /// ADR-0087 §4.1's fifth login tag and its coupled flag bit, from the spec's
 /// own worked bytes (`01 01 00 AE` then sixteen raw address bytes).
 ///
-/// Evidence: **deterministic tier only, awaiting a pinned IPv6 server.** The
-/// one server implementing the dialect has no pinnable artefact — its `master`
-/// carries no IPv6 at all and the last release predates the work — so these
-/// bytes are the spec's, not a capture's. The row upgrades to captured when a pinned
-/// ed2k-server build exists; eNode-go is the second oracle for the shared
-/// login surface, which is why this row is *not* `single-oracle`.
+/// Evidence: **deterministic tier only.** These bytes are the spec's, not a
+/// capture's; `ed2ksrv-server-surface` drives the tag against the pin.
 #[test]
-fn an_advertised_ipv6_rides_as_the_fifth_tag_with_its_flag_bit() {
+fn an_advertised_ipv6_rides_as_the_fifth_tag_and_leaves_the_flags_alone() {
     let address: std::net::Ipv6Addr = "2a01:4f8::1".parse().unwrap();
     let request = LoginRequest::from_identity_advertising(
         &sample_identity(),
@@ -210,6 +206,7 @@ fn an_advertised_ipv6_rides_as_the_fifth_tag_with_its_flag_bit() {
         LoginAdvert {
             ipv6: Some(address),
             udp_ports: None,
+            offer_pace: false,
         },
     );
     let tags = request.tags();
@@ -220,12 +217,13 @@ fn an_advertised_ipv6_rides_as_the_fifth_tag_with_its_flag_bit() {
         "the advert appends a fifth tag and reorders nothing"
     );
 
-    // SRVCAP_IPV6 (0x1000) rides with it, and with nothing else changed.
+    // The tag is the whole advert: `CT_SERVER_FLAGS` is what it would have been
+    // without it. `0x1000` there is Lugdunum's NAT callback claim (ADR-0087).
     match tags[2].value() {
-        TagValue::U32(flags) => assert_eq!(
-            *flags,
-            server_capability_flags(&shipped_no_crypt()) | 0x1000
-        ),
+        TagValue::U32(flags) => {
+            assert_eq!(*flags, server_capability_flags(&shipped_no_crypt()));
+            assert_eq!(*flags & 0x1000, 0, "no NAT callback claim");
+        }
         other => panic!("server-flags tag must be u32, got {other:?}"),
     }
 
@@ -237,10 +235,9 @@ fn an_advertised_ipv6_rides_as_the_fifth_tag_with_its_flag_bit() {
     assert_eq!(tags[4].encode(), expected);
 }
 
-/// The coupling is "send both or neither", and one input decides both — so
-/// there is no representable state where the bit rides without the tag.
+/// No advert, no tag, and the flag word is untouched either way.
 #[test]
-fn without_an_advertised_ipv6_neither_the_tag_nor_the_bit_rides() {
+fn without_an_advertised_ipv6_no_tag_rides() {
     let request = LoginRequest::from_identity_advertising(
         &sample_identity(),
         &shipped_no_crypt(),
@@ -296,6 +293,7 @@ fn the_udp_ports_advert_rides_last_and_only_when_given() {
         LoginAdvert {
             ipv6: Some(address),
             udp_ports: Some(ports),
+            offer_pace: false,
         },
     );
     let ids: Vec<_> = request.tags().iter().map(|t| t.name().id()).collect();
@@ -320,4 +318,26 @@ fn the_udp_ports_advert_rides_last_and_only_when_given() {
 
     let plain = LoginRequest::from_identity(&sample_identity(), &shipped_no_crypt());
     assert!(plain.tags().iter().all(|t| t.name().id() != Some(0xF9)));
+}
+
+/// ed2k-server's contract, *OFFERFILES v1*: a string-named `uint32` in the
+/// old tag format, which a server that does not know it skips. Only the login
+/// writes it, after every advert, and a login without it is aMule's.
+#[test]
+fn the_offer_pace_request_is_an_old_format_text_tag_after_the_adverts() {
+    let identity = sample_identity();
+    let request = LoginRequest::from_identity_advertising(
+        &identity,
+        &shipped_no_crypt(),
+        LoginAdvert {
+            offer_pace: true,
+            ..LoginAdvert::default()
+        },
+    );
+    let last = request.tags().last().expect("a tag");
+    let mut wire = vec![0x03, 12, 0];
+    wire.extend_from_slice(b"offerfiles_v");
+    wire.extend_from_slice(&1u32.to_le_bytes());
+    assert_eq!(last.encode(), wire);
+    assert_eq!(request.tags().len(), 5);
 }

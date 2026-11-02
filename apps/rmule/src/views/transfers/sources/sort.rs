@@ -7,14 +7,17 @@
 //! Software sorts by the client's family rank, then its version, and Phase by
 //! how far the source has got — neither by its words.
 
+use crate::stored_keys as column_keys;
+use crate::words::columns;
 use std::borrow::Cow;
 
 use rmule_core::DownloadId;
 use rmule_core::diagnostics::WorkerEntry;
 
-use super::super::{COL_SPACING, TransfersView};
+use super::super::TransfersView;
 pub(in crate::views::transfers) use super::row::SourceKey;
 use super::row::{SourceRow, source_rows};
+use crate::row_filter::keeps_row;
 use crate::state::UiState;
 use crate::table_sort::{ColumnKind, ColumnSpec, SortValue, SortedTable, TableSorts};
 use crate::views::ViewOutcome;
@@ -50,7 +53,7 @@ impl SourceLine {
             endpoint: row.peer().map(|peer| peer.to_string()),
             software: ranks.rank(row.software()),
             phase: row.phase_rank(),
-            speed: (bps > 0.0).then_some(bps as u64),
+            speed: bps.filter(|bps| *bps > 0.0).map(|bps| bps as u64),
         }
     }
 }
@@ -59,17 +62,32 @@ impl SortedTable for SourcesTable {
     type Row = SourceLine;
     type Column = SourceColumn;
     type Identity = SourceKey;
-    const TABLE: &'static str = "sources";
+    const TABLE: &'static str = column_keys::TABLE_SOURCES;
     const COLUMNS: &'static [ColumnSpec<SourceColumn>] = &[
-        ColumnSpec::new(SourceColumn::Source, "source", "Source", ColumnKind::Text),
+        ColumnSpec::new(
+            SourceColumn::Source,
+            column_keys::SOURCE,
+            columns::SOURCE,
+            ColumnKind::Text,
+        ),
         ColumnSpec::new(
             SourceColumn::Software,
-            "software",
-            "Software",
+            column_keys::SOFTWARE,
+            columns::SOFTWARE,
             ColumnKind::Rank,
         ),
-        ColumnSpec::new(SourceColumn::Phase, "phase", "Phase", ColumnKind::Rank),
-        ColumnSpec::new(SourceColumn::Speed, "speed", "Speed", ColumnKind::Quantity),
+        ColumnSpec::new(
+            SourceColumn::Phase,
+            column_keys::PHASE,
+            columns::PHASE,
+            ColumnKind::Rank,
+        ),
+        ColumnSpec::new(
+            SourceColumn::Speed,
+            column_keys::SPEED,
+            columns::SPEED,
+            ColumnKind::Quantity,
+        ),
     ];
     const NAME: SourceColumn = SourceColumn::Source;
 
@@ -109,6 +127,7 @@ impl TransfersView {
         let lines: Vec<SourceLine> = rows
             .iter()
             .map(|row| SourceLine::new(row, id, state, &ranks))
+            .filter(|line| keeps_row::<SourcesTable>(&self.source_filter, line))
             .collect();
         self.source_sort
             .order(&lines)
@@ -129,13 +148,9 @@ impl TransfersView {
         column: u16,
         row: u16,
     ) -> Option<ViewOutcome> {
-        self.source_sort.header_click(
-            self.source_header_area,
-            &self.source_header_cols,
-            usize::from(COL_SPACING),
-            column,
-            row,
-        )
+        let (area, widths) = self.source_drawn.header();
+        self.source_sort
+            .header_click(area, widths, crate::table::GAP, column, row)
     }
 }
 
@@ -173,7 +188,11 @@ mod tests {
                 emule_qt(),
             ),
             identified(
-                worker(1, WorkerPhase::WaitingForSlot, Some(peer_endpoint(9))),
+                worker(
+                    1,
+                    WorkerPhase::WaitingForSlot { rank: None },
+                    Some(peer_endpoint(9)),
+                ),
                 amule_233(),
             ),
             worker(2, WorkerPhase::Connecting, Some(peer_endpoint(2))),
@@ -197,7 +216,7 @@ mod tests {
             .into_iter()
             .filter_map(|key| match key {
                 SourceKey::Slot(_, slot) => Some(slot.as_usize()),
-                SourceKey::Ended(_) => None,
+                SourceKey::HandedOver(_) | SourceKey::Ended(_) => None,
             })
             .collect()
     }
@@ -214,7 +233,7 @@ mod tests {
     #[test]
     fn every_source_column_orders_by_its_value_with_the_pane_focused() {
         let state = four_sources();
-        let mut view = TransfersView::new();
+        let mut view = TransfersView::by_name();
         view.handle_key(press(KeyCode::Tab), &state);
         // Endpoints compare digit runs as numbers: .2, .3, .9, .10.
         assert_eq!(slots(&view, &state), [2, 3, 1, 0]);
@@ -255,7 +274,7 @@ mod tests {
     #[test]
     fn the_source_cursor_follows_its_peer_and_a_header_click_sorts_the_pane() {
         let mut state = four_sources();
-        let mut view = TransfersView::new();
+        let mut view = TransfersView::by_name();
         view.handle_key(press(KeyCode::Tab), &state);
         view.handle_key(press(KeyCode::Char('j')), &state); // onto 10.0.0.3
         let lines = draw(&mut view, &state);

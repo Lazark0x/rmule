@@ -1,9 +1,11 @@
 //! The store-wide version and the steps that carry a file forward: each
 //! [`UpgradeStep`] rewrites one version's tables into the next inside one
 //! durable write and the store stamps the new version before the next step
-//! runs. A file newer than the build is refused, a rung with no step is
-//! refused, a fresh file is stamped at the current version. The stamp lives
-//! in a meta table of the store's own.
+//! runs. A file newer than the build or under its floor is refused, a rung
+//! with no step is refused, a fresh file is stamped at the current version.
+//! The stamp lives in a meta table of the store's own.
+
+use std::path::{Path, PathBuf};
 
 use redb::{ReadableTable, TableDefinition};
 
@@ -15,6 +17,12 @@ pub(crate) const META: TableDefinition<&str, u32> = TableDefinition::new("rmule.
 
 /// The meta key under which the store-wide version is stamped.
 const STORE_VERSION: &str = "STORE_VERSION";
+
+/// Where the file lies, written before a climb for the rung that needs it.
+const HOME: TableDefinition<&str, &str> = TableDefinition::new("rmule.home");
+
+/// The one key of [`HOME`].
+const HOME_KEY: &str = "HOME";
 
 /// One rung of a [`Ladder`]: carries a store from `from` to `from + 1`.
 ///
@@ -34,16 +42,40 @@ pub struct UpgradeStep {
 pub struct Ladder {
     /// The version this build writes and expects.
     pub current: u32,
-    /// The steps, one per version below `current` that a file may still be
-    /// at. Order in the slice does not matter; `from` does.
+    /// The oldest version this build climbs from: the oldest a published
+    /// build wrote. A file under it is refused before anything is written.
+    pub floor: u32,
+    /// The steps, one per version from `floor` up to `current`. Order in the
+    /// slice does not matter; `from` does.
     pub steps: &'static [UpgradeStep],
 }
 
 impl Ladder {
-    /// A ladder topping out at `current` with the given steps.
+    /// A ladder from `floor` to `current` with the given steps.
     #[must_use]
-    pub const fn new(current: u32, steps: &'static [UpgradeStep]) -> Self {
-        Self { current, steps }
+    pub const fn new(current: u32, floor: u32, steps: &'static [UpgradeStep]) -> Self {
+        Self {
+            current,
+            floor,
+            steps,
+        }
+    }
+
+    /// Whether a file stamped `found` may open on this build.
+    pub(crate) const fn admit(&self, found: u32) -> Result<(), StoreError> {
+        if found > self.current {
+            return Err(StoreError::FutureVersion {
+                found,
+                current: self.current,
+            });
+        }
+        if found < self.floor {
+            return Err(StoreError::TooOld {
+                found,
+                floor: self.floor,
+            });
+        }
+        Ok(())
     }
 
     pub(crate) fn step_from(&self, from: u32) -> Result<&UpgradeStep, StoreError> {
@@ -60,6 +92,24 @@ impl Ladder {
 pub(crate) fn read_version(txn: &impl Readable) -> Result<Option<u32>, StoreError> {
     let meta = txn.table(META)?;
     let found = meta.get(STORE_VERSION)?.map(|guard| guard.value());
+    Ok(found)
+}
+
+/// Note the directory the file lies in, for a rung that rewrites paths.
+pub(crate) fn stamp_home(txn: &WriteTransaction, home: &Path) -> Result<(), StoreError> {
+    let home = home.to_string_lossy();
+    txn.open_table(HOME)?.insert(HOME_KEY, home.as_ref())?;
+    Ok(())
+}
+
+/// The directory the file being climbed lies in, for a rung that rewrites
+/// paths against it. `None` for a store with no file.
+///
+/// # Errors
+/// An engine error.
+pub fn climbing_home(txn: &WriteTransaction) -> Result<Option<PathBuf>, StoreError> {
+    let home = txn.open_table(HOME)?;
+    let found = home.get(HOME_KEY)?.map(|guard| guard.value().into());
     Ok(found)
 }
 

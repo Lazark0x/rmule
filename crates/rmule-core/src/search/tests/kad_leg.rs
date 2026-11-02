@@ -20,7 +20,7 @@ async fn a_held_keyword_ends_the_kad_leg_not_sent_and_a_put_off_publish_is_told(
     let (tcp_tx, tcp_rx) = mpsc::channel::<ServerSearchEvent>(8);
     drop(tcp_tx);
     let live = LiveSearches::default();
-    let (evt_tx, mut evt_rx) = mpsc::channel(16);
+    let (evt_tx, mut evt_rx) = crate::service::outbox(Default::default());
     let (_cancel_tx, cancel_rx) = watch::channel(false);
     let (sink, kad_rx) = kad_keyword_leg();
     let query = KeywordQuery::new(Ed2kText::from_utf8("song")).expect("a query");
@@ -80,7 +80,7 @@ async fn a_held_keyword_ends_the_kad_leg_not_sent_and_a_put_off_publish_is_told(
 async fn a_dropped_kad_row_is_told_as_a_skipped_row() {
     let (_tcp_tx, tcp_rx) = mpsc::channel::<ServerSearchEvent>(8);
     let live = LiveSearches::default();
-    let (evt_tx, mut evt_rx) = mpsc::channel(16);
+    let (evt_tx, mut evt_rx) = crate::service::outbox(Default::default());
     let (_cancel_tx, cancel_rx) = watch::channel(false);
     let (sink, kad_rx) = kad_keyword_leg();
     let query = KeywordQuery::new(Ed2kText::from_utf8("film")).expect("a query");

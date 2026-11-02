@@ -18,12 +18,15 @@ mod opcode;
 mod node_messages;
 mod publish_messages;
 mod search_tree_codec;
+mod tag_lists;
 mod truncation;
 
 // The routing table: admission, eviction, census, the small-timer aging pass,
 // and what a contact must do to become servable.
 mod contact_admission;
 mod merge_contacts;
+mod reserved_contacts;
+mod routing_caps;
 mod routing_census;
 mod routing_table;
 mod small_timer;
@@ -47,6 +50,7 @@ mod node_lookup;
 // Reachability: the firewall self-checks, the UDP helper protocol, and buddy
 // recruitment for a node that fails them.
 mod node_buddy;
+mod node_callback_pace;
 mod node_callback_walk;
 mod node_extern_port;
 mod node_firewall;
@@ -63,6 +67,7 @@ mod verify_keys_trailer;
 
 // Datagram crypt: the obfuscation layer every message above can ride.
 mod kad_udp_crypt;
+mod opened_messages_reader;
 
 // Sources: publishing one, storing it, and walking the network to find it.
 mod buddy_endpoint_gate;
@@ -74,6 +79,8 @@ mod source_result;
 mod source_storer;
 
 // Keywords: deriving them, indexing a publish, and serving a search.
+mod keyword_aich_roots;
+mod keyword_bounds;
 mod keyword_derivation;
 mod keyword_index;
 mod keyword_node;

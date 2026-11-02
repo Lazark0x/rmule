@@ -37,11 +37,72 @@ fn file_status_reports_amule_ed2k_part_count_at_an_exact_part_multiple() {
         panic!("expected one AnswerFileStatus, got {status:?}");
     };
     assert_eq!(
-        bitmap.part_count(),
+        bitmap.count(),
         3,
         "OP_FILESTATUS must carry aMule's ED2K part count (size / PARTSIZE + 1)",
     );
-    assert!((0..3).all(|i| bitmap.has(PartIndex::new(i))));
+    assert_eq!(bitmap.encode(), [0b111]);
+}
+
+/// A large file does not exist for a peer whose hello does not claim them:
+/// every ask reads `OP_FILEREQANSNOFIL` or silence, as stock's bundle does
+/// (`ClientTCPSocket.cpp:1070`), and a peer that claims them is answered.
+#[test]
+fn a_large_file_is_never_served_to_a_peer_without_the_bit() {
+    let large = rmule_primitives::OLD_MAX_FILE_SIZE + 1;
+    let file_hash = hash(0x22);
+    let mut state = serving_state(1, vec![entry(file_hash, large, "large.bin")]);
+    let now = Instant::now();
+    let identified = |large_files| {
+        crate::hello_facts::HelloFacts {
+            large_files,
+            ..crate::hello_facts::HelloFacts::of(UserHash::from_bytes([0x33; 16]))
+        }
+        .identified()
+    };
+    state.on_conn_event(now, peer(1), identified(false), &no_modifiers());
+    state.on_conn_event(now, peer(2), identified(true), &no_modifiers());
+    let mut ask = |who, input: ServerEvent| {
+        state.on_conn_event(now, who, ServeInput::Server(input), &no_modifiers())
+    };
+
+    let status = ask(peer(1), ServerEvent::FileIdSet { file_hash });
+    assert!(matches!(
+        status.as_slice(),
+        [ServeDecision::Send {
+            command: ServerCommand::AnswerFileNotFound { .. },
+            ..
+        }]
+    ));
+    let bundle = ask(
+        peer(1),
+        ServerEvent::FileBundleRequested {
+            file_hash,
+            file_size: Some(large),
+            asks: Vec::new(),
+            cut: None,
+        },
+    );
+    assert!(matches!(
+        bundle.as_slice(),
+        [ServeDecision::Send {
+            command: ServerCommand::AnswerFileNotFound { .. },
+            ..
+        }]
+    ));
+    assert_eq!(
+        ask(peer(1), ServerEvent::SlotRequested { file_hash }),
+        Vec::new()
+    );
+
+    let status = ask(peer(2), ServerEvent::FileIdSet { file_hash });
+    assert!(status.iter().any(|decision| matches!(
+        decision,
+        ServeDecision::Send {
+            command: ServerCommand::AnswerFileStatus { .. },
+            ..
+        }
+    )));
 }
 
 #[test]
@@ -102,8 +163,8 @@ fn the_share_snapshot_answers_probes_and_derives_the_announce_list() {
     else {
         panic!("expected one AnswerFileStatus, got {status:?}");
     };
-    assert_eq!(bitmap.part_count(), 2);
-    assert!((0..2).all(|i| bitmap.has(PartIndex::new(i))));
+    assert_eq!(bitmap.count(), 2);
+    assert_eq!(bitmap.encode(), [0b11]);
 }
 
 /// aMule leaves a standalone name ask for a file it does
@@ -190,12 +251,38 @@ fn an_ext_bundle_naming_another_size_is_answered_not_found() {
     );
 }
 
+/// A stored row whose size eD2k cannot address reaches the answer only as a
+/// "no such file": the 65,536 hashes it holds never become a frame.
+#[test]
+fn a_row_past_the_size_limit_answers_a_hash_set_ask_with_not_found() {
+    let mut past = entry(hash(0x23), 65_535 * ED2K_PART_SIZE, "disk.img");
+    past.part_hashes = vec![PartHash::from_bytes([0xAB; PartHash::BYTE_LEN]); 65_536];
+    let mut state = serving_state(1, vec![past]);
+    let p = peer(1);
+    assert_eq!(
+        state.on_conn_event(
+            Instant::now(),
+            p,
+            ServeInput::Server(ServerEvent::HashSetRequested {
+                file_hash: hash(0x23)
+            }),
+            &no_modifiers(),
+        ),
+        vec![send(
+            p,
+            ServerCommand::AnswerFileNotFound {
+                file_hash: hash(0x23)
+            }
+        )],
+    );
+}
+
 /// Unsharing mid-probe answers "no such file" instead of silently
 /// dropping the request (design §5): the snapshot refresh is what flips
 /// the answer.
 #[test]
 fn an_unshared_file_answers_not_found_after_the_snapshot_refresh() {
-    let part_hashes = vec![PartHash::from_bytes([0xAB; PartHash::BYTE_LEN]); 2];
+    let part_hashes = vec![PartHash::from_bytes([0xAB; PartHash::BYTE_LEN]); 3];
     let mut shared = entry(hash(0x22), 2 * ED2K_PART_SIZE, "hashed.bin");
     shared.part_hashes = part_hashes.clone();
     let mut state = serving_state(1, vec![shared]);
@@ -215,7 +302,7 @@ fn an_unshared_file_answers_not_found_after_the_snapshot_refresh() {
             p,
             ServerCommand::AnswerHashSet {
                 file_hash: hash(0x22),
-                part_hashes,
+                part_hashes: rmule_primitives::PartHashList::new(part_hashes).unwrap(),
             }
         )],
     );

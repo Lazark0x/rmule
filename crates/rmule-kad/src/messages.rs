@@ -27,7 +27,7 @@
 //! fixed-layout messages, and strictness is the safer posture for the
 //! adversarial datagrams the mesh tier scripts.
 
-use rmule_primitives::{Tag, TagName, TagValue, WireReader, WireTruncated};
+use rmule_primitives::{Ed2kIp, KadIp, Tag, TagName, TagValue, WireReader, WireTruncated};
 
 use crate::KadBuddyContact;
 
@@ -472,9 +472,12 @@ fn decode_published_source(
     let mut source = KadPublishedSource::default();
     let (mut buddy_ip, mut buddy_port, mut buddy_id, mut buddy_ipv6) = (None, None, None, None);
     for _ in 0..tag_count {
-        let (tag, consumed) = Tag::decode_prefix(reader.remaining_bytes())
+        let (tag, consumed) = Tag::decode_or_step_prefix(reader.remaining_bytes())
             .map_err(|_| "publish tag is truncated or malformed")?;
         reader.advance_clamped(consumed);
+        let Some(tag) = tag else {
+            continue;
+        };
         let Some(name) = tag.name().id() else {
             // The IPv6 tags are string-named (ADR-0087), so they never reach
             // the numeric-id match below. Both claims are gated exactly as
@@ -511,7 +514,7 @@ fn decode_published_source(
                         .try_as_str()
                         .ok()
                         .and_then(crate::source_result::hex_md4)
-                        .map(|be| KadId::from_bytes(crate::lookup::kad_wire_id(be))),
+                        .map(KadId::from_bytes),
                     _ => None,
                 },
             ),
@@ -526,7 +529,7 @@ fn decode_published_source(
     source.buddy = buddy_id.map(|buddy_id| KadBuddyContact {
         buddy_id,
         buddy_udp: crate::source_result::endpoint(
-            buddy_ip,
+            buddy_ip.map(|word| Ed2kIp::from_wire(word).ip()),
             buddy_port,
             crate::net::is_claimed_udp_target,
         ),
@@ -568,21 +571,13 @@ fn encode_published_source(payload: &mut Vec<u8>, source: &KadPublishedSource) {
         source
             .source_type
             .map(|byte| (TAG_SOURCETYPE, TagValue::U8(byte))),
-        buddy_udp.map(|udp| {
-            let [a, b, c, d] = udp.ip.octets();
-            (
-                TAG_SERVERIP,
-                TagValue::U32(u32::from_le_bytes([a, b, c, d])),
-            )
-        }),
+        buddy_udp.map(|udp| (TAG_SERVERIP, TagValue::U32(Ed2kIp::new(udp.ip).wire()))),
         buddy_port.map(|port| (TAG_SERVERPORT, TagValue::U16(port))),
         source.buddy.map(|buddy| {
             (
                 TAG_BUDDYHASH,
                 TagValue::String(rmule_primitives::Ed2kText::from_utf8(
-                    crate::source_result::md4_hex(crate::lookup::kad_wire_id(
-                        *buddy.buddy_id.as_bytes(),
-                    )),
+                    crate::source_result::md4_hex(*buddy.buddy_id.as_bytes()),
                 )),
             )
         }),
@@ -703,7 +698,7 @@ fn decode_node_header(reader: &mut WireReader<'_>) -> Result<Kad2NodeInfo, &'sta
 fn skip_tag_list(reader: &mut WireReader<'_>, what: &'static str) -> Result<(), &'static str> {
     let count = reader.read_u8(what).map_err(field)?;
     for _ in 0..count {
-        let (_, consumed) = Tag::decode_prefix(reader.remaining_bytes())
+        let (_, consumed) = Tag::decode_or_step_prefix(reader.remaining_bytes())
             .map_err(|_| "tag is truncated or malformed")?;
         reader.advance_clamped(consumed);
     }
@@ -723,9 +718,12 @@ fn decode_hello(reader: &mut WireReader<'_>) -> Result<Kad2NodeInfo, &'static st
     let mut info = decode_node_header(reader)?;
     let tag_count = reader.read_u8("hello tag count").map_err(field)?;
     for _ in 0..tag_count {
-        let (tag, consumed) = Tag::decode_prefix(reader.remaining_bytes())
+        let (tag, consumed) = Tag::decode_or_step_prefix(reader.remaining_bytes())
             .map_err(|_| "hello tag is truncated or malformed")?;
         reader.advance_clamped(consumed);
+        let Some(tag) = tag else {
+            continue;
+        };
         match tag.name().id() {
             Some(TAG_SOURCEUPORT) => {
                 info.udp_port_tag = match tag.value() {
@@ -797,9 +795,7 @@ fn decode_contact_rows(
 fn encode_contact_rows(payload: &mut Vec<u8>, contacts: &[KadContact]) {
     for contact in contacts {
         payload.extend_from_slice(contact.id().as_bytes());
-        let mut octets = contact.endpoint().ip().octets();
-        octets.reverse();
-        payload.extend_from_slice(&octets);
+        payload.extend_from_slice(&KadIp::new(contact.endpoint().ip()).wire().to_le_bytes());
         payload.extend_from_slice(&contact.endpoint().udp_port().to_le_bytes());
         payload.extend_from_slice(&contact.tcp_port().to_le_bytes());
         payload.push(contact.version());

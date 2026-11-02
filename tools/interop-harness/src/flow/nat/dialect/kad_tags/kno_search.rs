@@ -161,9 +161,10 @@ pub(super) fn claims(frames: &KnoSearchFrames<'_>, key: [u8; 16], buddy: Ipv6Add
             .find(|contact| contact.buddy_ipv6 == Some(buddy))
     });
     // `0x52`: <buddyID 16><fileHash 16><tcpPort 2>, both IDs in Kad wire order.
+    // kno reads the row in the aMule layout, one word swap from how rmule wrote it.
     let called = frames.callback.and_then(|bytes| bytes.get(2..34));
     let called_back = row_buddy.zip(called).is_some_and(|(contact, payload)| {
-        payload[..16] == *contact.buddy_id.as_bytes() && payload[16..] == key
+        payload[..16] == *contact.buddy_id.word_swapped().as_bytes() && payload[16..] == key
     });
 
     vec![

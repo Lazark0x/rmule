@@ -92,11 +92,12 @@ fn an_answer_to_another_mapping_is_not_ours() {
 }
 
 #[test]
-fn a_refusal_carries_its_code_and_hold_off_even_header_only() {
+fn a_refusal_carries_its_code_and_hold_off_only_with_the_echo() {
     // The captured grant with its result byte set to ADDRESS_MISMATCH (12)
-    // — the answer an unpinned request from a link-local source earns — and
-    // the same header alone, which §7.2 allows for a request the server
-    // could not parse.
+    // — the answer an unpinned request from a link-local source earns. §7.2
+    // copies the request into an error response, so the genuine refusal
+    // echoes the nonce; the same header alone answers nobody in particular
+    // and must not hold this mapping off for its lifetime.
     let mut refused = hex(BENCH_GRANT_TCP_4662);
     refused[3] = 12;
     assert_eq!(
@@ -108,10 +109,7 @@ fn a_refusal_carries_its_code_and_hold_off_even_header_only() {
     );
     assert_eq!(
         bench_map().decode(&refused[..HEADER_LEN]),
-        MapReply::Refused {
-            code: 12,
-            lifetime: 120
-        }
+        MapReply::Foreign
     );
     assert_eq!(
         crate::portmap::MappingRefusal::from_pcp_code(12),
@@ -125,14 +123,52 @@ fn a_refusal_carries_its_code_and_hold_off_even_header_only() {
     );
 }
 
-/// The transport end to end: the request leaves *from the address it names*
-/// — the §8.2 check a real server runs — survives a foreign datagram, and
-/// the answer is read. A gateway on `::1` stands in for the router.
+#[test]
+fn a_create_answered_with_no_lifetime_or_no_port_granted_nothing() {
+    // Result code 0, lifetime 0: §11.1 makes that a delete, so the create
+    // that asked for a lifetime was not granted.
+    let mut no_lifetime = hex(BENCH_GRANT_TCP_4662);
+    no_lifetime[4..8].fill(0);
+    assert_eq!(bench_map().decode(&no_lifetime), MapReply::Empty);
+    let mut no_port = hex(BENCH_GRANT_TCP_4662);
+    no_port[42..44].fill(0);
+    assert_eq!(bench_map().decode(&no_port), MapReply::Empty);
+    // The delete itself is answered with lifetime 0, and that is success.
+    let delete = MapRequest {
+        lifetime: 0,
+        ..bench_map()
+    };
+    assert!(matches!(
+        delete.decode(&no_lifetime),
+        MapReply::Granted(MapGrant { lifetime: 0, .. })
+    ));
+}
+
+/// The pin is the bind: the socket names the client address before it is
+/// connected anywhere, where an unpinned bind would read `::` and leave the
+/// source to the route (the live proof is the harness row
+/// `portmap-ipv6-pinhole-link-local`).
 #[tokio::test]
-async fn the_request_leaves_from_the_address_its_header_names() {
+async fn the_exchange_socket_is_bound_to_the_client_address() {
     // `::1` is the precondition, not the subject: a host with no IPv6 stack
-    // (`EAFNOSUPPORT`) has no gateway to stand in for, so it skips, as the
-    // family tests do, rather than failing.
+    // (`EAFNOSUPPORT`) skips, as the family tests do, rather than failing.
+    let socket = match bind_pinned(Ipv6Addr::LOCALHOST).await {
+        Ok(socket) => socket,
+        Err(error) => {
+            eprintln!("skipped: this host cannot bind [::1] ({error})");
+            return;
+        }
+    };
+    assert_eq!(
+        socket.local_addr().expect("bound").ip(),
+        IpAddr::V6(Ipv6Addr::LOCALHOST)
+    );
+}
+
+/// The transport end to end: the exchange survives a foreign datagram and
+/// reads the answer. A gateway on `::1` stands in for the router.
+#[tokio::test]
+async fn the_exchange_skips_a_foreign_datagram_and_reads_the_answer() {
     let server = match UdpSocket::bind("[::1]:0").await {
         Ok(server) => server,
         Err(error) => {
@@ -150,12 +186,8 @@ async fn the_request_leaves_from_the_address_its_header_names() {
     let gateway = tokio::spawn(async move {
         let mut buffer = [0_u8; MAX_DATAGRAM];
         let (length, from) = server.recv_from(&mut buffer).await.expect("request");
-        let header_client = Ipv6Addr::from(<[u8; 16]>::try_from(&buffer[8..24]).expect("16"));
         let mut answer = hex(BENCH_GRANT_TCP_4662);
-        answer[44..60].copy_from_slice(&header_client.octets());
-        if from.ip() != IpAddr::V6(header_client) {
-            answer[3] = 12;
-        }
+        answer[44..60].copy_from_slice(&Ipv6Addr::LOCALHOST.octets());
         let foreign = hex(
             "02810000000000780000808b000000000000000000000000c1d89cc03d1dcd1d5f3de7c511000000124012403fff0ed2000200000000000000000004",
         );

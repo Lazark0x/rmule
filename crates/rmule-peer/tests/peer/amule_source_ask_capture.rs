@@ -12,8 +12,9 @@
 //! to rmule's one-part bundle is from run `1790161721`.
 
 use crate::fixture::load;
+use rmule_peer::WireStatus;
 use rmule_peer::{
-    BundledAsk, Hello, HelloAnswer, MiscOptions1, PartBitmap, PartRanges, PeerCommand, PeerEvent,
+    BundledAsk, Hello, HelloAnswer, MiscOptions1, PartRanges, PeerCommand, PeerEvent,
     PeerHelloBody, PeerSession, RequesterCommand, ServerEvent,
 };
 use rmule_primitives::session::drain;
@@ -99,7 +100,7 @@ fn one_part_ask() -> PeerCommand {
         file_size: FILE_SIZE,
         want_sources: true,
         want_aich_root: true,
-        own_status: PartBitmap::downloader_empty(FILE_SIZE),
+        own_status: WireStatus::downloader_empty(FILE_SIZE),
     })
 }
 
@@ -185,7 +186,7 @@ fn a_partfile_ask_to_amule_carries_the_parts_rmule_holds() {
         file_size: size,
         want_sources: true,
         want_aich_root: false,
-        own_status: PartBitmap::downloader(size, |part| part.value() == 1),
+        own_status: WireStatus::downloader(size, |part| part.value() == 1),
     }));
     let sent = writes(&drain(|| session.poll_output()));
     let mut payload = hash().as_bytes().to_vec();
@@ -224,7 +225,7 @@ fn a_requestparts_fallback_ask_for_a_one_part_file_is_the_name_request_alone() {
     session.handle_command(PeerCommand::Requester(RequesterCommand::RequestParts {
         file_hash: hash(),
         file_size: FILE_SIZE,
-        ranges: PartRanges::new([(0, 4), (0, 0), (0, 0)]).unwrap(),
+        ranges: PartRanges::new([(0, 4), (0, 0), (0, 0)]),
     }));
     let sent = writes(&drain(|| session.poll_output()));
     let opcodes: Vec<u8> = sent.iter().map(Packet::opcode).collect();
@@ -243,7 +244,7 @@ fn a_requestparts_fallback_ask_for_a_multi_part_file_still_bundles_setreqfileid(
     session.handle_command(PeerCommand::Requester(RequesterCommand::RequestParts {
         file_hash: hash(),
         file_size: 2 * ED2K_PART_SIZE,
-        ranges: PartRanges::new([(0, 4), (0, 0), (0, 0)]).unwrap(),
+        ranges: PartRanges::new([(0, 4), (0, 0), (0, 0)]),
     }));
     let sent = writes(&drain(|| session.poll_output()));
     let opcodes: Vec<u8> = sent.iter().map(Packet::opcode).collect();
@@ -266,14 +267,14 @@ fn no_source_ask_to_an_amule_hello_is_the_standalone_19_byte_0x83() {
         PeerCommand::Requester(RequesterCommand::RequestFile {
             file_hash: hash(),
             file_size: FILE_SIZE,
-            own_status: PartBitmap::downloader_empty(FILE_SIZE),
+            own_status: WireStatus::downloader_empty(FILE_SIZE),
             want_sources: true,
             want_aich_root: false,
         }),
         PeerCommand::Requester(RequesterCommand::RequestFile {
             file_hash: hash(),
             file_size: 2 * ED2K_PART_SIZE,
-            own_status: PartBitmap::downloader_empty(2 * ED2K_PART_SIZE),
+            own_status: WireStatus::downloader_empty(2 * ED2K_PART_SIZE),
             want_sources: true,
             want_aich_root: false,
         }),
@@ -328,7 +329,7 @@ fn amules_name_only_answer_to_a_one_part_bundle_opens_the_slot() {
     session.handle_command(PeerCommand::Requester(RequesterCommand::RequestFile {
         file_hash,
         file_size: ONE_PART_SIZE,
-        own_status: PartBitmap::downloader_empty(ONE_PART_SIZE),
+        own_status: WireStatus::downloader_empty(ONE_PART_SIZE),
         want_sources: true,
         want_aich_root: false,
     }));
@@ -336,7 +337,7 @@ fn amules_name_only_answer_to_a_one_part_bundle_opens_the_slot() {
     session.handle_command(PeerCommand::Requester(RequesterCommand::RequestParts {
         file_hash,
         file_size: ONE_PART_SIZE,
-        ranges: PartRanges::new([(0, 184_320), (0, 0), (0, 0)]).unwrap(),
+        ranges: PartRanges::new([(0, 184_320), (0, 0), (0, 0)]),
     }));
     let sent = writes(&drain(|| session.poll_output()));
     assert!(sent.is_empty(), "the bundle already asked: {sent:?}");
@@ -372,8 +373,8 @@ fn an_amule_bundle_with_its_part_status_still_routes_the_source_ask() {
                 if *file_hash == hash()
                     && matches!(
                         asks.as_slice(),
-                        [BundledAsk::Name { part_status: Some(status) }, BundledAsk::Sources]
-                            if *status == PartBitmap::decode(1, &[0]).unwrap()
+                        [BundledAsk::Name { part_status: Some(status) }, BundledAsk::Sources { .. }]
+                            if *status == WireStatus::decode(1, &[0]).unwrap()
                     )
         )),
         "{seen:?}"

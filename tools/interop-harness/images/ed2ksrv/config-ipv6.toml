@@ -1,0 +1,61 @@
+# Bench config for the `ed2k-server` IPv6 surface: `config.toml` plus the two
+# keys that make the server speak the extension to an IPv4 session. It stays on
+# the IPv4 bridge: a client names its IPv6 in the login tag and the server
+# publishes it, unchecked, so no IPv6 route is needed to draw a Sentinel Source.
+#
+# `this_ip` is rendered per run, as `config.toml`'s is.
+#
+#   -v .../images/ed2ksrv/config-ipv6.toml:/etc/ed2k-server/config.toml:ro
+
+[server]
+name = "rmule interop bench ipv6"
+desc = "ed2k-server publishing IPv6 sources on the fake-public /24"
+public = false
+version_major = 17
+version_minor = 15
+this_ip = "203.0.113.20"
+seed_servers = []
+
+[network]
+tcp_port = 4661
+listen_ip = "0.0.0.0"
+listen_backlog = 256
+max_frame_size = 1_000_000
+login_timeout_ms = 4000
+support_crypt = true
+# Sets 0x4000 and 0x8000 in OP_IDCHANGE and sends ST_IPV6_STATUS at login.
+ipv6_publish_sources = true
+# Announced in OP_SERVERIDENT beside it. A documentation address: RFC 9637.
+this_ip6 = "3fff:ed2:1::20"
+
+[limits]
+max_clients = 1000
+soft_limit_files = 1000
+hard_limit_files = 4000
+max_clients_per_ip = 10
+max_string_size = 250
+ping_delay_seconds = 300
+# OFFERFILES v1 at its default batch and interval, for the publishing leg of
+# `ed2ksrv-server-surface`. It holds only a client that asks.
+offerfiles_v1 = true
+
+[content_filter]
+hash_blocklists = []
+publisher_attempt_disconnect_threshold = 3
+publisher_blacklist_seconds = 86400
+
+[welcome]
+messages = ["rmule interop bench ipv6"]
+
+[log]
+level = "debug"
+connection_trace = true
+worker_threads = 1
+
+[storage]
+ipfilter_path = ""
+country_db_path = ""
+
+[admin]
+enabled = true
+port = 8080

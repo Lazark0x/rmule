@@ -25,6 +25,9 @@ pub struct SessionCounters {
     /// hold. Counted rather than silent, so "no sources" never hides a family
     /// gap.
     pub undialable_family_sources_total: u64,
+    /// Sightings a third party aimed past the Source Quota (ADR-0116): a port
+    /// below 1024, or an address or subnet the book holds its share of.
+    pub over_quota_sources_total: u64,
     /// Client-UDP datagrams dropped because the opcode they carry has **no
     /// wire form that can express the sender's Address Family** (ADR-0087).
     ///
@@ -305,12 +308,12 @@ pub struct SessionCounters {
     /// too, so this counter names why those connections ended.
     pub malformed_name_asks_total: u64,
     /// The deepest the serve activity's **accept backlog** has been seen this
-    /// session: admitted peers queued behind the one the runner just
-    /// took, plus that one. The channel holds sixteen, so a reading that
-    /// approaches it says the runner was away — in `enact`, or in a refused
-    /// peer's close — long enough for a burst to stack up behind it, and a
-    /// reading that reaches it says peers were made to wait on the producers'
-    /// side, where the NAT-T adopter drops rather than blocks.
+    /// session: peers past the **Accept Gates** queued behind the one the
+    /// runner just took, plus that one — a refused peer never queues. The
+    /// channel holds sixteen, so a reading that approaches it says the runner
+    /// was away — in `enact` — long enough for a burst to stack up behind it,
+    /// and a reading that reaches it says peers were made to wait on the
+    /// producers' side, where the NAT-T adopter drops rather than blocks.
     ///
     /// `None` on a core whose serve adapter keeps no such channel, and on one
     /// that has not accepted a peer yet: "not measured" is not depth zero.
@@ -358,6 +361,13 @@ pub struct SessionCounters {
     /// `natt_attempts_server_total`, this is how often ADR-0091's ordering
     /// actually earns its second rung.
     pub natt_attempt_fallthroughs_total: u64,
+    /// Datagrams the client-UDP front dropped unread because their address
+    /// is banned (ADR-0064).
+    pub banned_datagrams_total: u64,
+    /// Datagrams dropped because their address is under the Hush and they
+    /// proved no round trip (ADR-0064): at the client-UDP front, or for Kad in
+    /// the node.
+    pub hushed_datagrams_total: u64,
     /// The client-UDP demux front's transport returned closed and the front
     /// wound down. In production this happens only when the
     /// receive-error budget (`RuntimeClientUdpTransport::recv`) is

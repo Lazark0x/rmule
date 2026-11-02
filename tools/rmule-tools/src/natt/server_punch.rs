@@ -42,10 +42,10 @@ use anyhow::{Context, Result};
 use clap::Args;
 use rmule_core::run_log::Level;
 use rmule_core::{
-    Core, CoreCommand, CoreConfig, CoreEvent, NattConfig, OwnMapping, PeerReach,
+    Core, CoreCommand, CoreConfig, CoreEvent, NattConfig, OwnMapping, PeerReach, ReachAddress,
     ServeCommand as CoreServeCommand, open_durable_store_in_memory,
 };
-use rmule_primitives::{ClientId, Ipv4Endpoint, PeerEndpoint, ServerEndpoint, UserHash};
+use rmule_primitives::{ClientId, ServerEndpoint, UserHash};
 
 use crate::driver_row::Row;
 use crate::operand::parse_user_hash;
@@ -103,6 +103,11 @@ pub(crate) struct NattServerPunchArgs {
     /// Where to write the row.
     #[arg(long)]
     out: PathBuf,
+    /// Arm this peer's obfuscation policy (`CoreSettings::obfuscation`): the
+    /// login states it, so the server's `0x61` tells the other peer. Off
+    /// unless passed.
+    #[arg(long, value_enum)]
+    peer_crypt: Option<crate::serve::PeerCryptPolicyArg>,
     /// Port prediction: the knob, the Kad observers that tell the node
     /// its own mapping, and the gate that waits for them.
     #[command(flatten)]
@@ -171,6 +176,7 @@ pub(crate) async fn run_server_punch(args: NattServerPunchArgs) -> Result<()> {
         nickname: args.nickname.clone(),
         tcp_port: args.listen.port(),
         udp_port: args.udp_port,
+        obfuscation: args.peer_crypt.map(rmule_core::ObfuscationPolicy::from),
         ..rmule_core::CoreSettings::default()
     })
     .user_hash(our_hash);
@@ -314,8 +320,7 @@ enum Login {
 /// reads a peer (ADR-0091).
 fn reach(target: &Target) -> PeerReach {
     PeerReach {
-        id: ClientId::from_u32(target.id),
-        tcp: PeerEndpoint::V4(Ipv4Endpoint::new(std::net::Ipv4Addr::UNSPECIFIED, 0)),
+        address: ReachAddress::LowId(ClientId::from_u32(target.id)),
         supports_direct_udp_callback: false,
         kad_udp: None,
         on_our_server: true,
@@ -326,6 +331,7 @@ fn reach(target: &Target) -> PeerReach {
         // it has none, so this flag is left false and the route is still the
         // server's.
         supports_natt: false,
+        crypt: None,
         user_hash: Some(target.user_hash),
     }
 }
@@ -415,7 +421,7 @@ async fn await_snapshot(
         };
         let Some(event) = event else { return Ok(None) };
         if let CoreEvent::DiagnosticsSnapshot { snapshot } = event {
-            return Ok(Some(snapshot));
+            return Ok(Some(*snapshot));
         }
     }
 }

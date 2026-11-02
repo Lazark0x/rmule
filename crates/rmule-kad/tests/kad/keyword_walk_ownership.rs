@@ -209,6 +209,7 @@ fn a_second_search_on_a_walked_keyword_joins_the_walk_and_shares_its_completion(
     let row = KeywordResultRow {
         file_id: file_id(0xB1),
         tags: vec![name_tag("keyword movie.mp3"), size_tag(8_192)],
+        aich_roots: Vec::new(),
     };
     let answer = encode_search_key_res(near_keyword(10), kw(), &[row]);
     node.handle_datagram(now, contact_endpoint(10), &answer[0].encode());

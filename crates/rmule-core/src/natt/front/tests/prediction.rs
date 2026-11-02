@@ -19,6 +19,8 @@ use rmule_peer::natt::{
 use super::super::prediction::PREDICTION_FAN_PLANS_MAX;
 use super::*;
 use crate::address_learning::{AddressObservation, SharedAddressLearning};
+use crate::client_udp::tests::armed_requesting;
+use crate::client_udp::{PeerUdpCrypt, drain_client_udp_sends};
 
 /// A front whose knob is on, over a real loopback client-UDP socket, with
 /// `ports` as this round's Kad reports from distinct observers, and the node
@@ -31,6 +33,25 @@ async fn predicting(
     Arc<ClientUdpSocket>,
     Surroundings,
 ) {
+    let (front, diagnostics, socket, around, sends) = predicting_unwired(ports).await;
+    tokio::spawn(drain_client_udp_sends(
+        sends,
+        Arc::clone(&socket),
+        PeerUdpCrypt::disarmed(),
+    ));
+    (front, diagnostics, socket, around)
+}
+
+/// [`predicting`], with the send half of the road handed to the test.
+async fn predicting_unwired(
+    ports: &[u16],
+) -> (
+    NattFront<NullSink>,
+    DiagnosticsState,
+    Arc<ClientUdpSocket>,
+    Surroundings,
+    mpsc::Receiver<ClientUdpSend>,
+) {
     let addresses = SharedAddressLearning::default();
     for (index, port) in ports.iter().enumerate() {
         let observer = Ipv4Addr::new(45, 55, 200, 50 + u8::try_from(index).unwrap());
@@ -41,7 +62,7 @@ async fn predicting(
             .await
             .expect("bind the client-UDP socket"),
     );
-    let (client_udp, _sent) = mpsc::channel(1024);
+    let (client_udp, sends) = mpsc::channel(1024);
     let diagnostics = DiagnosticsState::default();
     let own_identity = crate::own_identity::SharedOwnIdentity::default();
     own_identity.set_user_hash(hash(0xAA));
@@ -61,6 +82,7 @@ async fn predicting(
             admit: crate::adapters::SharedTunnelAdmit::default(),
             claims: crate::adapters::AwaitedInbound::default(),
             peer_pin: crate::adapters::SharedPeerPin::default(),
+            roster: crate::peer_roster::SharedPeerRoster::default(),
             diagnostics: diagnostics.clone(),
             events: None,
             prediction: Some(PredictionWiring {
@@ -70,7 +92,7 @@ async fn predicting(
         },
     )
     .expect("the uTP engine starts");
-    (assembled.front, diagnostics, socket, around)
+    (assembled.front, diagnostics, socket, around, sends)
 }
 
 /// An introduction at `target`, as the side that did not ask: no dial.
@@ -81,6 +103,7 @@ fn introduced(peer: UserHash, target: Ipv4Endpoint) -> NattCommand {
         role: HolepunchRole::Responder,
         burst: false,
         source: PunchTargetSource::Observed,
+        crypt: None,
     }
 }
 
@@ -105,6 +128,7 @@ async fn begun(
                         advertised_udp,
                         ..buddy_facts()
                     },
+                    crypt: None,
                     offer: RendezvousOffer {
                         our_user_hash: hash(0xAA),
                         options: NattConnectOptions::advertise(0, true, false),
@@ -192,6 +216,92 @@ async fn an_endpoint_dependent_node_fans_256_sockets_at_the_punch_target() {
     assert_eq!(session.natt_prediction_refusals_total, 0);
 }
 
+/// A stance that requires the layer, as byte 29 or a hello states it.
+fn requires_crypt() -> rmule_primitives::CryptStance {
+    rmule_primitives::SourceCryptOptions::from_byte(0b111).crypt_stance()
+}
+
+/// What a peer holding `hash` opens of a datagram our armed layer keyed on
+/// `OUR_IP`, and whether it left obfuscated.
+const OUR_IP: [u8; 4] = [192, 0, 2, 44];
+
+async fn opened(peer: &tokio::net::UdpSocket, hash: UserHash) -> (Vec<u8>, SocketAddr) {
+    let mut buf = [0u8; 64];
+    let (len, from) = tokio::time::timeout(Duration::from_secs(10), peer.recv_from(&mut buf))
+        .await
+        .expect("a datagram in time")
+        .expect("recv");
+    assert!(
+        !rmule_primitives::is_udp_plaintext_marker(buf[0]),
+        "a target that requires the layer drops a plain punch"
+    );
+    let plain = armed_requesting(hash, [0; 4]).receive(
+        rmule_primitives::DatagramSenderAddress::V4(OUR_IP),
+        buf[..len].to_vec(),
+    );
+    (plain, from)
+}
+
+/// A Fan leg and a Fan's answer are punches like any other: toward a target
+/// that requires the layer they leave obfuscated under the stance the front
+/// holds, by the socket the leg names (ADR-0091, security rule 13).
+#[tokio::test]
+async fn a_fans_legs_and_its_answer_meet_the_gate_with_the_held_stance() {
+    let (mut front, _, socket, _around, sends) = predicting_unwired(&[31_004, 50_219, 7_781]).await;
+    tokio::spawn(drain_client_udp_sends(
+        sends,
+        socket,
+        armed_requesting(hash(0xAA), OUR_IP),
+    ));
+    let (peer_socket, target) = peer_socket().await;
+    let peer = hash(0x42);
+    front.crypt_targets.state(peer, requires_crypt());
+    begun(&mut front, peer, 7, None).await;
+
+    front
+        .on_command(introduced(peer, target), Instant::now())
+        .await;
+
+    let (plain, hit) = opened(&peer_socket, peer).await;
+    assert_eq!(plain, holepunch_datagram());
+    peer_socket.send_to(b"punch", hit).await.expect("the hit");
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let (plain, from) = opened(&peer_socket, peer).await;
+            assert_eq!(plain, holepunch_datagram());
+            if from == hit {
+                return;
+            }
+        }
+    })
+    .await
+    .expect("the hit socket answers");
+}
+
+/// A Probe leg takes the same road with the same stance.
+#[tokio::test]
+async fn a_probes_legs_carry_the_held_stance_to_the_send_drain() {
+    let (mut front, _, _, _around, mut sends) = predicting_unwired(&[4672, 4672]).await;
+    let target = nowhere(38_211);
+    let peer = hash(0x42);
+    let t0 = Instant::now();
+    begun(&mut front, peer, 7, None).await;
+    front.on_command(introduced(peer, target), t0).await;
+    front.crypt_targets.state(peer, requires_crypt());
+    while sends.try_recv().is_ok() {}
+
+    front.note_probe_answer(Ipv4Endpoint::new(target.ip, 60_001));
+    front.drive_predictions(t0 + PROBE_DELAY);
+
+    let stated = PeerUdpCryptTarget::new(peer, requires_crypt());
+    let leg = tokio::time::timeout(Duration::from_secs(10), sends.recv())
+        .await
+        .expect("the probe set starts")
+        .expect("the front holds the send half");
+    assert_eq!(leg.crypt_target, Some(stated));
+    assert!(PROBE_PORTS.contains(&leg.to.port()));
+}
+
 /// Endpoint-independent (two observers, one port): nothing leaves at the
 /// introduction, and nothing leaves three seconds later either until the
 /// peer has punched us from the target's address — then a
@@ -240,11 +350,16 @@ async fn an_endpoint_independent_node_probes_after_the_fan_it_is_meant_to_meet()
     let unpunched = (1024..=65535)
         .find(|port| !set.contains(port) && port.abs_diff(target.port) > 16 && *port != 60_001)
         .unwrap();
-    assert!(!front.note_probe_answer(Ipv4Endpoint::new(target.ip, unpunched)));
-    assert!(front.note_probe_answer(Ipv4Endpoint::new(target.ip, drawn)));
-    assert!(!front.note_probe_answer(Ipv4Endpoint::new(target.ip, drawn)));
+    let answered = |front: &mut NattFront<NullSink>, port| {
+        front
+            .note_probe_answer(Ipv4Endpoint::new(target.ip, port))
+            .is_some()
+    };
+    assert!(!answered(&mut front, unpunched));
+    assert!(answered(&mut front, drawn));
+    assert!(!answered(&mut front, drawn));
     // The baseline sweep's ports are ours too: the Fan's mapping may sit there.
-    assert!(front.note_probe_answer(Ipv4Endpoint::new(target.ip, target.port + 16)));
+    assert!(answered(&mut front, target.port + 16));
     assert_eq!(diagnostics.snapshot().session.natt_prediction_hits_total, 2);
 }
 
@@ -255,7 +370,7 @@ async fn an_endpoint_independent_node_probes_after_the_fan_it_is_meant_to_meet()
 #[tokio::test]
 async fn a_peer_whose_observed_port_is_not_its_advert_vetoes_our_fan() {
     for (introduced_port, plans) in [(50_000, false), (4672, true)] {
-        let (mut front, _, _, _around) = predicting(&[31_004, 50_219]).await;
+        let (mut front, _, _, _around) = predicting(&[31_004, 50_219, 7_781]).await;
         let target_hash = hash(0x42);
         begun(&mut front, target_hash, 7, Some(4672)).await;
         front
@@ -331,6 +446,7 @@ async fn a_claimed_target_starts_no_plan() {
                 role: HolepunchRole::Responder,
                 burst: false,
                 source: PunchTargetSource::PublicClaim,
+                crypt: None,
             },
             Instant::now(),
         )

@@ -188,10 +188,12 @@ fn decode_search_key_res_reads_back_the_storer_serve_with_every_tag() {
                 size_tag(1_024),
                 verbatim_tag(0x33, TagValue::U32(0x0102_0304)),
             ],
+            aich_roots: Vec::new(),
         },
         KeywordResultRow {
             file_id: file_id(0xD2),
             tags: vec![name_tag("other.mp3"), size_tag(2_048)],
+            aich_roots: Vec::new(),
         },
     ];
     let envelopes = encode_search_key_res(own_id(), keyword(), &rows);
@@ -221,6 +223,7 @@ fn decode_search_key_res_batches_across_multiple_datagrams() {
         .map(|i| KeywordResultRow {
             file_id: file_id(u8::try_from(i).unwrap()),
             tags: vec![name_tag("f.mp3"), size_tag(1)],
+            aich_roots: Vec::new(),
         })
         .collect();
     let envelopes = encode_search_key_res(own_id(), keyword(), &rows);

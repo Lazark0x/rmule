@@ -1,0 +1,229 @@
+//! **Preview** (ADR-0114): the operator's player, handed a download's own
+//! file as one argument and through no shell, once the download is Preview
+//! Ready.
+//!
+//! The **Player Command** is split into words by POSIX rules, never run as a
+//! shell line: quotes and backslashes are honoured; nothing is expanded,
+//! globbed or run as an operator, and a word starting with `#` comments out
+//! the rest. The first word is the program, so it may not hold
+//! [`PLACEHOLDER`]: the downloaded file is never the program run. Written as
+//! a path, it may not name a folder, which no system runs — except on macOS
+//! an application bundle, which starts through LaunchServices with the app
+//! named (`open -a`), so no handler is ever picked by the `.part` extension.
+//!
+//! With no Player Command set, Preview opens the **Default App**
+//! ([`default_app`]): the app the system opens the download's real type
+//! with, found by the extension of its name, never of the file on disk.
+//!
+//! What the menu shows and what a launch does are one reading,
+//! [`preview_target`], so the two cannot disagree. The launch itself runs on
+//! the player lane ([`lane`]), and so does the Default App's lookup.
+
+use std::ffi::OsString;
+use std::path::Path;
+
+use rmule_core::diagnostics::PartState;
+use rmule_core::{DownloadId, DownloadMetadata};
+
+use crate::state::{DownloadStatus, UiState};
+
+pub mod default_app;
+mod launch;
+
+pub use launch::{Launch, PlayerLauncher, PlayerLaunches, Start, lane, play_each};
+
+/// The word the download's path replaces, inside any word — aMule's, so an
+/// aMule player string carries over.
+pub const PLACEHOLDER: &str = "%PARTFILE";
+
+/// The program that opens a macOS application bundle through LaunchServices,
+/// by its fixed path so no `PATH` decides it.
+const OPEN: &str = "/usr/bin/open";
+
+/// Why a Player Command text does not split into a player's words, or its
+/// words do not start with a program.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Unsplittable {
+    /// A quote is never closed, or the text ends in a lone backslash.
+    OpenQuote,
+    /// No first word names a program: every word is a comment, or the first
+    /// one holds [`PLACEHOLDER`].
+    NoProgram,
+    /// The first word is a path to a folder that is not a macOS application
+    /// bundle.
+    Folder,
+}
+
+/// Split `text` into the player's words, program first.
+///
+/// A first word written as a path — it holds a separator — is read on disk:
+/// a folder is refused, except on macOS a folder named `.app`, an
+/// application bundle, whose words become `/usr/bin/open -a <bundle> <the
+/// other words>` so LaunchServices hands the file to that app. A bare name is the
+/// system's to find on `PATH`, and a path not there yet is taken: the player
+/// may be installed later. The Settings commit and every launch read it
+/// alike.
+///
+/// # Errors
+/// [`Unsplittable`] when the words do not split or do not start with a
+/// program.
+pub fn split(text: &str) -> Result<Vec<String>, Unsplittable> {
+    let words = shlex::split(text).ok_or(Unsplittable::OpenQuote)?;
+    let Some(program) = words
+        .first()
+        .filter(|program| !program.contains(PLACEHOLDER))
+    else {
+        return Err(Unsplittable::NoProgram);
+    };
+    let path = Path::new(program);
+    if !(program.contains(std::path::is_separator) && path.is_dir()) {
+        return Ok(words);
+    }
+    #[cfg(target_os = "macos")]
+    if path
+        .extension()
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("app"))
+    {
+        return Ok(through_launch_services(words));
+    }
+    Err(Unsplittable::Folder)
+}
+
+/// The words that open the application bundle `words[0]` through
+/// LaunchServices with the other words as `open`'s own: the app is named, so
+/// the file goes to it and to no handler of the `.part` extension.
+/// [`argv`] then places the file as for any player.
+#[cfg(target_os = "macos")]
+fn through_launch_services(words: Vec<String>) -> Vec<String> {
+    [OPEN.to_string(), "-a".to_string()]
+        .into_iter()
+        .chain(words)
+        .collect()
+}
+
+/// Why Preview cannot start for a download now. The variants are in check
+/// order: the first that holds is the one shown (ADR-0114, "The control").
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PreviewBlock {
+    /// Core has not yet named the file or where its bytes lie.
+    DetailsUnknown,
+    /// Core does not read the name as a video or an audio file.
+    NotPreviewable,
+    /// No Player Command is set and the name has no extension, so no type
+    /// to look the Default App up by.
+    NoAppForType,
+    /// The last snapshot holds no diagnostics row for the download.
+    NoPartMap,
+    /// The download is not complete and its first part is not verified.
+    HeadNotVerified,
+}
+
+/// A Preview Ready download: what to hand the player and which player.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Target<'a> {
+    /// Where the download's bytes lie now, as core published it.
+    pub path: &'a Path,
+    /// The player the file goes to.
+    pub player: Player<'a>,
+    /// The download's name and size, so a launch's notes name it.
+    pub metadata: &'a DownloadMetadata,
+}
+
+/// The player a Preview hands the file to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Player<'a> {
+    /// The Player Command's text, which overrides the Default App.
+    Command(&'a str),
+    /// No Player Command is set: the Default App for this extension of the
+    /// download's name.
+    DefaultApp(&'a str),
+}
+
+/// The extension of a download's name, as the file class reads it: the bytes
+/// after the last `.`, read only when they are UTF-8, so a stem that is not
+/// keeps the extension. A name with no `.`, one whose only `.` leads it, and
+/// one ending in a `.` have none.
+#[must_use]
+pub fn extension(name: &[u8]) -> Option<&str> {
+    let dot = name.iter().rposition(|byte| *byte == b'.')?;
+    if dot == 0 {
+        return None;
+    }
+    std::str::from_utf8(&name[dot + 1..])
+        .ok()
+        .filter(|extension| !extension.is_empty())
+}
+
+/// Whether download `id` is **Preview Ready** (ADR-0114): core calls it
+/// Previewable and it is either `Completed` or its first part is verified on
+/// its diagnostics row — a resting row counts, so a failed download whose
+/// part 0 holds is ready. Read from `state` at each call, never stored.
+///
+/// # Errors
+/// The first [`PreviewBlock`] that holds.
+pub fn preview_target(state: &UiState, id: DownloadId) -> Result<Target<'_>, PreviewBlock> {
+    let row = state.downloads.get(&id);
+    let (Some(row), Some(metadata), Some(path)) = (
+        row,
+        row.and_then(|row| row.metadata.as_ref()),
+        row.and_then(|row| row.file_path.as_deref()),
+    ) else {
+        return Err(PreviewBlock::DetailsUnknown);
+    };
+    if !metadata.is_previewable() {
+        return Err(PreviewBlock::NotPreviewable);
+    }
+    let player = match state.preferences.player_command.as_deref() {
+        Some(command) => Player::Command(command),
+        None => Player::DefaultApp(
+            extension(metadata.name.as_bytes()).ok_or(PreviewBlock::NoAppForType)?,
+        ),
+    };
+    let target = Target {
+        path,
+        player,
+        metadata,
+    };
+    if row.status == DownloadStatus::Completed {
+        return Ok(target);
+    }
+    let parts = &state
+        .diagnostics
+        .downloads
+        .get(&id)
+        .ok_or(PreviewBlock::NoPartMap)?
+        .parts;
+    match parts.first() {
+        Some(PartState::Verified) => Ok(target),
+        _ => Err(PreviewBlock::HeadNotVerified),
+    }
+}
+
+/// The player's arguments for `path`: every [`PLACEHOLDER`] inside a word is
+/// replaced by the path and the word stays one argument; with no such word
+/// the path is appended last. Built as OS strings, so a path whose bytes are
+/// not UTF-8 reaches the player unchanged.
+#[must_use]
+pub fn argv(words: &[String], path: &Path) -> Vec<OsString> {
+    let mut placed = false;
+    let mut argv: Vec<OsString> = words
+        .iter()
+        .map(|word| {
+            let mut pieces = word.split(PLACEHOLDER);
+            let mut arg = OsString::from(pieces.next().unwrap_or_default());
+            for piece in pieces {
+                placed = true;
+                arg.push(path.as_os_str());
+                arg.push(piece);
+            }
+            arg
+        })
+        .collect();
+    if !placed {
+        argv.push(path.as_os_str().to_owned());
+    }
+    argv
+}
+
+#[cfg(test)]
+mod tests;

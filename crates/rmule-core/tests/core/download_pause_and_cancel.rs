@@ -3,6 +3,8 @@
 //! `.part` file and makes `Cancelled` terminal even mid-workflow, after which
 //! the download can no longer be resumed.
 
+use rmule_peer::PartIndex;
+
 use rmule_core::DownloadRepository;
 use std::sync::Arc;
 
@@ -14,8 +16,8 @@ use rmule_core::{
 use rmule_peer::PeerHandshakeContext;
 use rmule_primitives::{ED2K_PART_SIZE, Ed2kFileLink, PartHash, PeerEndpoint, ServerEndpoint};
 use rmule_testkit::{
-    PendingPeerTransfer, emit_streamed_part, file_link, file_link_without_part_hash_set,
-    loopback_peer, next_event, source_with_high_id, two_high_id_sources,
+    PendingPeerTransfer, file_link, file_link_without_part_hash_set, loopback_peer, next_event,
+    source_with_high_id, two_high_id_sources,
 };
 
 #[tokio::test]
@@ -42,6 +44,7 @@ async fn pause_releases_in_flight_parts_and_persists_paused_state() {
         source_hint: Some(ServerEndpoint::new("127.0.0.1", 4661).unwrap()),
         name: rmule_testkit::file_name("download.bin"),
         if_taken: rmule_core::NameTaken::Refuse,
+        kad_aich_root: None,
     }))
     .await
     .unwrap();
@@ -119,7 +122,7 @@ async fn pause_preserves_verified_parts_and_releases_only_in_flight() {
             part_hashes: hashes,
             completing_peer: loopback_peer(1),
             completed_part: DownloadedPart {
-                part_index: 0,
+                part_index: PartIndex::new(0),
                 offset: 0,
                 bytes: bytes[..ED2K_PART_SIZE as usize].to_vec(),
             },
@@ -130,6 +133,7 @@ async fn pause_preserves_verified_parts_and_releases_only_in_flight() {
         source_hint: Some(ServerEndpoint::new("127.0.0.1", 4661).unwrap()),
         name: rmule_testkit::file_name("download.bin"),
         if_taken: rmule_core::NameTaken::Refuse,
+        kad_aich_root: None,
     }))
     .await
     .unwrap();
@@ -208,7 +212,7 @@ async fn cancel_deletes_part_file_and_keeps_cancelled_terminal_state() {
             part_hashes: hashes,
             completing_peer: loopback_peer(1),
             completed_part: DownloadedPart {
-                part_index: 0,
+                part_index: PartIndex::new(0),
                 offset: 0,
                 bytes: bytes[..ED2K_PART_SIZE as usize].to_vec(),
             },
@@ -219,6 +223,7 @@ async fn cancel_deletes_part_file_and_keeps_cancelled_terminal_state() {
         source_hint: Some(ServerEndpoint::new("127.0.0.1", 4661).unwrap()),
         name: rmule_testkit::file_name("download.bin"),
         if_taken: rmule_core::NameTaken::Refuse,
+        kad_aich_root: None,
     }))
     .await
     .unwrap();
@@ -298,6 +303,7 @@ async fn cancelled_download_cannot_be_resumed() {
         source_hint: Some(ServerEndpoint::new("127.0.0.1", 4661).unwrap()),
         name: rmule_testkit::file_name("download.bin"),
         if_taken: rmule_core::NameTaken::Refuse,
+        kad_aich_root: None,
     }))
     .await
     .unwrap();
@@ -372,6 +378,7 @@ async fn cancel_during_active_workflow_emits_cancelled_without_completion() {
         source_hint: Some(ServerEndpoint::new("127.0.0.1", 4661).unwrap()),
         name: rmule_testkit::file_name("cancel-download.bin"),
         if_taken: rmule_core::NameTaken::Refuse,
+        kad_aich_root: None,
     }))
     .await
     .unwrap();
@@ -414,6 +421,80 @@ async fn cancel_during_active_workflow_emits_cancelled_without_completion() {
     )));
 }
 
+/// A dial that never answers: its run cannot reach the stop it is told of.
+struct WedgedDial;
+
+impl PeerTransferService for WedgedDial {
+    async fn start_peer_worker(
+        &mut self,
+        _peer: PeerEndpoint,
+        _ctx: PeerHandshakeContext,
+        _file: Ed2kFileLink,
+    ) -> Result<PeerWorker, DownloadFailure> {
+        std::future::pending().await
+    }
+}
+
+/// The actor tells a run to stop and goes on: a run that cannot end holds its
+/// own Pause and no other command (ADR-0069, "Stops do not join in a command
+/// arm").
+#[tokio::test]
+async fn a_stop_that_cannot_end_holds_up_no_other_command() {
+    let link = file_link("example.bin", &[0xAB; 4]);
+    let dir = tempfile::tempdir().unwrap();
+    let store = open_durable_store(dir.path()).unwrap();
+    let mut core = Core::builder(CoreConfig::default(), Arc::clone(&store))
+        .settings(rmule_testkit::in_download_dir(
+            rmule_core::CoreSettings::default(),
+            dir.path(),
+        ))
+        .source_lookup(two_high_id_sources())
+        .peer_transfer(WedgedDial)
+        .build();
+    core.send(CoreCommand::Download(DownloadCommand::StartDownload {
+        file: link,
+        source_hint: Some(ServerEndpoint::new("127.0.0.1", 4661).unwrap()),
+        name: rmule_testkit::file_name("download.bin"),
+        if_taken: rmule_core::NameTaken::Refuse,
+        kad_aich_root: None,
+    }))
+    .await
+    .unwrap();
+    let mut download_id = None;
+    while download_id.is_none() {
+        if let CoreEvent::Download(DownloadEvent::DownloadQueued {
+            download_id: id, ..
+        }) = next_event(&mut core).await
+        {
+            download_id = Some(id);
+        }
+    }
+    let download_id = download_id.unwrap();
+    while !matches!(
+        next_event(&mut core).await,
+        CoreEvent::Download(DownloadEvent::PeerSelected { .. })
+    ) {}
+
+    core.send(CoreCommand::Download(DownloadCommand::PauseDownload {
+        download_id,
+    }))
+    .await
+    .unwrap();
+    core.send(CoreCommand::DumpFileHistory).await.unwrap();
+
+    while !matches!(next_event(&mut core).await, CoreEvent::FileHistory { .. }) {}
+
+    // Quit keeps the operator's Pause and is not held by the run either.
+    tokio::time::timeout(rmule_testkit::HANG_GUARD, core.shutdown())
+        .await
+        .expect("quit ends the run that could not stop");
+    let repo = DurableDownloadRepository::new(store);
+    assert_eq!(
+        repo.load_download(download_id).unwrap().lifecycle(),
+        DownloadLifecycle::Paused
+    );
+}
+
 struct HoldingPeerTransfer {
     part_hashes: Vec<PartHash>,
 }
@@ -423,17 +504,23 @@ impl PeerTransferService for HoldingPeerTransfer {
         &mut self,
         peer: PeerEndpoint,
         _ctx: PeerHandshakeContext,
-        _file: Ed2kFileLink,
+        file: Ed2kFileLink,
     ) -> Result<PeerWorker, DownloadFailure> {
+        let advertised = rmule_testkit::every_part(file.size());
         let (command_tx, mut command_rx) = tokio::sync::mpsc::channel(8);
         let (event_tx, event_rx) = tokio::sync::mpsc::channel(16);
         let hashes = self.part_hashes.clone();
         tokio::spawn(async move {
             let _ = event_tx.send(PeerWorkerEvent::Connected).await;
+            let _ = event_tx.send(advertised).await;
             let mut sent_hashes = false;
             while let Some(command) = command_rx.recv().await {
                 match command {
-                    PeerWorkerCommand::RequestPart { .. } => {
+                    PeerWorkerCommand::AskSlot | PeerWorkerCommand::TakeGrant => {
+                        let _ = event_tx.send(PeerWorkerEvent::SlotGranted).await;
+                    }
+                    PeerWorkerCommand::RequestHashSet => {}
+                    PeerWorkerCommand::RequestBlocks { .. } => {
                         if !sent_hashes {
                             sent_hashes = true;
                             let _ = event_tx
@@ -464,8 +551,9 @@ impl PeerTransferService for PartialSuccessThenHold {
         &mut self,
         peer: PeerEndpoint,
         _ctx: PeerHandshakeContext,
-        _file: Ed2kFileLink,
+        file: Ed2kFileLink,
     ) -> Result<PeerWorker, DownloadFailure> {
+        let advertised = rmule_testkit::every_part(file.size());
         let (command_tx, mut command_rx) = tokio::sync::mpsc::channel(8);
         let (event_tx, event_rx) = tokio::sync::mpsc::channel(16);
         let hashes = self.part_hashes.clone();
@@ -473,13 +561,16 @@ impl PeerTransferService for PartialSuccessThenHold {
         let completed_part = self.completed_part.clone();
         tokio::spawn(async move {
             let _ = event_tx.send(PeerWorkerEvent::Connected).await;
+            let _ = event_tx.send(advertised).await;
             let mut sent_hashes = false;
+            let mut streamed = false;
             while let Some(command) = command_rx.recv().await {
                 match command {
-                    PeerWorkerCommand::RequestPart {
-                        plan,
-                        resume_offset,
-                    } => {
+                    PeerWorkerCommand::AskSlot | PeerWorkerCommand::TakeGrant => {
+                        let _ = event_tx.send(PeerWorkerEvent::SlotGranted).await;
+                    }
+                    PeerWorkerCommand::RequestHashSet => {}
+                    PeerWorkerCommand::RequestBlocks { blocks, handout } => {
                         if !sent_hashes {
                             sent_hashes = true;
                             let _ = event_tx
@@ -488,8 +579,27 @@ impl PeerTransferService for PartialSuccessThenHold {
                                 })
                                 .await;
                         }
-                        if peer == completing_peer && plan.part_index == completed_part.part_index {
-                            emit_streamed_part(&event_tx, &completed_part, resume_offset).await;
+                        // The completing peer streams its part whole on its
+                        // first handout of it, then holds what follows.
+                        let touches = blocks
+                            .iter()
+                            .any(|block| block.part_index == completed_part.part_index);
+                        if peer == completing_peer && touches && !streamed {
+                            streamed = true;
+                            let _ = event_tx
+                                .send(PeerWorkerEvent::BlockReceived {
+                                    part_index: completed_part.part_index,
+                                    offset: completed_part.offset,
+                                    bytes: completed_part.bytes.clone(),
+                                })
+                                .await;
+                            let _ = event_tx
+                                .send(PeerWorkerEvent::BlocksWanted {
+                                    room: 3,
+                                    drained: true,
+                                    handout,
+                                })
+                                .await;
                         }
                     }
                     PeerWorkerCommand::RequestAich { .. } => {}

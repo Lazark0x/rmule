@@ -5,13 +5,14 @@
 //! count, a snapshot. This is where those facts are written: a shared
 //! [`DiagnosticsState`] the per-download task, the serve task and `Core`
 //! itself hold clones of, each write a point-in-time map update that never
-//! crosses an `.await`, which is why a `std::sync::Mutex` (not tokio's) guards
+//! crosses an `.await`, which is why a `parking_lot::Mutex` (not tokio's) guards
 //! it. Readers never touch the inner map — they take a
 //! [`DiagnosticsSnapshot`] and are done with the
 //! lock.
 
-use std::collections::BTreeMap;
-use std::sync::{Arc, Mutex};
+use parking_lot::Mutex;
+use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 use std::time::Instant;
 
 use rmule_ed2k::ServerGrants;
@@ -21,10 +22,12 @@ use rmule_primitives::AddressFamily;
 
 mod buddy_and_callbacks;
 mod buddy_hash_spelling;
+mod completion;
 mod download_ends;
 mod download_rest;
 mod natt_counters;
 mod natt_prediction;
+mod part_file;
 mod search_counters;
 mod server_health;
 mod uploads;
@@ -42,7 +45,7 @@ use crate::service::ServeStopReason;
 use crate::{CoreError, DownloadId, DownloadMetadata};
 
 /// Shared diagnostics handle held by [`crate::Core`] and the per-download
-/// task. `std::sync::Mutex` (not `tokio::sync::Mutex`) because writes are
+/// task. `parking_lot::Mutex` (not `tokio::sync::Mutex`) because writes are
 /// point-in-time updates that never cross an `.await`.
 #[derive(Clone, Debug, Default)]
 pub struct DiagnosticsState {
@@ -117,10 +120,7 @@ impl DiagnosticsState {
     /// single writer of those facts, so a snapshot *reads* it rather than
     /// keeping a second copy that could drift from it.
     pub(crate) fn install_addresses(&self, addresses: SharedAddressLearning) {
-        self.inner
-            .lock()
-            .expect("diagnostics mutex poisoned")
-            .addresses = Some(addresses);
+        self.inner.lock().addresses = Some(addresses);
     }
 
     /// Record that the one client-UDP socket (ADR-0057) never bound at core
@@ -129,10 +129,7 @@ impl DiagnosticsState {
     /// amendment), so the row this seeds outlives the log line the same call
     /// site emits.
     pub(crate) fn record_client_udp_bind_failure(&self, port: u16, kind: std::io::ErrorKind) {
-        self.inner
-            .lock()
-            .expect("diagnostics mutex poisoned")
-            .client_udp_bind_failure = Some(ClientUdpBindFailure { port, kind });
+        self.inner.lock().client_udp_bind_failure = Some(ClientUdpBindFailure { port, kind });
     }
 
     /// The one client-UDP socket's bind failure, read directly rather than
@@ -140,10 +137,7 @@ impl DiagnosticsState {
     /// rejection path (`on_enable_kad`) needs just this one fact.
     #[must_use]
     pub(crate) fn client_udp_bind_failure(&self) -> Option<ClientUdpBindFailure> {
-        self.inner
-            .lock()
-            .expect("diagnostics mutex poisoned")
-            .client_udp_bind_failure
+        self.inner.lock().client_udp_bind_failure
     }
 
     /// One role's **Half-Bound Pair** fact, read through to the
@@ -154,7 +148,6 @@ impl DiagnosticsState {
     pub(crate) fn half_bound(&self, role: SocketRole) -> Option<rmule_net::family::HalfBound> {
         self.inner
             .lock()
-            .expect("diagnostics mutex poisoned")
             .addresses
             .as_ref()
             .and_then(|addresses| addresses.half_bound(role))
@@ -179,10 +172,7 @@ impl DiagnosticsState {
     ) -> Option<rmule_net::family::HalfBound> {
         let half_bound =
             rmule_net::family::HalfBound::read(rmule_net::family::PairRole::ServerUdp, binds);
-        self.inner
-            .lock()
-            .expect("diagnostics mutex poisoned")
-            .server_udp_half_bound = half_bound;
+        self.inner.lock().server_udp_half_bound = half_bound;
         half_bound
     }
 
@@ -191,21 +181,24 @@ impl DiagnosticsState {
     /// file missing: the size fixes the part count (`part_count(size)`), so
     /// the picture exists before the scheduler's first settle or the hash set.
     /// A row already open — one at rest, which a resume runs on —
-    /// keeps its part map and counters and restarts its clock, since
-    /// `started_at` is the run's (ADR-0094).
+    /// keeps its part map, counters and last Allocated Bytes reading and
+    /// restarts its clock, since `started_at` is the run's (ADR-0094); its
+    /// Hole Verdict is the last run's, so it reads unknown until this run's
+    /// probe answers (ADR-0111).
     pub fn ensure_download(
         &self,
         download_id: DownloadId,
         file_hash: FileHash,
         metadata: DownloadMetadata,
     ) {
-        let mut inner = self.inner.lock().expect("diagnostics mutex poisoned");
+        let mut inner = self.inner.lock();
         inner
             .downloads
             .entry(download_id)
             .and_modify(|row| {
                 row.started_at = Instant::now();
                 row.dial_ends.clear();
+                row.hole_verdict = None;
             })
             .or_insert_with(|| DownloadDiagnostics {
                 download_id,
@@ -217,9 +210,15 @@ impl DiagnosticsState {
                 workers: BTreeMap::new(),
                 received_bytes: 0,
                 known_sources: 0,
+                source_activity: crate::diagnostics::SourceActivity::default(),
                 dials_ended: 0,
                 reask_replies_ignored: 0,
                 dial_ends: BTreeMap::new(),
+                handed_over: BTreeSet::new(),
+                allocated_bytes: None,
+                hole_verdict: None,
+                completion: None,
+                part_check: None,
             });
     }
 
@@ -228,17 +227,24 @@ impl DiagnosticsState {
     /// advances only while it exists, so bytes that land after a teardown are
     /// still session-visible instead of silently lost.
     pub fn add_received_bytes(&self, download_id: DownloadId, bytes: u64) {
-        let mut inner = self.inner.lock().expect("diagnostics mutex poisoned");
+        let mut inner = self.inner.lock();
         inner.session.down_bytes_total = inner.session.down_bytes_total.saturating_add(bytes);
         if let Some(dd) = inner.downloads.get_mut(&download_id) {
             dd.received_bytes = dd.received_bytes.saturating_add(bytes);
         }
     }
 
+    /// Count one sighting a third party aimed past the Source Quota (ADR-0116).
+    pub fn count_over_quota_source(&self) {
+        let mut inner = self.inner.lock();
+        inner.session.over_quota_sources_total =
+            inner.session.over_quota_sources_total.saturating_add(1);
+    }
+
     /// Count one source dropped at ingest for naming an **Address Family**
     /// this build cannot dial (ADR-0085).
     pub fn count_undialable_family_source(&self) {
-        let mut inner = self.inner.lock().expect("diagnostics mutex poisoned");
+        let mut inner = self.inner.lock();
         inner.session.undialable_family_sources_total = inner
             .session
             .undialable_family_sources_total
@@ -248,7 +254,7 @@ impl DiagnosticsState {
     /// Count one client-UDP datagram dropped because its opcode has no wire
     /// form for the sender's **Address Family** (ADR-0087).
     pub fn count_unanswerable_family_datagram(&self) {
-        let mut inner = self.inner.lock().expect("diagnostics mutex poisoned");
+        let mut inner = self.inner.lock();
         inner.session.unanswerable_family_datagrams_total = inner
             .session
             .unanswerable_family_datagrams_total
@@ -257,14 +263,14 @@ impl DiagnosticsState {
 
     /// Count one peer hello refused under a named code (ADR-0050).
     pub fn count_peer_hello_refused(&self) {
-        let mut inner = self.inner.lock().expect("diagnostics mutex poisoned");
+        let mut inner = self.inner.lock();
         let total = &mut inner.session.peer_hellos_refused_total;
         *total = total.saturating_add(1);
     }
 
     /// Count one IPv6 client-UDP datagram whose crypt header no key opened.
     pub fn count_ipv6_undecryptable_datagram(&self) {
-        let mut inner = self.inner.lock().expect("diagnostics mutex poisoned");
+        let mut inner = self.inner.lock();
         let total = &mut inner.session.ipv6_undecryptable_datagrams_total;
         *total = total.saturating_add(1);
     }
@@ -272,21 +278,21 @@ impl DiagnosticsState {
     /// Count one Kad datagram the client-UDP front could not hand to the
     /// running node.
     pub fn count_kad_inlet_drop(&self) {
-        let mut inner = self.inner.lock().expect("diagnostics mutex poisoned");
+        let mut inner = self.inner.lock();
         inner.session.kad_inlet_drops_total = inner.session.kad_inlet_drops_total.saturating_add(1);
     }
 
     /// Count one reask ping or reply the client-UDP front, or the reply
     /// fan-out behind it, could not hand on.
     pub fn count_peer_udp_inbox_drop(&self) {
-        let mut inner = self.inner.lock().expect("diagnostics mutex poisoned");
+        let mut inner = self.inner.lock();
         inner.session.peer_udp_inbox_drops_total =
             inner.session.peer_udp_inbox_drops_total.saturating_add(1);
     }
 
     /// Count one reask reply that answered no ping in flight.
     pub fn count_reask_reply_unasked(&self) {
-        let mut inner = self.inner.lock().expect("diagnostics mutex poisoned");
+        let mut inner = self.inner.lock();
         inner.session.reask_replies_unasked_total =
             inner.session.reask_replies_unasked_total.saturating_add(1);
     }
@@ -295,17 +301,31 @@ impl DiagnosticsState {
     /// inbound datagram opened with the Kad protocol byte (or decrypted to
     /// one) but did not decode into a well-formed envelope.
     pub fn count_kad_undecodable_envelope(&self) {
-        let mut inner = self.inner.lock().expect("diagnostics mutex poisoned");
+        let mut inner = self.inner.lock();
         inner.session.kad_undecodable_envelopes_total = inner
             .session
             .kad_undecodable_envelopes_total
             .saturating_add(1);
     }
 
+    /// Count a datagram the client-UDP front dropped for a banned address.
+    pub fn count_banned_datagram(&self) {
+        let mut inner = self.inner.lock();
+        inner.session.banned_datagrams_total =
+            inner.session.banned_datagrams_total.saturating_add(1);
+    }
+
+    /// Count a datagram dropped for an address under the Hush.
+    pub fn count_hushed_datagram(&self) {
+        let mut inner = self.inner.lock();
+        inner.session.hushed_datagrams_total =
+            inner.session.hushed_datagrams_total.saturating_add(1);
+    }
+
     /// Count the client-UDP demux front's transport returning closed
     /// — in production, the receive-error budget exhausted.
     pub fn count_client_udp_transport_ended(&self) {
-        let mut inner = self.inner.lock().expect("diagnostics mutex poisoned");
+        let mut inner = self.inner.lock();
         inner.session.client_udp_transport_ended_total = inner
             .session
             .client_udp_transport_ended_total
@@ -315,30 +335,42 @@ impl DiagnosticsState {
     /// Count the server-UDP engine's transport returning closed
     /// — in production, the receive-error budget exhausted.
     pub fn count_server_udp_transport_ended(&self) {
-        let mut inner = self.inner.lock().expect("diagnostics mutex poisoned");
+        let mut inner = self.inner.lock();
         inner.session.server_udp_transport_ended_total = inner
             .session
             .server_udp_transport_ended_total
             .saturating_add(1);
     }
 
-    /// Republish `download_id`'s whole part map plus its retired-peer tally
-    /// and its known-source count (ADR-0079). One call for all three because
-    /// the download runner observes them at one point — the settle after a
-    /// drain — and one lock keeps the snapshot from ever showing a
-    /// half-updated row.
+    /// Republish `download_id`'s whole part map plus its retired-peer tally,
+    /// its known-source count and its **Source Activity** (ADR-0079,
+    /// ADR-0116). One call for all four because the download runner observes
+    /// them at one point — the settle after a drain — and one lock keeps the
+    /// snapshot from ever showing a half-updated row.
     pub fn set_part_map(
         &self,
         download_id: DownloadId,
         parts: Vec<PartState>,
         retired: u32,
         known_sources: u32,
+        source_activity: crate::diagnostics::SourceActivity,
     ) {
-        let mut inner = self.inner.lock().expect("diagnostics mutex poisoned");
+        let mut inner = self.inner.lock();
         if let Some(dd) = inner.downloads.get_mut(&download_id) {
             dd.parts = parts;
             dd.retired_peers = retired;
             dd.known_sources = known_sources;
+            dd.source_activity = source_activity;
+        }
+    }
+
+    /// Republish the sources `download_id` handed over to another download and
+    /// still holds (ADR-0090): a level, read at the same settle as the part
+    /// map.
+    pub fn set_handed_over(&self, download_id: DownloadId, handed_over: BTreeSet<PeerEndpoint>) {
+        let mut inner = self.inner.lock();
+        if let Some(dd) = inner.downloads.get_mut(&download_id) {
+            dd.handed_over = handed_over;
         }
     }
 
@@ -350,7 +382,7 @@ impl DiagnosticsState {
         slot: WorkerSlot,
         f: impl FnOnce(&mut WorkerEntry),
     ) {
-        let mut inner = self.inner.lock().expect("diagnostics mutex poisoned");
+        let mut inner = self.inner.lock();
         if let Some(dd) = inner.downloads.get_mut(&download_id) {
             let entry = dd
                 .workers
@@ -360,10 +392,23 @@ impl DiagnosticsState {
         }
     }
 
+    /// The slot of `download_id` holding `peer` reaches it over its Peer Link
+    /// at `turn` (ADR-0107): the Sources pane marks it.
+    pub fn link_turn(&self, download_id: DownloadId, peer: PeerEndpoint, turn: crate::LinkTurn) {
+        let mut inner = self.inner.lock();
+        if let Some(row) = inner.downloads.get_mut(&download_id) {
+            for entry in row.workers.values_mut() {
+                if entry.peer_endpoint() == Some(peer) {
+                    entry.mark_link_turn(turn);
+                }
+            }
+        }
+    }
+
     /// Drop the download's row and everything under it. Its bytes stay counted
     /// in [`SessionCounters`], which is process-lifetime.
     pub fn remove_download(&self, download_id: DownloadId) {
-        let mut inner = self.inner.lock().expect("diagnostics mutex poisoned");
+        let mut inner = self.inner.lock();
         inner.downloads.remove(&download_id);
     }
 
@@ -378,24 +423,18 @@ impl DiagnosticsState {
         &self,
         list: Vec<crate::directory_scan::InstalledDirectory>,
     ) {
-        self.inner
-            .lock()
-            .expect("diagnostics mutex poisoned")
-            .shared_directories = list;
+        self.inner.lock().shared_directories = list;
     }
 
     pub(crate) fn set_mappings(&self, mappings: Vec<MappingDiagnostics>) {
-        self.inner
-            .lock()
-            .expect("diagnostics mutex poisoned")
-            .mappings = mappings;
+        self.inner.lock().mappings = mappings;
     }
 
     /// Republish the whole managed server list (ADR-0080). Whole, never a
     /// patch: the store is the list's single source, so a published level is
     /// always a list the store actually held.
     pub fn set_servers(&self, servers: Vec<ManagedServer>) {
-        let mut inner = self.inner.lock().expect("diagnostics mutex poisoned");
+        let mut inner = self.inner.lock();
         Self::install_servers(&mut inner, servers);
         drop(inner);
         self.server_moved();
@@ -411,7 +450,7 @@ impl DiagnosticsState {
         &self,
         read: impl FnOnce() -> Result<Vec<ManagedServer>, CoreError>,
     ) -> Result<(), CoreError> {
-        let mut inner = self.inner.lock().expect("diagnostics mutex poisoned");
+        let mut inner = self.inner.lock();
         Self::install_servers(&mut inner, read()?);
         drop(inner);
         self.server_moved();
@@ -434,7 +473,7 @@ impl DiagnosticsState {
     /// The server's grants ride with it, under one lock, so a reader never
     /// sees one session's endpoint beside another's grants.
     pub fn set_connected_server(&self, server: Option<(ServerEndpoint, ServerGrants)>) {
-        let mut inner = self.inner.lock().expect("diagnostics mutex poisoned");
+        let mut inner = self.inner.lock();
         let (server, grants) = server
             .map_or((None, ServerGrants::default()), |(server, grants)| {
                 (Some(server), grants)
@@ -461,26 +500,23 @@ impl DiagnosticsState {
 
     /// Publish where the Kad activity stands.
     pub(crate) fn set_kad_state(&self, state: super::KadState) {
-        self.inner
-            .lock()
-            .expect("diagnostics mutex poisoned")
-            .kad_state = state;
+        self.inner.lock().kad_state = state;
     }
 
     /// The Kad Activity installs its fact reader at start (ADR-0028: the
     /// snapshot is complete without an actor round trip).
     pub(crate) fn install_kad(&self, source: super::kad::KadFactsSource) {
-        self.inner.lock().expect("diagnostics mutex poisoned").kad = Some(source);
+        self.inner.lock().kad = Some(source);
     }
 
     /// The Kad Activity retired: `kad` reads `None` again.
     pub(crate) fn clear_kad(&self) {
-        self.inner.lock().expect("diagnostics mutex poisoned").kad = None;
+        self.inner.lock().kad = None;
     }
 
     /// The connected server's grants, or `None` with no session.
     pub(crate) fn connected_server_grants(&self) -> Option<ServerGrants> {
-        let inner = self.inner.lock().expect("diagnostics mutex poisoned");
+        let inner = self.inner.lock();
         inner
             .connected_server
             .as_ref()
@@ -490,7 +526,7 @@ impl DiagnosticsState {
     /// Re-publish the connected server's grants after a mid-session
     /// `OP_IDCHANGE` re-projected them (ADR-0047). Ignored with no session.
     pub fn set_connected_server_grants(&self, grants: ServerGrants) {
-        let mut inner = self.inner.lock().expect("diagnostics mutex poisoned");
+        let mut inner = self.inner.lock();
         if inner.connected_server.is_some() {
             inner.connected_server_grants = grants;
         }
@@ -501,7 +537,7 @@ impl DiagnosticsState {
     /// activity's installed reader (leaf reads, no lock back into this state).
     #[must_use]
     pub fn snapshot(&self) -> DiagnosticsSnapshot {
-        let inner = self.inner.lock().expect("diagnostics mutex poisoned");
+        let inner = self.inner.lock();
         DiagnosticsSnapshot {
             downloads: inner.downloads.clone(),
             uploads: inner.uploads.clone(),
@@ -517,6 +553,7 @@ impl DiagnosticsState {
                         ServerDiagnostics::at(server.clone(), now, health.policy())
                             .resolved_at(health.resolved_address(&server.endpoint))
                             .died(health.dead_since(&server.endpoint))
+                            .probed(health.probe(&server.endpoint))
                     })
                     .collect()
             },

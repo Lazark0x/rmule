@@ -16,7 +16,8 @@
 //! a node or for want of room, and each caller counts or logs the reason it
 //! cares about.
 
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use parking_lot::{Mutex, MutexGuard};
+use std::sync::Arc;
 
 use tokio::sync::mpsc::error::TrySendError;
 use tokio::sync::mpsc::{Sender, WeakSender};
@@ -63,7 +64,7 @@ impl<T> std::fmt::Debug for Mailbox<T> {
 
 impl<T> Mailbox<T> {
     fn slot(&self) -> MutexGuard<'_, Option<Sender<T>>> {
-        self.slot.lock().unwrap_or_else(PoisonError::into_inner)
+        self.slot.lock()
     }
 
     /// Put `tx` in the cell, replacing whatever it held, and return the lease
@@ -125,7 +126,7 @@ impl<T> Lease<T> {
 
 impl<T> Drop for Lease<T> {
     fn drop(&mut self) {
-        let mut slot = self.slot.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut slot = self.slot.lock();
         // A weak handle that no longer upgrades means every sender of that
         // channel is gone, so the slot cannot hold it.
         if let (Some(held), Some(ours)) = (slot.as_ref(), self.ours.upgrade())

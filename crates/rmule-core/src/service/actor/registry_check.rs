@@ -19,9 +19,7 @@ use crate::adapters::{
     SourceLookupService,
 };
 use crate::directory_scan::FsDirectorySource;
-use crate::registry::{
-    AutoShared, SharedFileEntry, SharedFileRegistry, auto_share_completed_download,
-};
+use crate::registry::{AutoShared, SharedFileRegistry, SharedRow, auto_share_completed_download};
 use crate::registry_check::{
     CheckInput, CheckReport, CheckSeams, WithheldReason, WithheldRows, run_check,
 };
@@ -38,9 +36,11 @@ pub(super) enum RegistryMessage {
     Scan(ScanMessage),
     /// The Registry Check wants the registry as it stands after every
     /// message sent before this one.
-    RowsWanted(std::sync::mpsc::Sender<Vec<SharedFileEntry>>),
+    RowsWanted(std::sync::mpsc::Sender<Vec<SharedRow>>),
     /// A ruling of the Registry Check.
     Check(CheckReport),
+    /// An **Offer Check**'s walk of a download's parts (ADR-0113).
+    OfferChecked(super::offer_check::OfferChecked),
 }
 
 /// The sender both workers report on; the actor holds one for its whole
@@ -77,6 +77,12 @@ impl RegistryCheckHandle {
         match tokio::time::timeout(grace, joined).await {
             Ok(Ok(Err(_))) => tracing::error!("the registry check ended in a panic"),
             Ok(Ok(Ok(()))) => {}
+            // The runtime ended before the join ran: the worker was told to
+            // stop and ends alone, which is what a front end that skips Quit
+            // looks like, not a failure of the check.
+            Ok(Err(error)) if error.is_cancelled() => {
+                tracing::warn!("the runtime ended before the registry check was joined")
+            }
             Ok(Err(error)) => tracing::error!(%error, "the registry check's join failed"),
             Err(_) => tracing::warn!("the registry check did not end within its grace"),
         }
@@ -104,7 +110,7 @@ impl RegistryCheckHandle {
 /// asks the actor, as every later read does.
 pub(super) fn spawn_registry_check(
     tx: RegistrySender,
-    at_start: Option<Vec<SharedFileEntry>>,
+    at_start: Option<Vec<SharedRow>>,
 ) -> RegistryCheckHandle {
     let withheld = WithheldRows::before_start_look();
     let (inputs, inputs_rx) = std::sync::mpsc::channel();
@@ -148,7 +154,7 @@ pub(super) fn spawn_registry_check(
 
 /// The registry as the actor stands after every message sent before asking;
 /// `None` once the check is stopping or the actor is gone.
-fn rows_now(tx: &RegistrySender, stop: &AtomicBool) -> Option<Vec<SharedFileEntry>> {
+fn rows_now(tx: &RegistrySender, stop: &AtomicBool) -> Option<Vec<SharedRow>> {
     let (reply_tx, reply_rx) = std::sync::mpsc::channel();
     tx.send(RegistryMessage::RowsWanted(reply_tx)).ok()?;
     loop {
@@ -168,18 +174,43 @@ where
     L: ServeRuntimeService,
     K: KadRuntimeFactory,
 {
+    /// Answer with the **File History**, read off the actor: a front end asks
+    /// as often as a scan's files land, and three whole tables are no price
+    /// for every other message to wait on.
+    pub(super) fn read_file_history(&self) {
+        let registry = Arc::clone(&self.wiring.registry);
+        let withheld = self.registry_check.withheld.clone();
+        let store = Arc::clone(&self.wiring.store);
+        let evt_tx = self.evt_tx.clone();
+        tokio::task::spawn_blocking(move || {
+            let had = registry.had_set();
+            let history = crate::file_history::read(&*registry, &withheld, &had, &*store);
+            send_event(&evt_tx, crate::service::CoreEvent::FileHistory { history });
+        });
+    }
+
     /// Apply one message from either worker.
     pub(super) async fn on_registry_message(&mut self, message: RegistryMessage) {
         match message {
             RegistryMessage::Scan(message) => self.on_scan_message(message).await,
-            RegistryMessage::RowsWanted(reply) => match self.wiring.registry.list() {
-                Ok(rows) => {
-                    let _ = reply.send(rows);
+            RegistryMessage::RowsWanted(reply) => {
+                self.commit_scan_writes().await;
+                match self.wiring.registry.rows() {
+                    Ok(rows) => {
+                        let _ = reply.send(rows);
+                    }
+                    // A dropped reply ends the asking worker.
+                    Err(error) => tracing::warn!(%error, "registry unreadable for a worker"),
                 }
-                // A dropped reply ends the asking worker.
-                Err(error) => tracing::warn!(%error, "registry unreadable for a worker"),
-            },
-            RegistryMessage::Check(report) => self.on_check_report(report).await,
+            }
+            RegistryMessage::Check(report) => {
+                self.commit_scan_writes().await;
+                self.on_check_report(report).await;
+            }
+            RegistryMessage::OfferChecked(report) => {
+                self.commit_scan_writes().await;
+                self.on_offer_checked(report).await;
+            }
         }
     }
 
@@ -200,14 +231,17 @@ where
             CheckReport::StartLookDone => {
                 let withheld = &self.registry_check.withheld;
                 withheld.looked();
-                let rows = self.wiring.registry.list().unwrap_or_default();
+                let rows = self.wiring.registry.rows().unwrap_or_default();
                 for row in withheld.offered(rows) {
                     self.wiring.file_known.share(row.file_hash);
                 }
                 self.share_set_changed();
+                // The downloads a restart found queued or paused are offered
+                // once their parts are read again, behind the start look.
+                self.start_offer_checks();
             }
             CheckReport::WatchUnavailable(_) => {
-                send_event(&self.evt_tx, ServeEvent::SharesUnwatched.into()).await;
+                send_event(&self.evt_tx, ServeEvent::SharesUnwatched.into());
             }
         }
     }
@@ -259,8 +293,7 @@ where
                 since,
             }
             .into(),
-        )
-        .await;
+        );
     }
 
     /// A withheld row's file opens again: it is offered, unless it lies
@@ -276,15 +309,23 @@ where
         tracing::info!(file_hash = %file_hash.to_hex_upper(), "shared file offered again");
         self.wiring.file_known.share(file_hash);
         self.share_set_changed();
-        send_event(&self.evt_tx, ServeEvent::FileOffered { file_hash }.into()).await;
+        send_event(&self.evt_tx, ServeEvent::FileOffered { file_hash }.into());
     }
 
-    /// A finished download's file joins the registry if it completed
-    /// (ADR-0031): offered, or withheld as refused when it lies under an
-    /// entry the guards refuse (ADR-0101) — a share-set change either way.
-    pub(super) async fn share_completed(&mut self, download_id: DownloadId) {
+    /// A completing download's file in place at `path` joins the registry
+    /// (ADR-0031, ADR-0115): offered, or withheld as refused when it lies
+    /// under an entry the guards refuse (ADR-0101). `true` when the row was
+    /// written — a share-set change either way, whose trigger is the
+    /// caller's to fire once its download's Served Download has ended too
+    /// (ADR-0113).
+    pub(super) async fn share_completion(
+        &mut self,
+        download_id: DownloadId,
+        path: &std::path::Path,
+    ) -> bool {
         let shared = auto_share_completed_download(
             download_id,
+            path,
             &*self.wiring.store,
             &*self.wiring.registry,
             |path| self.directories.refuses(path),
@@ -293,23 +334,38 @@ where
         )
         .await;
         match shared {
-            Some(AutoShared::Offered(file_hash)) => self.row_shared(file_hash),
+            Some(AutoShared::Offered(file_hash)) => self.row_written(file_hash),
             Some(AutoShared::Refused(file_hash)) => {
                 // Whatever row it replaced is no longer offered either.
                 self.wiring.file_known.unshare(file_hash);
-                self.share_set_changed();
                 self.registry_check.tell(CheckInput::RowsChanged);
             }
             None => {}
         }
+        shared.is_some()
     }
 
     /// A row was written for `file_hash`: its content is on disk now and
     /// offered, whatever held it before.
     pub(super) fn row_shared(&self, file_hash: FileHash) {
+        self.row_written(file_hash);
+        self.share_set_changed();
+    }
+
+    /// [`Self::row_shared`] for rows one commit wrote: one telling for all.
+    pub(super) fn rows_shared(&self, file_hashes: &[FileHash]) {
+        for file_hash in file_hashes {
+            self.registry_check.withheld.lift(*file_hash);
+            self.wiring.file_known.share(*file_hash);
+        }
+        self.registry_check.tell(CheckInput::RowsChanged);
+        self.share_set_changed();
+    }
+
+    /// [`Self::row_shared`] less the trigger.
+    fn row_written(&self, file_hash: FileHash) {
         self.registry_check.withheld.lift(file_hash);
         self.wiring.file_known.share(file_hash);
-        self.share_set_changed();
         self.registry_check.tell(CheckInput::RowsChanged);
     }
 
@@ -321,7 +377,7 @@ where
     ) {
         match left {
             Ok(true) => {
-                send_event(&self.evt_tx, ServeEvent::FileUnshared { file_hash }.into()).await;
+                send_event(&self.evt_tx, ServeEvent::FileUnshared { file_hash }.into());
                 self.registry_check.withheld.lift(file_hash);
                 self.wiring.file_known.unshare(file_hash);
                 self.share_set_changed();

@@ -7,7 +7,7 @@
 //! is the defensive boundary.
 
 /// `CT_NAME`: the client's name.
-pub(crate) const CT_NAME: u8 = 0x01;
+pub const CT_NAME: u8 = 0x01;
 /// `CT_VERSION`: the eDonkey protocol version the client speaks.
 pub(crate) const CT_VERSION: u8 = 0x11;
 /// `CT_EMULE_VERSION` (`0xFB`). Load-bearing beyond version display: eMule's

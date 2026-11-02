@@ -16,6 +16,7 @@ mod buddy;
 mod capability;
 mod compress;
 mod compressed_frame;
+mod ed2kv2;
 mod emule_info;
 mod error;
 pub mod file;
@@ -39,20 +40,18 @@ mod session;
 mod slot;
 mod software;
 mod source_exchange;
+mod wire_status;
 
-pub use aich::{AichAnswer, AichDecodeError, AichFileHashAns, AichFileHashReq, AichRequest};
+pub use aich::{AichAnswer, AichFileHashAns, AichFileHashReq, AichRefused, AichRequest};
 pub use buddy::{BuddyRelayDecodeError, Callback, ReaskCallbackTcp};
 pub use capability::{MiscOptions1, MiscOptions2, ModMiscOptions, UdpPortsAdvert};
-pub use compress::InflateFailed;
+pub use compress::{InflateFailed, deflate_block};
 pub use compressed_frame::{
     CompressedFrameSkipReason, PEER_COMPRESSED_FRAME_LIMIT, PEER_PACK_THRESHOLD,
 };
 pub use emule_info::{EmuleInfo, LegacyMuleInfo};
 pub use error::{
-    EmuleInfoDecodeError, FileRequestDecodeError, HashSetDecodeError, HumanLayerDecodeError,
-    PartsDecodeError, PartsEncodeError, PeerHelloDecodeError, PeerIpv6DecodeError,
-    PeerPacketDecodeError, ReaskDecodeError, RequestSources2DecodeError, RequestSourcesDecodeError,
-    SlotDecodeError,
+    PartsEncodeError, PeerHelloDecodeError, PeerPacketDecodeError, ReaskDecodeError, WireFault,
 };
 pub use file::{PartBitmap, PartBitmapDecodeError, PartIndex};
 pub use file_request::{
@@ -60,23 +59,24 @@ pub use file_request::{
     ReqFileNameAnswer, RequestFileName, SetReqFileId,
 };
 pub use handshake::{
-    CT_EMULE_BUDDYIP, CT_EMULE_BUDDYUDP, HelloAdvert, PeerHandshakeContext, SecureIdentConfig,
-    ServingBuddyAdvert,
+    CT_EMULE_BUDDYIP, CT_EMULE_BUDDYUDP, HelloAdvert, HelloGate, PeerHandshakeContext,
+    SecureIdentConfig, ServingBuddyAdvert,
 };
 pub use hash_set::{HashSetAnswer, HashSetRequest};
 pub use hello::{Hello, HelloAnswer, HelloRefusal, HelloRefusalCode, HelloTrailer, PeerHelloBody};
+pub use hello_tag::CT_NAME;
 pub use human_layer::{ChangeClientId, FileDesc, Message, PublicIpAnswer};
 pub use identity::PeerIdentity;
 pub use ipv6::{ChangeClientIpV6, PeerIpv6Tags};
 pub use multipacket::{
-    AnswerItem, BundleCut, BundledAsk, MultiPacketAnswer, MultiPacketDecodeError,
-    MultiPacketRequest, RequestItem, UnknownSub,
+    AnswerItem, BundleCut, BundledAsk, MultiPacketAnswer, MultiPacketRequest, RequestItem,
+    UnknownSub,
 };
 pub use obfuscation::{PeerObfuscation, PeerObfuscationStep};
 pub use opcode::PeerOpcode;
 pub use packet::PeerPacket;
 pub use parts::{
-    CompressedPart, EMBLOCKSIZE, PartOffsetWidth, PartRanges, PartRangesError, RequestParts,
+    CompressedPart, EMBLOCKSIZE, MAX_REQUESTED_RANGE, PartOffsetWidth, PartRanges, RequestParts,
     SendingPart,
 };
 pub use peer_udp::{
@@ -85,15 +85,17 @@ pub use peer_udp::{
 };
 pub use secure_ident::{
     CRYPT_CIP_LOCALCLIENT, CRYPT_CIP_NONECLIENT, CRYPT_CIP_REMOTECLIENT, PublicKeyPacket,
-    SecIdentState, SecIdentStatePacket, SignaturePacket, SuiDecodeError,
+    SecIdentState, SecIdentStatePacket, SignaturePacket,
 };
 pub use session::{
-    ConnectionCommand, ConnectionEvent, FileProbeStatus, IdentityChange, NoticeEvent,
-    PeerCloseReason, PeerCommand, PeerError, PeerEvent, PeerOutput, PeerSession, RequesterCommand,
-    RequesterEvent, SecureIdentFailure, ServerCommand, ServerEvent, SideCommand, SideEvent,
-    SlotReleaseReason, SourceExchangeSupport,
+    AskedRanges, ConnectionCommand, ConnectionEvent, EventRow, FileProbeStatus, IdentityChange,
+    NoticeEvent, PeerCloseReason, PeerCommand, PeerError, PeerEvent, PeerOutput, PeerSession,
+    PeerViolation, RequesterCommand, RequesterEvent, RowValue, SecureIdentFailure, ServerCommand,
+    ServerEvent, SideCommand, SideEvent, SlotReleaseReason, SourceExchangeSupport,
 };
-pub use slot::{AcceptUploadReq, CancelTransfer, OutOfPartReqs, QueueRanking, StartUploadReq};
+pub use slot::{
+    AcceptUploadReq, CancelTransfer, OutOfPartReqs, QueueRank, QueueRanking, StartUploadReq,
+};
 pub use software::{ClientFamily, ClientMod, ClientSoftware, ClientVersion, SoftwareEvidence};
 pub use source_exchange::{
     AnswerSources, AnswerSources2, AnswerSources2DecodeError, AnswerSourcesDecodeError,
@@ -101,3 +103,4 @@ pub use source_exchange::{
     RequestSources2, ServedSourcesVersion, SourceExchangeClaim, SourceExchangeEntry,
     SourceExchangeVersion,
 };
+pub use wire_status::WireStatus;

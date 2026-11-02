@@ -48,6 +48,11 @@ impl Endings {
         }
     }
 
+    /// One more download joined the run.
+    pub(super) const fn expect_one_more(&mut self) {
+        self.expected += 1;
+    }
+
     /// Take `event` in. A download's second ending is not counted: the first
     /// is the one that ended it.
     pub(super) fn observe(&mut self, event: &DownloadEvent) -> Noted {
@@ -144,6 +149,7 @@ mod tests {
                     u8::try_from(at * 13).unwrap() ^ u8::try_from(id.as_u64()).unwrap()
                 })),
                 metadata: rmule_core::DownloadMetadata::unnamed(9_728_000),
+                file_path: std::path::PathBuf::from("/downloads/file.bin.part"),
             };
             assert_eq!(endings.observe(&queued), Noted::Nothing);
         }

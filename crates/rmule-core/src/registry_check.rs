@@ -25,7 +25,7 @@ use std::time::{Duration, Instant};
 use rmule_primitives::FileHash;
 
 use crate::directory_scan::{DirectorySource, RowsNow, WatchBatch, WatchFault, WatchSignal};
-use crate::registry::SharedFileEntry;
+use crate::registry::{ShareRefusal, SharedRow};
 use look::{Look, look, look_after_failure, look_and_open};
 
 /// How often each withheld row is looked at again.
@@ -148,7 +148,7 @@ pub(crate) fn run_check(seams: CheckSeams<'_>, withheld: &WithheldRows, stop: &A
         asked: BTreeSet::new(),
         deferred: HashSet::new(),
     };
-    let mut start: Vec<SharedFileEntry> = check
+    let mut start: Vec<SharedRow> = check
         .rows
         .values()
         .filter(|row| !check.refused(row.file_hash))
@@ -253,7 +253,7 @@ pub(crate) fn run_check(seams: CheckSeams<'_>, withheld: &WithheldRows, stop: &A
     }
 }
 
-fn index(rows: Vec<SharedFileEntry>) -> HashMap<FileHash, SharedFileEntry> {
+fn index(rows: Vec<SharedRow>) -> HashMap<FileHash, SharedRow> {
     rows.into_iter().map(|row| (row.file_hash, row)).collect()
 }
 
@@ -261,7 +261,7 @@ fn index(rows: Vec<SharedFileEntry>) -> HashMap<FileHash, SharedFileEntry> {
 struct Check<'a> {
     withheld: &'a WithheldRows,
     report: &'a mut dyn FnMut(CheckReport),
-    rows: HashMap<FileHash, SharedFileEntry>,
+    rows: HashMap<FileHash, SharedRow>,
     scan_dirs: BTreeSet<PathBuf>,
     /// The operator was told the folders cannot be watched.
     told: bool,
@@ -276,7 +276,7 @@ struct Check<'a> {
 impl Check<'_> {
     /// Look at `row`, opening it when it is withheld: a **Withheld Row** is
     /// offered again only once its file opens, whichever look finds it back.
-    fn look(&self, source: &dyn DirectorySource, row: &SharedFileEntry) -> Look {
+    fn look(&self, source: &dyn DirectorySource, row: &SharedRow) -> Look {
         if self.withheld.get(row.file_hash).is_some() {
             look_and_open(source, row)
         } else {
@@ -298,7 +298,7 @@ impl Check<'_> {
     }
 
     /// Rule on `row` from what `look` found.
-    fn rule(&mut self, row: &SharedFileEntry, look: Look, why: Why) {
+    fn rule(&mut self, row: &SharedRow, look: Look, why: Why) {
         let file_hash = row.file_hash;
         let defer =
             why == Why::Start || self.scan_owns(&row.path) || self.deferred.contains(&file_hash);
@@ -322,6 +322,9 @@ impl Check<'_> {
             Look::Unreadable(reason) => {
                 self.withhold(file_hash, WithheldReason::Unreadable(reason))
             }
+            Look::Refused(ShareRefusal::PastSizeLimit { .. }) => {
+                self.withhold(file_hash, WithheldReason::PastSizeLimit)
+            }
         };
         if let Some(ruling) = ruling {
             (self.report)(ruling);
@@ -339,8 +342,8 @@ impl Check<'_> {
 
     /// The rows the check rules on whose file lies in, or is, one of
     /// `scopes`; every such row for a lost-notice scope (`None`).
-    fn under(&self, scopes: &Scopes) -> Vec<SharedFileEntry> {
-        let mut rows: Vec<SharedFileEntry> = self
+    fn under(&self, scopes: &Scopes) -> Vec<SharedRow> {
+        let mut rows: Vec<SharedRow> = self
             .rows
             .values()
             .filter(|row| !self.scan_owns(&row.path) && !self.refused(row.file_hash))

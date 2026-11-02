@@ -8,8 +8,8 @@ use std::sync::Arc;
 
 use rmule_peer::PeerHandshakeContext;
 use rmule_primitives::{
-    ClientId, Ed2kText, FileHash, FileHashSummary, PeerEndpoint, PeerSource, ServerEndpoint,
-    SourceSighting,
+    ClientId, Ed2kText, FileHash, FileHashSummary, Informant, PeerEndpoint, PeerSource,
+    ServerEndpoint, SourceSighting,
 };
 use tokio::sync::Notify;
 use tokio::time::{Duration, timeout};
@@ -37,10 +37,10 @@ impl SourceLookupService for FixedSourceLookup {
     ) -> Result<SourceLookupOutcome, DownloadFailure> {
         Ok(SourceLookupOutcome {
             client_id: ClientId::from_u32(PEER_CLIENT_ID),
-            sources: vec![SourceSighting::plain(PeerSource::new(
-                ClientId::from_u32(PEER_CLIENT_ID),
-                4663,
-            ))],
+            sources: vec![SourceSighting::plain(
+                PeerSource::new(ClientId::from_u32(PEER_CLIENT_ID), 4663),
+                Informant::Own,
+            )],
         })
     }
 }
@@ -56,12 +56,16 @@ impl PeerTransferService for StuckPeerTransfer {
         &mut self,
         peer: PeerEndpoint,
         _ctx: PeerHandshakeContext,
-        _file: Ed2kFileLink,
+        file: Ed2kFileLink,
     ) -> Result<PeerWorker, DownloadFailure> {
+        let advertised = PeerWorkerEvent::every_part(file.size());
         let (command_tx, mut command_rx) = mpsc::channel(8);
         let (event_tx, event_rx) = mpsc::channel(8);
         tokio::spawn(async move {
             let _ = event_tx.send(PeerWorkerEvent::Connected).await;
+            let _ = event_tx.send(advertised).await;
+            // An uploader with a free slot grants it at once (ADR-0026).
+            let _ = event_tx.send(PeerWorkerEvent::SlotGranted).await;
             while command_rx.recv().await.is_some() {}
         });
         Ok(PeerWorker::new(peer, command_tx, event_rx))
@@ -80,13 +84,17 @@ impl PeerTransferService for DisconnectOnCuePeerTransfer {
         &mut self,
         peer: PeerEndpoint,
         _ctx: PeerHandshakeContext,
-        _file: Ed2kFileLink,
+        file: Ed2kFileLink,
     ) -> Result<PeerWorker, DownloadFailure> {
+        let advertised = PeerWorkerEvent::every_part(file.size());
         let (command_tx, mut command_rx) = mpsc::channel(8);
         let (event_tx, event_rx) = mpsc::channel(8);
         let disconnect = self.disconnect.clone();
         tokio::spawn(async move {
             let _ = event_tx.send(PeerWorkerEvent::Connected).await;
+            let _ = event_tx.send(advertised).await;
+            // An uploader with a free slot grants it at once (ADR-0026).
+            let _ = event_tx.send(PeerWorkerEvent::SlotGranted).await;
             disconnect.notified().await;
             let _ = event_tx.send(PeerWorkerEvent::Disconnected).await;
             while command_rx.recv().await.is_some() {}
@@ -96,15 +104,12 @@ impl PeerTransferService for DisconnectOnCuePeerTransfer {
 }
 
 fn example_file() -> Ed2kFileLink {
-    Ed2kFileLink {
-        name: Ed2kText::from_utf8("example.bin"),
-        size: 11,
-        file_hash: FileHash::from_bytes([0xAB; FileHash::BYTE_LEN]),
-        part_hash_set: None,
-        aich_root: None,
-        ipv6_sources: Vec::new(),
-        sources: Default::default(),
-    }
+    Ed2kFileLink::new(
+        Ed2kText::from_utf8("example.bin"),
+        11,
+        FileHash::from_bytes([0xAB; FileHash::BYTE_LEN]),
+    )
+    .expect("a size eD2k addresses")
 }
 
 /// Await the next fact from `core`, bounded so a stalled fixture times out
@@ -139,6 +144,7 @@ async fn cancelling_a_download_forgets_a_still_connected_workers_roster_ip() {
             &rmule_primitives::FileHash::from_bytes([0; 16]),
         ),
         if_taken: crate::NameTaken::Refuse,
+        kad_aich_root: None,
     }))
     .await
     .unwrap();
@@ -217,6 +223,7 @@ async fn a_disconnect_already_racing_into_fact_rx_at_stop_is_not_lost() {
             &rmule_primitives::FileHash::from_bytes([0; 16]),
         ),
         if_taken: crate::NameTaken::Refuse,
+        kad_aich_root: None,
     }))
     .await
     .unwrap();
@@ -288,27 +295,32 @@ impl PeerTransferService for CompletingPeerTransfer {
         &mut self,
         peer: PeerEndpoint,
         _ctx: PeerHandshakeContext,
-        _file: Ed2kFileLink,
+        file: Ed2kFileLink,
     ) -> Result<PeerWorker, DownloadFailure> {
+        let advertised = PeerWorkerEvent::every_part(file.size());
         let (command_tx, mut command_rx) = mpsc::channel(8);
         let (event_tx, event_rx) = mpsc::channel(8);
         let deliver = Arc::clone(&self.deliver);
         tokio::spawn(async move {
             let _ = event_tx.send(PeerWorkerEvent::Connected).await;
+            let _ = event_tx.send(advertised).await;
+            // An uploader with a free slot grants it at once (ADR-0026).
+            let _ = event_tx.send(PeerWorkerEvent::SlotGranted).await;
             while let Some(command) = command_rx.recv().await {
-                if let crate::PeerWorkerCommand::RequestPart { plan, .. } = command {
-                    let _ = event_tx.send(PeerWorkerEvent::SlotGranted).await;
+                if let crate::PeerWorkerCommand::RequestBlocks { blocks, handout } = command {
                     deliver.notified().await;
                     let _ = event_tx
                         .send(PeerWorkerEvent::BlockReceived {
-                            part_index: plan.part_index,
-                            offset: plan.offset,
+                            part_index: blocks[0].part_index,
+                            offset: blocks[0].start,
                             bytes: SERVED.to_vec(),
                         })
                         .await;
                     let _ = event_tx
-                        .send(PeerWorkerEvent::PartStreamed {
-                            part_index: plan.part_index,
+                        .send(PeerWorkerEvent::BlocksWanted {
+                            room: 3,
+                            drained: true,
+                            handout,
                         })
                         .await;
                 }
@@ -341,17 +353,19 @@ async fn a_completed_download_forgets_its_still_connected_workers_roster_ip() {
 
     let summary = FileHashSummary::digest_bytes(SERVED);
     core.send(CoreCommand::Download(DownloadCommand::StartDownload {
-        file: Ed2kFileLink {
-            size: summary.file_size(),
-            file_hash: summary.file_hash(),
-            ..example_file()
-        },
+        file: Ed2kFileLink::new(
+            example_file().name,
+            summary.file_size(),
+            summary.file_hash(),
+        )
+        .expect("a size eD2k addresses"),
         source_hint: Some(ServerEndpoint::new("127.0.0.1", 4661).unwrap()),
         name: rmule_primitives::SafeFileName::clean(
             "roster-complete.bin",
             &rmule_primitives::FileHash::from_bytes([0; 16]),
         ),
         if_taken: crate::NameTaken::Refuse,
+        kad_aich_root: None,
     }))
     .await
     .unwrap();
@@ -386,12 +400,14 @@ impl PeerTransferService for QueuedThenHangUpPeerTransfer {
         &mut self,
         peer: PeerEndpoint,
         _ctx: PeerHandshakeContext,
-        _file: Ed2kFileLink,
+        file: Ed2kFileLink,
     ) -> Result<PeerWorker, DownloadFailure> {
+        let advertised = PeerWorkerEvent::every_part(file.size());
         let (command_tx, mut command_rx) = mpsc::channel(8);
         let (event_tx, event_rx) = mpsc::channel(8);
         tokio::spawn(async move {
             let _ = event_tx.send(PeerWorkerEvent::Connected).await;
+            let _ = event_tx.send(advertised).await;
             let _ = event_tx.send(PeerWorkerEvent::Queued { rank: 5 }).await;
             let _ = event_tx.send(PeerWorkerEvent::Disconnected).await;
             while command_rx.recv().await.is_some() {}
@@ -400,7 +416,7 @@ impl PeerTransferService for QueuedThenHangUpPeerTransfer {
     }
 }
 
-/// Per ADR-0059 "Roster relations", a source that queued us
+/// Per ADR-0059, a source that queued us
 /// and hung up stays known to the UDP self-check after its worker retires —
 /// the Remote-Queued Pool holds a `Queued` relation, aMule's `DS_ONQUEUE`
 /// client — and leaves the roster when the download ends. Before, the
@@ -428,6 +444,7 @@ async fn a_remote_queued_peer_stays_known_after_its_worker_retires() {
             &rmule_primitives::FileHash::from_bytes([0; 16]),
         ),
         if_taken: crate::NameTaken::Refuse,
+        kad_aich_root: None,
     }))
     .await
     .unwrap();
@@ -463,4 +480,66 @@ async fn a_remote_queued_peer_stays_known_after_its_worker_retires() {
         !roster.knows(peer_ip),
         "the download's end ends its Queued relations"
     );
+}
+
+/// A download whose sole source queues another of ours waits on that standing
+/// as aMule's file waits on its client (`PartFile.cpp:1472-1483`): the source
+/// is parked, not spent, so the run has not run out of sources.
+#[tokio::test]
+async fn a_sole_source_parked_on_its_standing_keeps_the_download_waiting() {
+    let out_dir = tempfile::tempdir().unwrap();
+    let store = crate::open_durable_store_in_memory().expect("in-memory store opens");
+    let mut core = Core::builder(CoreConfig::default(), store)
+        .settings(crate::CoreSettings {
+            download_dir: Some(out_dir.path().to_path_buf()),
+            ..crate::CoreSettings::default()
+        })
+        .source_lookup(FixedSourceLookup)
+        .peer_transfer(QueuedThenHangUpPeerTransfer)
+        .build();
+    let start = |file: Ed2kFileLink, name: &str| {
+        CoreCommand::Download(DownloadCommand::StartDownload {
+            source_hint: Some(ServerEndpoint::new("127.0.0.1", 4661).unwrap()),
+            name: rmule_primitives::SafeFileName::clean(name, &file.file_hash),
+            file,
+            if_taken: crate::NameTaken::Refuse,
+            kad_aich_root: None,
+        })
+    };
+
+    core.send(start(example_file(), "first.bin")).await.unwrap();
+    loop {
+        if let CoreEvent::Download(DownloadEvent::SourceRemoteQueued { .. }) =
+            next_core_event(&mut core).await
+        {
+            break;
+        }
+    }
+    // The standing is published on the fleet turn that pooled the source.
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let mut second = example_file();
+    second.file_hash = FileHash::from_bytes([0xCD; FileHash::BYTE_LEN]);
+    core.send(start(second, "second.bin")).await.unwrap();
+    let parked = loop {
+        if let CoreEvent::Download(DownloadEvent::SourceWaitsOnStanding { download_id, .. }) =
+            next_core_event(&mut core).await
+        {
+            break download_id;
+        }
+    };
+    let settled = timeout(Duration::from_millis(300), async {
+        loop {
+            if let CoreEvent::Download(DownloadEvent::DownloadFailed {
+                download_id,
+                reason,
+            }) = next_core_event(&mut core).await
+                && download_id == parked
+            {
+                return reason;
+            }
+        }
+    })
+    .await;
+    assert!(settled.is_err(), "the parked download failed: {settled:?}");
 }

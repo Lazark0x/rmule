@@ -12,6 +12,10 @@
 //! such as Git Bash sets `HOME`, and the data directory must not change with
 //! the shell rmule was started from. An empty variable counts as unset
 //! everywhere.
+//!
+//! [`make_private`] is the one owner of what the directory lets others read
+//! (ADR-0083): the store holds the Secure Identification key and every
+//! download's name, and the log at the full level holds peer addresses.
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
@@ -102,9 +106,90 @@ fn resolve_by(
     })
 }
 
+/// The files of rmule's own that hold an identity or a peer: the store and
+/// its copies, the Run Log and its twin, the credit and contact exports. A
+/// file the operator put here is theirs to mode.
+#[cfg(unix)]
+fn is_rmule_file(name: &std::ffi::OsStr) -> bool {
+    let name = name.to_string_lossy();
+    name.starts_with("rmule.") || name == "clients.met" || name == "nodes.dat"
+}
+
+/// Keep the directory and rmule's own files in it to this user: 0700 and
+/// 0600, repairing what an older install left. A part file needs no mode of
+/// its own, since the directory it lies below already refuses others. A
+/// symbolic link is left alone: its mode is not the file's. A volume that
+/// keeps no modes refuses this, which is logged and costs nothing: rmule runs
+/// there as it would have. Windows keeps the ACL the directory inherited.
+pub fn make_private(dir: &Path) {
+    #[cfg(unix)]
+    if let Err(error) = private_modes(dir) {
+        tracing::warn!(%error, "the data directory could not be made private");
+    }
+    #[cfg(not(unix))]
+    let _ = dir;
+}
+
+#[cfg(unix)]
+fn private_modes(dir: &Path) -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    /// Keep `path` to `mode` when it lets anyone else in.
+    fn hold(path: &Path, metadata: &std::fs::Metadata, mode: u32) -> std::io::Result<()> {
+        if metadata.permissions().mode() & 0o077 == 0 {
+            return Ok(());
+        }
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode))
+    }
+
+    hold(dir, &std::fs::metadata(dir)?, 0o700)?;
+    for entry in std::fs::read_dir(dir)? {
+        let entry = entry?;
+        let metadata = entry.metadata()?;
+        if metadata.is_file() && is_rmule_file(&entry.file_name()) {
+            hold(&entry.path(), &metadata, 0o600)?;
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn an_open_directory_and_its_files_are_kept_to_this_user() {
+        use std::os::unix::fs::{PermissionsExt, symlink};
+
+        let dir = tempfile::tempdir().unwrap();
+        let mode = |path: &Path| {
+            std::fs::symlink_metadata(path)
+                .unwrap()
+                .permissions()
+                .mode()
+        };
+        let set = |path: &Path, mode: u32| {
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).unwrap();
+        };
+        let store = dir.path().join("rmule.redb");
+        let elsewhere = tempfile::NamedTempFile::new().unwrap();
+        set(elsewhere.path(), 0o644);
+        symlink(elsewhere.path(), dir.path().join("rmule.link")).unwrap();
+        let theirs = dir.path().join("notes.txt");
+        std::fs::write(&theirs, b"").unwrap();
+        set(&theirs, 0o644);
+        std::fs::write(&store, b"").unwrap();
+        set(&store, 0o644);
+        set(dir.path(), 0o755);
+
+        make_private(dir.path());
+
+        assert_eq!(mode(dir.path()) & 0o777, 0o700);
+        assert_eq!(mode(&store) & 0o777, 0o600);
+        assert_eq!(mode(elsewhere.path()) & 0o777, 0o644);
+        assert_eq!(mode(&theirs) & 0o777, 0o644);
+    }
 
     fn from<'a>(vars: &'a [(&str, &str)]) -> impl Fn(&str) -> Option<OsString> + 'a {
         move |name| {

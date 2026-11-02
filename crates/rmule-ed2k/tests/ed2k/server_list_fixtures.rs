@@ -98,9 +98,8 @@ fn server_list_accepts_zero_entries() {
 /// network-order address bytes plus the little-endian port), appended after the
 /// self-terminating IPv4 array.
 ///
-/// Evidence: **`single-oracle` (eNode-go) and un-captured** — the other server
-/// implementing the dialect never mentions this block, so these are the spec's
-/// bytes.
+/// Evidence: **source-derived and un-captured** — no pinned server emits this
+/// block, so these are the spec's bytes.
 #[test]
 fn a_trailing_ipv6_block_reads_after_the_self_terminating_v4_array() {
     let first: std::net::Ipv6Addr = "2a01:4f8::1".parse().unwrap();

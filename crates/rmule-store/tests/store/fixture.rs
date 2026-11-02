@@ -53,7 +53,7 @@ pub static DOWNLOADS: Indexed<u64, Download> = Indexed::new("download", &[&PART_
 
 pub static DOWNLOADS_V2: Indexed<u64, DownloadV2> = Indexed::new("download", &[]);
 
-pub const V1: Ladder = Ladder::new(1, &[]);
+pub const V1: Ladder = Ladder::new(1, 1, &[]);
 
 pub fn schema_v1() -> Schema {
     Schema::new().indexed(&DOWNLOADS)

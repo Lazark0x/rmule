@@ -317,6 +317,7 @@ fn a_race_with_nothing_available_climbs_the_backoff_ladder_and_retries() {
         mapper.on_result(
             MappingResult::Probed {
                 protocol,
+                round: mapper.round,
                 outcome: Err(MappingError::Unsupported(protocol)),
             },
             t0,
@@ -342,6 +343,7 @@ fn a_race_with_nothing_available_climbs_the_backoff_ladder_and_retries() {
         mapper.on_result(
             MappingResult::Probed {
                 protocol,
+                round: mapper.round,
                 outcome: Err(MappingError::Unsupported(protocol)),
             },
             retry,

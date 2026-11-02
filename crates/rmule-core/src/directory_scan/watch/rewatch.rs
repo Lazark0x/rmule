@@ -1,5 +1,4 @@
-//! A watch that fails while running (ADR-0100, "A watch that fails while
-//! running is re-established"): the lost watch is dropped, a new one is asked
+//! A watch that fails while running (ADR-0100): the lost watch is dropped, a new one is asked
 //! for a bounded number of times on the starter's clock, and the first round
 //! of the new watch examines the whole directory, because events were lost
 //! meanwhile. The operator is told once when the watch is lost and once when

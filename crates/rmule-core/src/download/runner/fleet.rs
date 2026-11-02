@@ -7,22 +7,23 @@
 use std::collections::{HashSet, VecDeque};
 
 use rmule_peer::PeerHandshakeContext;
-use rmule_primitives::{Ed2kFileLink, SourceSighting, UserHash};
+use rmule_primitives::{Ed2kFileLink, PartHashSet, SourceSighting, UserHash};
 use tokio::sync::mpsc;
 
 use crate::adapters::{
-    CallbackKey, PeerTransferService, PeerWorker, PeerWorkerEvent, SourceLookupService,
+    CallbackKey, LinkOffer, PeerTransferService, PeerWorker, PeerWorkerEvent, SourceLookupService,
 };
 use crate::client_udp::ClientUdpDatagram;
+use crate::download::persist::store_failed;
 use crate::download::state::{
-    Channel, ContentFacts, Decision, DownloadState, SourcingPosture, StartingFacts, Tally,
+    AichRootAuthority, Channel, ContentFacts, Decision, DownloadState, SourcingPosture,
+    StartingFacts, Tally,
 };
 use crate::download::worker_pool::{WorkerChannels, WorkerPool};
 use crate::error::DownloadFailure;
-use crate::hashing::{
-    ResolvedHashSet, hash_set_proves_file, proven_link_hash_set, resolve_hash_set_authority,
-};
+use crate::hashing::{ResolvedHashSet, proven_link_hash_set, resolve_hash_set_authority};
 use crate::peer_roster::{PeerRelation, RelationLease};
+use crate::scheduler::PartOrder;
 use crate::service::{
     DownloadEvent, DownloadId, SourceWait, VerificationAuthority, send_download_event,
 };
@@ -30,11 +31,13 @@ use crate::source_discovery::register;
 use crate::storage::DownloadRepository;
 
 use super::adopt::adopt;
+use super::awaited_grants::AwaitedGrants;
 use super::callbacks::CallbackContext;
-use super::enact::{LoopCtx, enact_drain};
+use super::enact::{LoopCtx, after_fact, enact_drain, end_lane, settle_lane};
 use super::intake;
 use super::reply_sink::ReaskSinkLease;
-use super::{CallbackFacts, RunnerContext, now, stop_reason, wait_until_stop};
+use super::republish::WakeReading;
+use super::{CallbackFacts, RunnerContext, StopReason, now, stop_reason, wait_until_stop};
 
 /// How often the runner re-reads the facts the brain holds samples of and no
 /// change notice reaches: the Callback Capability (besides its Reach
@@ -70,7 +73,14 @@ pub(super) fn refresh_parts(
     state: &DownloadState,
 ) {
     let (parts, retired) = state.part_map();
-    diagnostics.set_part_map(download_id, parts, retired, state.known_sources());
+    diagnostics.set_part_map(
+        download_id,
+        parts,
+        retired,
+        state.known_sources(),
+        state.source_activity(),
+    );
+    diagnostics.set_handed_over(download_id, state.handed_over());
 }
 
 /// Everything one download run starts from, bundled so the fleet entry point
@@ -80,13 +90,16 @@ pub(super) struct FleetStart<'a> {
     pub(super) download_id: DownloadId,
     /// The link the run is pinned to: file hash, size, part hash set and AICH root.
     pub(super) file: Ed2kFileLink,
+    /// The Kad AICH root the download's record keeps, or the contest that
+    /// ended it (ADR-0038).
+    pub(super) kad_aich_root: Option<crate::KadAichRoot>,
     /// The peer-side handshake identity every worker dials with — server-login
     /// capability tags deliberately excluded (ADR-0047).
     pub(super) ctx: PeerHandshakeContext,
-    /// The fleet cap: active + connecting workers plus outstanding callbacks.
-    pub(super) peer_concurrency: usize,
     /// Parts an earlier run already verified on disk; they are never re-fetched.
     pub(super) verified_part_indexes: Vec<u32>,
+    /// How the download ranks its parts (ADR-0112 §5).
+    pub(super) order: PartOrder,
     /// The run's first sightings, by channel.
     pub(super) sources: StartSources,
     /// Where the **Callback Capability** is re-read from for the rest of the run.
@@ -124,7 +137,7 @@ pub(super) struct StartSources {
 pub(super) async fn apply_peer_workers_download<'a, S, P>(
     start: FleetStart<'a>,
     runner: &'a RunnerContext<S, P>,
-) -> Result<(), DownloadFailure>
+) -> Result<Vec<u32>, DownloadFailure>
 where
     S: SourceLookupService,
     P: PeerTransferService,
@@ -132,9 +145,10 @@ where
     let FleetStart {
         download_id,
         file,
+        kad_aich_root,
         ctx,
-        peer_concurrency,
         verified_part_indexes,
+        order,
         sources,
         callback_facts,
         posture,
@@ -148,7 +162,7 @@ where
         let store = &runner.rt.store;
         store
             .provisional_part_hashes(download_id)
-            .map_err(|_| DownloadFailure::PartVerificationFailed)?
+            .map_err(store_failed("the provisional hash set could not be read"))?
     };
     // The link's set counts only when it is the file's own; otherwise
     // the peer's proven set wins.
@@ -157,7 +171,7 @@ where
     // persisted before sets were proven on arrival may not be.
     let resolved = if link_hash_set.is_none()
         && !persisted_provisional_hashes.is_empty()
-        && hash_set_proves_file(file.file_hash, file.size, &persisted_provisional_hashes)
+        && PartHashSet::proves_file(file.file_hash, file.size(), &persisted_provisional_hashes)
     {
         ResolvedHashSet {
             authority: VerificationAuthority::PeerHashSet,
@@ -166,6 +180,7 @@ where
     } else {
         resolve_hash_set_authority(link_hash_set.as_ref(), None)?
     };
+    let arrived = crate::download::persist::arrived_at_start(runner, download_id).await?;
     let hash_set_received = DownloadEvent::HashSetReceived {
         download_id,
         part_count: resolved.hashes.len(),
@@ -188,10 +203,15 @@ where
     // front's loop.
     let (retire_tx, mut retire_rx) =
         mpsc::channel::<(CallbackKey, crate::diagnostics::NattRetirement)>(8);
+    // The Callback Pace holds a `0x52` (ADR-0061): the wait starts when it
+    // leaves. Bounded and never awaited, like the retire queue; a full queue
+    // leaves the road on the deadline it had.
+    let (held_tx, mut held_rx) = mpsc::channel::<(CallbackKey, std::time::Duration)>(8);
     let callbacks = CallbackContext::new(
         callback_facts,
         adopt_tx,
         retire_tx,
+        held_tx,
         runner.rt.awaited_inbound.clone(),
     );
     // This download's Download and Queued relations end with the run on every
@@ -209,24 +229,32 @@ where
     // channel's engine so found sources route to `*_sources_rx`; the one RAII
     // guard deregisters on any exit (including `?`-propagated failures). The
     // global channel ignores the size; the Kad channel carries it on the wire.
+    // Both read the run's source count at their gate (ADR-0051).
+    let source_count = server_leg.source_count();
     let (global_sources_tx, mut global_sources_rx) = mpsc::channel(16);
     let _global_source_guard = register(
         &runner.rt.global_source_registry,
         file.file_hash,
-        file.size,
+        file.size(),
         global_sources_tx,
+        source_count.clone(),
     );
     let (kad_sources_tx, mut kad_sources_rx) = mpsc::channel(16);
     let _kad_source_guard = register(
         &runner.rt.kad_source_registry,
         file.file_hash,
-        file.size,
+        file.size(),
         kad_sources_tx,
+        source_count.clone(),
     );
     // A later link's sources for this file (ADR-0089's amendment): the
     // run holds the inbox for its life, so none is taken by a repair's rerun
     // while this one still runs.
     let mut later_links = runner.later_links.lock().await;
+    // The peers that ask us about this file while it downloads (ADR-0113):
+    // the serve side hands each to this run as a candidate source. A run
+    // with no lease — a download of one part — takes none.
+    let mut askers = runner.served.as_ref().and_then(|lease| lease.take_askers());
     // `fact_tx` is moved in and kept alive for the whole run so a worker
     // backfilled mid-download can join the shared event stream by cloning it
     // (ADR-0030).
@@ -239,17 +267,19 @@ where
     // The sans-I/O scheduling brain (ADR-0026/0029/0030): it owns the
     // candidate pool, the free diagnostics slots, the scheduler, and the
     // cross-peer assembly, and turns each worker event into an ordered
-    // `Vec<Decision>` the runner enacts. Parts are assigned on the `Connected`
-    // event, not up front, so a failed handshake never strands a part.
+    // `Vec<Decision>` the runner enacts. Parts are assigned on each worker's
+    // probe answer, not up front, so a failed handshake never strands a part.
     let mut state = DownloadState::new(
         download_id,
         ContentFacts {
             file_hash: file.file_hash,
-            file_size: file.size,
+            file_size: file.size(),
             link_part_hash_set: link_hash_set,
             resolved,
-            trusted_aich_root: file.aich_root,
+            aich_root: AichRootAuthority::at_start(file.aich_root, kad_aich_root),
             verified_parts: verified_part_indexes,
+            arrived,
+            order,
         },
         StartingFacts {
             distrusted: sources.distrusted,
@@ -257,8 +287,20 @@ where
         },
         posture,
         runner.rt.callback_timeout,
-        peer_concurrency,
-    );
+        crate::download::connection_budget::BudgetSeat::new(
+            std::sync::Arc::clone(&runner.rt.connection_budget),
+            download_id,
+        ),
+    )
+    .with_standings(crate::download::queue_standings::StandingSeat::new(
+        std::sync::Arc::clone(&runner.rt.queue_standings),
+        download_id,
+        file.file_hash,
+    ))
+    .with_spent(crate::download::spent_names::SpentSeat::new(
+        std::sync::Arc::clone(&runner.rt.spent_names),
+        file.file_hash,
+    ));
     // The snapshot is sighted in the order a pool is built; nothing fills a
     // slot until `start`.
     let found = [
@@ -276,15 +318,17 @@ where
             total: found.distinct(),
             usable_high_id: found.distinct_dialable(),
         },
-    )
-    .await;
+    );
     if state.no_usable_candidate() {
         return Err(DownloadFailure::NoUsableSources);
     }
-    send_download_event(evt_tx, hash_set_received).await;
+    send_download_event(evt_tx, hash_set_received);
 
     // The `PeerHandshakeContext` binding `ctx` was consumed into `worker_pool`
     // above, so the name is free for the loop-carried state here.
+    // The sources the run waits in an uploader's queue for, filed so a link
+    // that reads the uploader's unasked grant hands it here (ADR-0057).
+    let awaited_grants = AwaitedGrants::new(runner.rt.peer_links.clone());
     let mut ctx = LoopCtx {
         state,
         runner,
@@ -297,37 +341,59 @@ where
         fact_rx,
         callbacks,
         queued_relations: std::collections::HashSet::new(),
+        awaited_grants,
+        held_places: runner.rt.held_places.seat(download_id),
+        persist: super::persist_lane::PersistLane::new(runner, download_id, file),
+        republished: None,
     };
 
-    // Enact the initial fill: one `Spawn` per candidate up to concurrency.
+    // Enact the initial fill: one `Spawn` per candidate the Connection Budget
+    // admits (ADR-0116).
     // The wait this run last told, while it still waits on it.
     let mut told_wait: Option<SourceWait> = None;
     let mut queue: VecDeque<Decision> = ctx.state.start(now()).into();
     enact_drain(&mut queue, &mut ctx).await?;
     publish_seeds(&ctx);
+    publish_exchange_pool(&ctx);
     if ctx.command_channels.is_empty()
         && !ctx.state.has_pending_callbacks()
         && !ctx.state.is_complete()
     {
-        // No candidate could even start a worker and none is callback-pending:
-        // the pool is exhausted. A requested callback (ADR-0039) keeps the
-        // download alive with no live worker yet, so it is not a failure here.
+        // No candidate could even start a worker and none is callback-pending.
+        // A requested callback (ADR-0039) keeps the download alive with no live
+        // worker yet, so it is not a failure here.
         // A discovery channel is armed (server-UDP sweep, ADR-0051, or Kad,
         // ADR-0043): wait for it to backfill rather than failing. The select!
         // loop below already waits on `global_sources_rx` and `kad_sources_rx`
         // (and `fact_rx`, kept alive by `worker_pool`).
-        let Some(reason) = source_wait(&discovery, lookup_owed) else {
-            return Err(DownloadFailure::NoUsableSources);
-        };
-        send_download_event(
-            evt_tx,
-            DownloadEvent::WaitingForSources {
-                download_id,
-                reason,
-            },
-        )
-        .await;
-        told_wait = Some(reason);
+        // A source parked on its standing is no wait for sources: the
+        // standing's own clock wakes the run, and the download fails only on
+        // the brain's terminal condition.
+        match source_wait(&discovery, lookup_owed) {
+            Some(reason) => {
+                send_download_event(
+                    evt_tx,
+                    DownloadEvent::WaitingForSources {
+                        download_id,
+                        reason,
+                    },
+                );
+                told_wait = Some(reason);
+            }
+            None if ctx.state.out_of_sources() => {
+                return Err(DownloadFailure::NoUsableSources);
+            }
+            None => {
+                send_download_event(
+                    evt_tx,
+                    DownloadEvent::WaitingForSources {
+                        download_id,
+                        reason: SourceWait::OnStanding,
+                    },
+                );
+                told_wait = Some(SourceWait::OnStanding);
+            }
+        }
     }
 
     // ADR-0057 live wiring: a source that queues us and then hangs up keeps
@@ -352,13 +418,20 @@ where
     // is a cache of Self Reach, re-derived on every move of it.
     let mut reach_generation = ctx.callbacks.facts.reach.changes();
     let mut stop_rx = runner.stop_rx.clone();
+    let mut wake = WakeReading::default();
     while !ctx.state.is_complete() {
         // When the brain next has something due (ADR-0026): it names the
         // instant, the runner only sleeps until it.
-        let next_wake = ctx.state.next_wake().map(tokio::time::Instant::from_std);
+        let next_wake = wake.read(&ctx.state).map(tokio::time::Instant::from_std);
         let (worker, peer, event) = tokio::select! {
             biased;
             _ = wait_until_stop(&mut stop_rx) => {
+                // Quit asks the run for what arrived and nothing else: no
+                // worker is told, and the row stays as it stands.
+                if *stop_rx.borrow() == StopReason::Quit {
+                    end_lane(&mut ctx, true, &mut VecDeque::new()).await;
+                    return Err(DownloadFailure::Paused);
+                }
                 let failure = stop_reason(&stop_rx).unwrap_or(DownloadFailure::Cancelled);
                 // The Peer Roster's Download leg (ADR-0059):
                 // `on_stop` ends in `Fail`, whose whole-fleet shutdown
@@ -370,8 +443,16 @@ where
                 // shutdown, and the fact-stream drain, then returns the failure.
                 // `Fail` short-circuits before the diagnostics refresh inside
                 // `enact_drain`, so the stop path skips it exactly as before.
-                let mut q: VecDeque<Decision> = ctx.state.on_stop(failure).into();
-                return enact_drain(&mut q, &mut ctx).await;
+                let mut q: VecDeque<Decision> = ctx.state.on_stop(failure.clone()).into();
+                enact_drain(&mut q, &mut ctx).await?;
+                return Err(failure);
+            }
+            fact = ctx.persist.next_fact(), if ctx.persist.busy() => {
+                // A job on the lane ended: a finished part landed or could
+                // not, or the disk refused. The brain hears it.
+                let mut q: VecDeque<Decision> = after_fact(&mut ctx, fact).into();
+                enact_drain(&mut q, &mut ctx).await?;
+                continue;
             }
             () = sleep_until_optional(next_wake) => {
                 // Something the brain holds fell due: a callback road's
@@ -387,6 +468,10 @@ where
                 adopt(&mut ctx, reported, worker).await?;
                 continue;
             }
+            Some((key, leaves_in)) = held_rx.recv() => {
+                ctx.state.on_callback_held(now(), key, leaves_in);
+                continue;
+            }
             Some((key, reason)) = retire_rx.recv() => {
                 // The **Traversal Attempt** beside this callback retired
                 // (ADR-0091): every Rendezvous coordinator the
@@ -395,7 +480,7 @@ where
                 // by that road and retracts the claim; the callback keeps its
                 // slot and its 30 s, because the server may still relay it.
                 tracing::debug!(
-                    low_id = key.low_id.as_u32(),
+                    ?key,
                     ?reason,
                     "a NAT traversal attempt retired; the source is temporarily unreachable"
                 );
@@ -406,7 +491,7 @@ where
             Some((source_server, sources)) = global_sources_rx.recv() => {
                 // Server-UDP global sources (ADR-0051): a Low-ID row is held
                 // for a per-server callback to `source_server`.
-                let taken = intake::sight(ctx.runner, &mut ctx.state, Channel::Global(source_server), sources.into_iter().map(SourceSighting::plain));
+                let taken = intake::sight(ctx.runner, &mut ctx.state, Channel::Global(source_server), intake::global_answer(source_server, sources));
                 let mut q: VecDeque<Decision> = taken.decisions.into();
                 enact_drain(&mut q, &mut ctx).await?;
                 continue;
@@ -424,8 +509,7 @@ where
                         admitted: taken.tally.admitted,
                         new: taken.tally.fresh,
                     },
-                )
-                .await;
+                );
                 let mut q: VecDeque<Decision> = taken.decisions.into();
                 enact_drain(&mut q, &mut ctx).await?;
                 continue;
@@ -444,9 +528,29 @@ where
                         total: taken.tally.admitted,
                         usable_high_id: taken.tally.dialable,
                     },
-                )
-                .await;
+                );
                 let mut q: VecDeque<Decision> = taken.decisions.into();
+                enact_drain(&mut q, &mut ctx).await?;
+                continue;
+            }
+            Some(sighting) = recv_asker(&mut askers) => {
+                // A peer asked us about the file: one more candidate, under
+                // the run's source cap.
+                let taken = intake::sight(ctx.runner, &mut ctx.state, Channel::Prober, [sighting]);
+                let mut q: VecDeque<Decision> = taken.decisions.into();
+                enact_drain(&mut q, &mut ctx).await?;
+                continue;
+            }
+            Some(offer) = ctx.awaited_grants.next() => {
+                // An uploader granted a source waiting in its queue a slot on
+                // a link of its own (ADR-0057): the record's worker rides it.
+                // Or the download holding that peer's Queue Standing was
+                // granted, and the record's worker joins its link (ADR-0107).
+                let decisions = match offer {
+                    LinkOffer::Grant(peer) => ctx.state.on_slot_offered(now(), peer),
+                    LinkOffer::Call(peer) => ctx.state.on_link_called(now(), peer),
+                };
+                let mut q: VecDeque<Decision> = decisions.into();
                 enact_drain(&mut q, &mut ctx).await?;
                 continue;
             }
@@ -458,13 +562,6 @@ where
                 enact_drain(&mut q, &mut ctx).await?;
                 continue;
             }
-            recv = ctx.fact_rx.recv() => match recv {
-                Some(item) => item,
-                // `fact_tx` is held for the whole run so a backfilled worker
-                // can join the stream, so this is reached only if every worker
-                // stream has closed with the download still incomplete.
-                None => return Err(DownloadFailure::NoUsableSources),
-            },
             () = reach_generation.changed() => {
                 // **Self Reach** moved (ADR-0060) — a listener
                 // bind or clear included: the brain's capability
@@ -475,6 +572,14 @@ where
                 continue;
             }
             _ = sample.tick() => {
+                // Arrivals too few to fill a write go to the file on this
+                // tick, and a checkpoint falls due on it (ADR-0117 §4).
+                ctx.persist.write_gathered();
+                let at = std::time::Instant::now();
+                if ctx.persist.checkpoint_due(at) {
+                    let parts = ctx.state.take_checkpoint();
+                    ctx.persist.take_checkpoint(at, parts);
+                }
                 // A run waiting for sources — no worker, no callback out —
                 // writes nothing, so its part file is looked at on this tick
                 // instead: gone or cut short is said now, not when a
@@ -497,8 +602,10 @@ where
                 // (ADR-0093): a Kad node that died or started since spawn.
                 q.extend(ctx.state.on_discovery_active(now(), discovery.any_active() || lookup_owed));
                 enact_drain(&mut q, &mut ctx).await?;
-                told_wait = retell_wait(&ctx, &discovery, lookup_owed, told_wait).await;
+                told_wait = retell_wait(&ctx, &discovery, lookup_owed, told_wait);
                 publish_seeds(&ctx);
+                publish_exchange_pool(&ctx);
+                source_count.publish(ctx.state.listed_sources());
                 continue;
             }
             Some((udp_src, datagram)) = reask_reply_rx.recv() => {
@@ -509,6 +616,21 @@ where
                 enact_drain(&mut q, &mut ctx).await?;
                 continue;
             }
+            // Last of all: under full transfer this queue is never empty, and
+            // every arm above fires rarely, so nothing above can starve it
+            // and it starves nothing.
+            recv = ctx.fact_rx.recv() => match recv {
+                Some((worker, peer, Some(event))) => (worker, peer, event),
+                // Only a stop's drain counts a stream's end.
+                Some((_, _, None)) => continue,
+                // `fact_tx` is held for the whole run so a backfilled worker
+                // can join the stream, so this is reached only if every worker
+                // stream has closed with the download still incomplete.
+                None => {
+                    end_lane(&mut ctx, true, &mut VecDeque::new()).await;
+                    return Err(DownloadFailure::NoUsableSources);
+                }
+            },
         };
         // Download byte accounting (ADR-0077) at the wire boundary: every
         // block a worker delivered counts, before the brain decides whether it
@@ -535,6 +657,14 @@ where
                 .diagnostics
                 .dial_ended(ctx.download_id, peer, *cause);
         }
+        // A source reached over its peer's link is marked on its slot for
+        // the Sources pane (ADR-0107).
+        if let PeerWorkerEvent::LinkShared { turn } = &event {
+            ctx.runner
+                .rt
+                .diagnostics
+                .link_turn(ctx.download_id, peer, *turn);
+        }
         // The Peer Roster's download leg (ADR-0059): the hello
         // completing (`Connected`, right after `Identity`) is the one mark
         // site; the brain releasing the worker (`EndWorker`, every retirement)
@@ -550,6 +680,9 @@ where
                 .peer_roster
                 .mark_known(PeerRelation::Download(ctx.download_id), v4);
         }
+        if matches!(event, PeerWorkerEvent::BlockReceived { .. }) {
+            wake.block_turn();
+        }
         let mut q: VecDeque<Decision> = if let PeerWorkerEvent::SourcesReceived { sources } = event
         {
             // The answer's sources pass the gate like any channel's (aMule
@@ -562,6 +695,10 @@ where
             )
             .decisions
             .into()
+        } else if matches!(&event, PeerWorkerEvent::Identity(identity)
+            if Some(identity.user_hash()) == ctx.runner.own_position().user_hash)
+        {
+            ctx.state.on_own_hello(now(), peer).into()
         } else {
             ctx.state.on_worker_event(now(), peer, event).into()
         };
@@ -572,10 +709,12 @@ where
             publish_seeds(&ctx);
         }
     }
-    // Completion is enacted by the `Finalize` decision (worker shutdown +
-    // `finalize_download`) the moment the last part verifies; the loop then
-    // observes `is_complete` and exits.
-    Ok(())
+    // The `Finalize` decision shuts the fleet down the moment the last part
+    // verifies; the loop then observes `is_complete` and exits, handing the
+    // run the parts its completion move verifies by the file hash. Nothing on
+    // the lane outlives the loop: the completion move takes the file next.
+    settle_lane(&mut ctx, &mut VecDeque::new()).await;
+    Ok(std::mem::take(&mut ctx.file_hash_only_parts))
 }
 
 #[cfg(test)]
@@ -585,7 +724,7 @@ mod tests;
 /// a server session ending or arriving, Kad starting or stopping — so the
 /// operator reads who can still find it a source, not the reason it had at
 /// spawn. Once a worker or callback is out, the wait it told is over.
-async fn retell_wait<S, P>(
+fn retell_wait<S, P>(
     ctx: &LoopCtx<'_, S, P>,
     discovery: &super::DiscoveryLiveness,
     lookup_owed: bool,
@@ -595,7 +734,7 @@ async fn retell_wait<S, P>(
     if !ctx.command_channels.is_empty() || ctx.state.has_pending_callbacks() {
         return None;
     }
-    let reason = source_wait(discovery, lookup_owed)?;
+    let reason = source_wait(discovery, lookup_owed).unwrap_or(SourceWait::OnStanding);
     if reason != told {
         send_download_event(
             ctx.evt_tx,
@@ -603,8 +742,7 @@ async fn retell_wait<S, P>(
                 download_id: ctx.download_id,
                 reason,
             },
-        )
-        .await;
+        );
     }
     Some(reason)
 }
@@ -621,6 +759,15 @@ fn source_wait(discovery: &super::DiscoveryLiveness, lookup_owed: bool) -> Optio
 /// Publish the run's **Source Seeds** ranking for the actor's next write
 /// (ADR-0109): after the first fill, then each sample tick, so it is one
 /// sweep old at most.
+/// Hand the serve side the run's source-exchange pool (ADR-0113): after the
+/// first fill, then each sample tick — aMule builds its answer from the
+/// source list at the ask, and a pool a second old is that list.
+fn publish_exchange_pool<S, P>(ctx: &LoopCtx<'_, S, P>) {
+    if let Some(lease) = &ctx.runner.served {
+        lease.record_pool(ctx.state.exchange_pool());
+    }
+}
+
 fn publish_seeds<S, P>(ctx: &LoopCtx<'_, S, P>) {
     let ranking = ctx.state.source_seeds();
     ctx.runner.seeds_tx.send_if_modified(|held| {
@@ -630,6 +777,15 @@ fn publish_seeds<S, P>(ctx: &LoopCtx<'_, S, P>) {
         }
         moved
     });
+}
+
+/// The next asker the serve side handed this run; pending forever for a run
+/// with no inbox.
+async fn recv_asker(askers: &mut Option<mpsc::Receiver<SourceSighting>>) -> Option<SourceSighting> {
+    match askers {
+        Some(askers) => askers.recv().await,
+        None => std::future::pending().await,
+    }
 }
 
 /// Sleep until `deadline`, or never while the brain names none (ADR-0026).

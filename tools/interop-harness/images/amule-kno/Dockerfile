@@ -18,7 +18,7 @@
 ARG AMULE_KNO_BUILD_IMAGE=rmule/interop-amule-kno-build:local
 FROM ${AMULE_KNO_BUILD_IMAGE} AS build
 
-FROM debian:trixie-slim
+FROM debian:trixie-slim@sha256:f6b08b09a05725f9431502d3b5714f5c4576e82c1a84fa1debe0c24a7e0c3ec4
 
 ENV DEBIAN_FRONTEND=noninteractive
 # amuled refuses non-ASCII paths without a UTF-8 locale.

@@ -102,40 +102,10 @@ pub fn software_parts(software: &ClientSoftware) -> SoftwareParts<'_> {
     }
 }
 
-/// The client a mule hello names: its `CT_EMULE_VERSION` word and, when it
-/// sent one, its mod — read by the peer codec, as core reads a live hello.
-#[cfg(test)]
-pub(crate) fn client_software(word: u32, client_mod: Option<&str>) -> ClientSoftware {
-    use rmule_primitives::{ClientId, Ed2kText, Ipv4Endpoint, Tag, TagName, TagValue, UserHash};
-    let mut hash = [0x42; UserHash::BYTE_LEN];
-    // eMule's user-hash mark, as every mule writes it.
-    hash[5] = 14;
-    hash[14] = 111;
-    let mut tags = vec![
-        Tag::new(
-            TagName::compact_id(0x01),
-            TagValue::String(Ed2kText::from_utf8("peer")),
-        ),
-        Tag::new(TagName::compact_id(0xFB), TagValue::U32(word)),
-    ];
-    if let Some(text) = client_mod {
-        tags.push(Tag::new(
-            TagName::compact_id(0x55),
-            TagValue::String(Ed2kText::from_utf8(text)),
-        ));
-    }
-    ClientSoftware::from_hello_body(&rmule_peer::PeerHelloBody {
-        user_hash: UserHash::from_bytes(hash),
-        client_id: ClientId::from_u32(0),
-        tcp_port: 4662,
-        tags,
-        connected_server: Ipv4Endpoint::new(std::net::Ipv4Addr::UNSPECIFIED, 0),
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use rmule_primitives::Ed2kText;
+    use rmule_testkit::client_software;
 
     use super::*;
 

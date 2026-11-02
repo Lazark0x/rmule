@@ -8,7 +8,7 @@ use std::time::Instant;
 
 use rmule_primitives::Ed2kText;
 
-use crate::golden::assert_golden;
+use crate::golden::{assert_golden, assert_golden_caret};
 
 use super::*;
 use crate::fixture::*;
@@ -94,7 +94,7 @@ fn the_typed_filters_reach_the_start_search_query() {
 #[test]
 fn enter_in_the_editor_applies_and_searches() {
     let state = session_state();
-    let mut view = SearchesView::new();
+    let mut view = SearchesView::by_name();
     view.handle_key(press(KeyCode::Char('/')), &state);
     for c in "bunny".chars() {
         view.handle_key(press(KeyCode::Char(c)), &state);
@@ -169,7 +169,7 @@ fn a_max_below_the_min_is_refused_rather_than_dropped() {
 #[test]
 fn untouched_options_add_no_constraints() {
     let state = session_state();
-    let mut view = SearchesView::new();
+    let mut view = SearchesView::by_name();
     view.handle_key(press(KeyCode::Char('/')), &state);
     for c in "bunny".chars() {
         view.handle_key(press(KeyCode::Char(c)), &state);
@@ -227,7 +227,7 @@ fn size_bounds_parse_on_amules_binary_multipliers() {
 #[test]
 fn the_summary_row_names_only_the_constraints_that_are_set() {
     let mut filters = Filters::default();
-    assert_eq!(filters.summary(), "none");
+    assert_eq!(filters.summary(), None);
     // Driven the way an operator does, through the same key routing the
     // editor uses: two steps of the type ring, then two typed fields.
     let press_into = |filters: &mut Filters, code| {
@@ -243,14 +243,17 @@ fn the_summary_row_names_only_the_constraints_that_are_set() {
     for code in ".avi".chars().map(KeyCode::Char) {
         press_into(&mut filters, code);
     }
-    assert_eq!(filters.summary(), "Videos · ≥700 MB · .avi");
+    assert_eq!(
+        filters.summary().as_deref(),
+        Some("Videos · ≥700 MB · .avi")
+    );
 }
 
 #[test]
 fn golden_searches_options_editor() {
     let state = UiState::default();
     let theme = Theme::default_dark();
-    let mut view = SearchesView::new();
+    let mut view = SearchesView::by_name();
     view.handle_key(press(KeyCode::Char('/')), &state);
     for c in "big buck bunny".chars() {
         view.handle_key(press(KeyCode::Char(c)), &state);
@@ -263,8 +266,8 @@ fn golden_searches_options_editor() {
     for c in "700 MB".chars() {
         view.handle_key(press(KeyCode::Char(c)), &state);
     }
-    assert_golden("searches_options_editor", 78, 21, |frame| {
-        view.draw(frame, frame.area(), &state, &theme, Instant::now());
+    assert_golden_caret("searches_options_editor", 78, 21, |frame| {
+        view.draw(frame, frame.area(), &state, &theme, Instant::now())
     });
 }
 
@@ -274,7 +277,7 @@ fn golden_searches_options_editor() {
 fn golden_searches_options_summary() {
     let state = state_with(three_tier_results(), SearchStatus::Completed { total: 3 });
     let theme = Theme::default_dark();
-    let mut view = SearchesView::new().having_sent("ubuntu");
+    let mut view = SearchesView::by_name().having_sent("ubuntu");
     view.handle_key(press(KeyCode::Char('o')), &state);
     view.handle_key(press(KeyCode::Right), &state); // Type → Audio
     view.handle_key(press(KeyCode::Tab), &state);
@@ -294,4 +297,14 @@ fn golden_searches_options_summary() {
     assert_golden("searches_options_summary", 78, 21, |frame| {
         view.draw(frame, frame.area(), &state, &theme, Instant::now());
     });
+}
+
+#[test]
+fn the_summary_gives_a_bare_size_its_unit() {
+    let mut filters = Filters::default();
+    filters.form.focus = Filters::MIN_SIZE;
+    filters.form.set_focused_text("3");
+    filters.form.focus = Filters::MAX_SIZE;
+    filters.form.set_focused_text("700 MB");
+    assert_eq!(filters.summary().as_deref(), Some("≥3 B · ≤700 MB"));
 }

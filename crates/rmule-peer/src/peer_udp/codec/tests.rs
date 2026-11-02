@@ -10,8 +10,8 @@ fn hash() -> FileHash {
 
 /// A complete two-part file's `WritePartStatus`: count 2, one all-present
 /// byte (`0b0000_0011`).
-fn full_two_parts() -> PartBitmap {
-    PartBitmap::decode(2, &[0b0000_0011]).unwrap()
+fn full_two_parts() -> WireStatus {
+    WireStatus::decode(2, &[0b0000_0011]).unwrap()
 }
 
 #[test]
@@ -62,7 +62,7 @@ fn reask_ping_large_file_golden_spans_a_multi_byte_part_status() {
     // a single status byte. Twenty parts: 0–15 present (two 0xFF bytes),
     // 16–19 missing (a trailing 0x00 byte the ceil rounding still emits), and
     // a complete-source count large enough to prove its LE u16 (258 = 0x0102).
-    let status = PartBitmap::decode(20, &[0xFF, 0xFF, 0x00]).unwrap();
+    let status = WireStatus::decode(20, &[0xFF, 0xFF, 0x00]).unwrap();
     let large = ReaskFilePing {
         file_hash: hash(),
         part_status: Some(status),

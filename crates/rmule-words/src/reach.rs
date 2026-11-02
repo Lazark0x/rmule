@@ -4,7 +4,7 @@
 
 use rmule_core::{
     Consequence, HalfBound, NatTraversalUnavailableReason, ObfuscationPolicy, PairRole,
-    PeerReachDropReason, PeerReachRoute, PeerStreamRole, TunnelTransport,
+    PeerReachDropReason, PeerReachRoute, PeerStreamRole, ReachAddress, TunnelTransport,
 };
 use rmule_primitives::{AddressFamily, Ipv4Endpoint, PeerEndpoint, UserHash};
 
@@ -29,8 +29,12 @@ fn kad_address(endpoint: Ipv4Endpoint) -> String {
 /// How the route chosen for a peer reaches it, in words rather than the raw
 /// `PeerReachRoute`.
 #[must_use]
-pub fn route(peer: PeerEndpoint, route: &PeerReachRoute) -> Sentence {
-    let peer = address(peer);
+pub fn route(peer: ReachAddress, route: &PeerReachRoute) -> Sentence {
+    let peer = match peer {
+        ReachAddress::Dial(endpoint) => format!("peer {}", address(endpoint)),
+        ReachAddress::LowId(id) => format!("low-ID peer {}", id.as_u32()),
+        ReachAddress::KadRow => "Kad source".to_string(),
+    };
     let how = match route {
         PeerReachRoute::Direct { endpoint } => match endpoint {
             PeerEndpoint::V4(_) => format!("dialing it directly at {}", address(*endpoint)),
@@ -110,7 +114,7 @@ pub fn route(peer: PeerEndpoint, route: &PeerReachRoute) -> Sentence {
             }
         ),
     };
-    Sentence::owned(format!("peer {peer}: {how}"))
+    Sentence::owned(format!("{peer}: {how}"))
 }
 
 /// A NAT-T tunnel rose over a punched path (ADR-0091).
@@ -237,12 +241,35 @@ mod tests {
         let v4 = PeerEndpoint::V4(Ipv4Endpoint::new("203.0.113.4".parse().unwrap(), 4662));
         let v6 = PeerEndpoint::V6(Ipv6Endpoint::new("2a01:4f8::7".parse().unwrap(), 4662));
         assert_eq!(
-            *route(v4, &PeerReachRoute::Direct { endpoint: v4 }),
+            *route(v4.into(), &PeerReachRoute::Direct { endpoint: v4 }),
             *"peer 203.0.113.4:4662: dialing it directly at 203.0.113.4:4662"
         );
         assert_eq!(
-            *route(v4, &PeerReachRoute::Direct { endpoint: v6 }),
+            *route(v4.into(), &PeerReachRoute::Direct { endpoint: v6 }),
             *"peer 203.0.113.4:4662: dialing it directly over IPv6 at [2a01:4f8::7]:4662"
+        );
+    }
+
+    /// A firewalled peer has no address to name: a Kad row least of all.
+    #[test]
+    fn a_firewalled_route_names_the_peer_by_what_it_has() {
+        let low = rmule_primitives::ClientId::from_u32(1234);
+        assert_eq!(
+            *route(
+                ReachAddress::LowId(low),
+                &PeerReachRoute::Server { low_id: low }
+            ),
+            *"low-ID peer 1234: asking our server to have it call back"
+        );
+        let udp = Ipv4Endpoint::new("198.51.100.7".parse().unwrap(), 4672);
+        assert_eq!(
+            *route(
+                ReachAddress::KadRow,
+                &PeerReachRoute::DirectUdp {
+                    target_kad_udp: udp
+                }
+            ),
+            *"Kad source: asked it over UDP at 198.51.100.7:4672 to call back"
         );
     }
 }

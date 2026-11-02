@@ -30,6 +30,13 @@ pub(crate) enum DecodedServerFrame {
     SearchResultSkipped {
         reason: SearchResultSkipReason,
     },
+    /// A source answer that does not decode: dropped, as aMule's
+    /// `CServerSocket::ProcessPacket` stays connected over wrong sources
+    /// (stock 2.3.3 `ServerSocket.cpp:617-619`).
+    FoundSourcesSkipped {
+        opcode: u8,
+        reason: &'static str,
+    },
 }
 
 /// Umbrella for every server-pushed packet rmule decodes. Unknown well-formed
@@ -118,6 +125,9 @@ impl ServerPacket {
                 opcode: Opcode::SearchResult.as_u8(),
                 reason: reason.as_static_str(),
             }),
+            DecodedServerFrame::FoundSourcesSkipped { opcode, reason } => {
+                Err(Ed2kError::InvalidPayload { opcode, reason })
+            }
         }
     }
 
@@ -134,21 +144,21 @@ impl ServerPacket {
                 Err(reason) => DecodedServerFrame::SearchResultSkipped { reason },
             });
         }
-        Self::decode_edonkey(packet).map(DecodedServerFrame::Packet)
+        let source_answer = packet.opcode() == Opcode::FoundSources.as_u8()
+            || packet.opcode() == Opcode::FoundSourcesObfu.as_u8();
+        match Self::decode_edonkey(packet) {
+            Err(Ed2kError::InvalidPayload { opcode, reason }) if source_answer => {
+                Ok(DecodedServerFrame::FoundSourcesSkipped { opcode, reason })
+            }
+            decoded => decoded.map(DecodedServerFrame::Packet),
+        }
     }
 
     /// Decode a plain (non-packed) eDonkey-protocol [`Packet`] into a
-    /// logical [`ServerPacket`]. Centralises the opcode-dispatch table
-    /// shared by [`Self::decode`] and [`Self::decode_frame`]; rejecting
-    /// any other protocol byte here keeps the inflate path structurally
-    /// non-recursive.
+    /// logical [`ServerPacket`]: the opcode-dispatch table behind
+    /// [`Self::decode_edonkey_frame`], which alone has already refused any
+    /// other protocol byte, so the inflate path stays non-recursive.
     fn decode_edonkey(packet: &Packet) -> Result<Self> {
-        if packet.protocol() != PacketProtocol::Edonkey {
-            return Err(Ed2kError::InvalidPayload {
-                opcode: packet.opcode(),
-                reason: "unsupported packet protocol",
-            });
-        }
         let opcode = packet.opcode();
         if opcode == Opcode::IdChange.as_u8() {
             Ok(Self::IdChange(IdChange::decode_packet(packet)?))

@@ -4,12 +4,21 @@
 //! Two timers, both eMuleAI's, and each bounds a different exposure. The
 //! **10-minute learned-hash TTL** bounds how long a stale `(ip, port) → user
 //! hash` mapping can key a send — after a NAT rebinds, that endpoint may be
-//! somebody else. The **10-second per-endpoint send window** bounds what a
-//! stranger can make us emit: a flood of forged `ST_SYN` frames costs one KEY
-//! frame per ten seconds per source, not one per packet.
+//! somebody else — so it does not run under a live tunnel, whose endpoint has
+//! gone on answering and whose peer sends no second KEY frame. The **10-second
+//! per-endpoint send window** bounds how often our own opening packets assert
+//! our hash: a uTP `ST_SYN` we send and any QUIC long header, so a flood of
+//! forged QUIC openers costs one KEY frame per ten seconds per source, and an
+//! inbound `ST_SYN` costs none.
 //!
 //! Explicit time throughout — the caller reads the clock, so the whole table
 //! is testable without sleeping.
+//!
+//! The table lives inside the **Tunnel Registry**. A KEY frame from an endpoint
+//! reaches it only past the registry's admission, a row an unidentified source
+//! made leaves with that source's charge on the **Unidentified Allowance**
+//! (ADR-0091, security rule 10), and expired rows go on the caller's tick,
+//! never per frame.
 
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
@@ -21,8 +30,9 @@ use rmule_primitives::{PeerEndpoint, UserHash};
 pub const LEARNED_HASH_TTL: Duration = Duration::from_secs(600);
 
 /// Minimum interval between two KEY frames to the same endpoint. The trigger
-/// is a uTP `ST_SYN` or a QUIC long header, both of which a stranger can send
-/// at will, so this window is the rate limit on our own emission.
+/// is an opening packet we send: our uTP `ST_SYN`, or a QUIC long header, which
+/// a responder sends too and a stranger can draw at will, so this window is the
+/// rate limit on our own emission.
 pub const KEY_FRAME_INTERVAL: Duration = Duration::from_secs(10);
 
 /// One endpoint's key state.
@@ -32,6 +42,9 @@ struct KeyEntry {
     learned: Option<(UserHash, Instant)>,
     /// When we last asserted our own hash to it.
     asserted_at: Option<Instant>,
+    /// Who the endpoint is known to be: the hash our dial aimed at, then its
+    /// hello's. Lives as long as the endpoint's slot.
+    named: Option<UserHash>,
 }
 
 /// The per-endpoint key table behind the NAT-T send path.
@@ -52,37 +65,43 @@ impl NattKeyTable {
         Self::default()
     }
 
-    /// Adopt the hash a KEY frame carried. A later frame from the same
-    /// endpoint replaces the earlier one *and* refreshes the TTL: the endpoint
-    /// is the identity here, and it has just restated what answers there.
-    pub fn learn(&mut self, peer: PeerEndpoint, hash: UserHash, now: Instant) {
+    /// Adopt the hash a KEY frame carried, returning whether it was adopted.
+    /// A later frame from the same endpoint replaces the earlier one *and*
+    /// refreshes the TTL: the endpoint is the identity here, and it has just
+    /// restated what answers there.
+    ///
+    /// Except while the endpoint `held` a tunnel: then a hash that differs
+    /// from the live one is refused (ADR-0091, security rule 11). A NAT
+    /// rebinding moves the endpoint, never the hash at one, so the only frame
+    /// this refuses is one that would re-key a live tunnel to a stranger. And
+    /// one that contradicts the endpoint's name is refused with no key to
+    /// compare against.
+    pub fn learn(&mut self, peer: PeerEndpoint, hash: UserHash, held: bool, now: Instant) -> bool {
+        let named = self.entries.get(&peer).and_then(|entry| entry.named);
+        let known = held.then(|| self.key_for(peer, held, now)).flatten();
+        if named.or(known).is_some_and(|known| known != hash) {
+            return false;
+        }
         self.entries.entry(peer).or_insert(EMPTY).learned = Some((hash, now));
-        self.prune(now);
+        true
     }
 
     /// The hash to obfuscate a send to `peer` under, or `None` — plaintext
     /// then, which is the honest state for an endpoint that has never asserted
-    /// one.
+    /// one. A `held` endpoint's key does not age (ADR-0091, security rule 11).
     #[must_use]
-    pub fn key_for(&self, peer: PeerEndpoint, now: Instant) -> Option<UserHash> {
+    pub fn key_for(&self, peer: PeerEndpoint, held: bool, now: Instant) -> Option<UserHash> {
         self.entries
             .get(&peer)
             .and_then(|entry| entry.learned)
-            .filter(|(_, at)| now.duration_since(*at) < LEARNED_HASH_TTL)
+            .filter(|(_, at)| held || now.duration_since(*at) < LEARNED_HASH_TTL)
             .map(|(hash, _)| hash)
     }
 
     /// Whether a KEY frame to `peer` is due, and record it if so. One call,
     /// one decision: a "may I?" that did not also claim the window would let
     /// two concurrent sends both pass it.
-    ///
-    /// A new endpoint prunes the table first. The trigger is a packet any
-    /// stranger can forge from any source, so without it a SYN flood grew one
-    /// row per spoofed source until some KEY frame happened to be learned.
     pub fn claim_key_frame(&mut self, peer: PeerEndpoint, now: Instant) -> bool {
-        if !self.entries.contains_key(&peer) {
-            self.prune(now);
-        }
         let entry = self.entries.entry(peer).or_insert(EMPTY);
         let due = entry
             .asserted_at
@@ -91,6 +110,24 @@ impl NattKeyTable {
             entry.asserted_at = Some(now);
         }
         due
+    }
+
+    /// `hash` is who `peer` is (ADR-0091, security rule 11). A key that landed
+    /// under another hash is replaced; an endpoint that sent no KEY frame stays
+    /// unkeyed, because a name is no request for obfuscation.
+    pub fn name(&mut self, peer: PeerEndpoint, hash: UserHash, now: Instant) {
+        let entry = self.entries.entry(peer).or_insert(EMPTY);
+        entry.named = Some(hash);
+        if entry.learned.is_some() {
+            entry.learned = Some((hash, now));
+        }
+    }
+
+    /// `peer`'s slot went, and its name with it.
+    pub fn unname(&mut self, peer: PeerEndpoint) {
+        if let Some(entry) = self.entries.get_mut(&peer) {
+            entry.named = None;
+        }
     }
 
     /// Give back the window [`claim_key_frame`](Self::claim_key_frame) took at
@@ -105,19 +142,25 @@ impl NattKeyTable {
         }
     }
 
+    /// Forget `peer`'s row.
+    pub fn forget(&mut self, peer: PeerEndpoint) {
+        self.entries.remove(&peer);
+    }
+
     /// Drop entries no longer doing anything: the learned hash has expired and
     /// the send window has too, so the row would be recreated identically on
-    /// the next datagram. Run on every `learn` and on every claim for a new
-    /// endpoint, so endpoint churn cannot grow the table without bound.
-    fn prune(&mut self, now: Instant) {
-        self.entries.retain(|_, entry| {
+    /// the next datagram. A `held` endpoint's row stays whatever its age, and
+    /// so does a named one, whose name goes with its slot. The caller runs this
+    /// on its own coarse tick.
+    pub fn prune(&mut self, now: Instant, held: impl Fn(PeerEndpoint) -> bool) {
+        self.entries.retain(|peer, entry| {
             let hash_live = entry
                 .learned
                 .is_some_and(|(_, at)| now.duration_since(at) < LEARNED_HASH_TTL);
             let window_live = entry
                 .asserted_at
                 .is_some_and(|at| now.duration_since(at) < KEY_FRAME_INTERVAL);
-            hash_live || window_live
+            hash_live || window_live || entry.named.is_some() || held(*peer)
         });
     }
 
@@ -137,6 +180,7 @@ impl NattKeyTable {
 const EMPTY: KeyEntry = KeyEntry {
     learned: None,
     asserted_at: None,
+    named: None,
 };
 
 #[cfg(test)]
@@ -163,17 +207,21 @@ mod tests {
     fn a_learned_hash_keys_sends_for_ten_minutes_then_stops() {
         let now = Instant::now();
         let mut table = NattKeyTable::new();
-        assert_eq!(table.key_for(endpoint(1), now), None);
-        table.learn(endpoint(1), hash(0x42), now);
-        assert_eq!(table.key_for(endpoint(1), now), Some(hash(0x42)));
+        assert_eq!(table.key_for(endpoint(1), false, now), None);
+        table.learn(endpoint(1), hash(0x42), false, now);
+        assert_eq!(table.key_for(endpoint(1), false, now), Some(hash(0x42)));
         assert_eq!(
             table.key_for(
                 endpoint(1),
+                false,
                 now + LEARNED_HASH_TTL - Duration::from_millis(1)
             ),
             Some(hash(0x42))
         );
-        assert_eq!(table.key_for(endpoint(1), now + LEARNED_HASH_TTL), None);
+        assert_eq!(
+            table.key_for(endpoint(1), false, now + LEARNED_HASH_TTL),
+            None
+        );
     }
 
     /// A hash is learned per endpoint, never per address: the same host on a
@@ -182,10 +230,50 @@ mod tests {
     fn two_endpoints_hold_two_independent_keys() {
         let now = Instant::now();
         let mut table = NattKeyTable::new();
-        table.learn(endpoint(1), hash(1), now);
-        table.learn(endpoint(2), hash(2), now);
-        assert_eq!(table.key_for(endpoint(1), now), Some(hash(1)));
-        assert_eq!(table.key_for(endpoint(2), now), Some(hash(2)));
+        table.learn(endpoint(1), hash(1), false, now);
+        table.learn(endpoint(2), hash(2), false, now);
+        assert_eq!(table.key_for(endpoint(1), false, now), Some(hash(1)));
+        assert_eq!(table.key_for(endpoint(2), false, now), Some(hash(2)));
+    }
+
+    /// While the endpoint holds a tunnel its key is fixed: a KEY frame naming
+    /// another hash is refused and the tunnel keeps obfuscating under the one
+    /// it rose with, while a restatement of the same hash still refreshes it.
+    #[test]
+    fn a_held_endpoint_refuses_a_key_naming_another_hash() {
+        let now = Instant::now();
+        let mut table = NattKeyTable::new();
+        assert!(table.learn(endpoint(1), hash(1), true, now));
+        let later = now + Duration::from_secs(500);
+        assert!(!table.learn(endpoint(1), hash(9), true, later));
+        assert_eq!(table.key_for(endpoint(1), false, later), Some(hash(1)));
+        assert!(table.learn(endpoint(1), hash(1), true, later));
+        assert_eq!(
+            table.key_for(endpoint(1), false, now + LEARNED_HASH_TTL),
+            Some(hash(1)),
+            "the restatement refreshed the window"
+        );
+    }
+
+    /// The peer's KEY only follows its opener, so nothing restates a live
+    /// tunnel's key: it neither lapses under the tunnel, which would leave
+    /// sends in plaintext and the gate open, nor yields to a forgery then.
+    #[test]
+    fn a_held_key_does_not_expire_under_its_tunnel() {
+        let now = Instant::now();
+        let mut table = NattKeyTable::new();
+        table.learn(endpoint(1), hash(1), true, now);
+        let later = now + LEARNED_HASH_TTL * 2;
+        assert!(!table.learn(endpoint(1), hash(9), true, later));
+        assert_eq!(table.key_for(endpoint(1), true, later), Some(hash(1)));
+        table.prune(later, |_| true);
+        assert_eq!(table.len(), 1, "the tick leaves a held row alone");
+
+        assert_eq!(
+            table.key_for(endpoint(1), false, later),
+            None,
+            "with the tunnel gone the window applies again"
+        );
     }
 
     /// A restated hash replaces the old one and refreshes the window — an
@@ -194,12 +282,12 @@ mod tests {
     fn a_second_key_frame_replaces_and_refreshes() {
         let now = Instant::now();
         let mut table = NattKeyTable::new();
-        table.learn(endpoint(1), hash(1), now);
+        table.learn(endpoint(1), hash(1), false, now);
         let later = now + Duration::from_secs(500);
-        table.learn(endpoint(1), hash(9), later);
-        assert_eq!(table.key_for(endpoint(1), later), Some(hash(9)));
+        table.learn(endpoint(1), hash(9), false, later);
+        assert_eq!(table.key_for(endpoint(1), false, later), Some(hash(9)));
         assert_eq!(
-            table.key_for(endpoint(1), now + LEARNED_HASH_TTL),
+            table.key_for(endpoint(1), false, now + LEARNED_HASH_TTL),
             Some(hash(9)),
             "the fresh learn moved the expiry, it did not inherit the old one"
         );
@@ -236,16 +324,17 @@ mod tests {
     fn a_fully_expired_endpoint_is_pruned() {
         let now = Instant::now();
         let mut table = NattKeyTable::new();
-        table.learn(endpoint(1), hash(1), now);
+        table.learn(endpoint(1), hash(1), false, now);
         assert_eq!(table.len(), 1);
-        table.learn(endpoint(2), hash(2), now + LEARNED_HASH_TTL);
+        table.learn(endpoint(2), hash(2), false, now + LEARNED_HASH_TTL);
+        table.prune(now + LEARNED_HASH_TTL, |_| false);
         assert_eq!(table.len(), 1, "endpoint 1 aged out on the prune");
         assert!(!table.is_empty());
     }
 
-    /// A flood of forged openers from distinct sources costs rows for one
-    /// window, not forever: the claim for a new endpoint prunes the ones whose
-    /// window has passed, with no KEY frame ever learned in between.
+    /// A flood of claims from distinct sources costs rows for one window, not
+    /// forever: the tick prunes the ones whose window has passed, with no KEY
+    /// frame ever learned in between.
     #[test]
     fn claims_from_a_forged_flood_age_out_without_a_learn() {
         let now = Instant::now();
@@ -255,6 +344,7 @@ mod tests {
         }
         assert_eq!(table.len(), 200);
         assert!(table.claim_key_frame(endpoint(201), now + KEY_FRAME_INTERVAL));
+        table.prune(now + KEY_FRAME_INTERVAL, |_| false);
         assert_eq!(table.len(), 1, "only the fresh claim is left");
     }
 
@@ -273,5 +363,35 @@ mod tests {
         assert!(table.claim_key_frame(endpoint(2), later));
         table.unclaim_key_frame(endpoint(2), now);
         assert!(!table.claim_key_frame(endpoint(2), later));
+    }
+
+    /// A name outranks a KEY frame, key or no key yet, and sets no key itself:
+    /// obfuscating to an endpoint that never sent one would be a guess
+    /// (ADR-0091, security rule 11).
+    #[test]
+    fn a_name_refuses_a_contradicting_first_key_and_keys_nothing_itself() {
+        let now = Instant::now();
+        let mut table = NattKeyTable::new();
+        table.name(endpoint(1), hash(1), now);
+        assert_eq!(table.key_for(endpoint(1), true, now), None);
+
+        assert!(!table.learn(endpoint(1), hash(9), true, now));
+        assert_eq!(table.key_for(endpoint(1), true, now), None);
+
+        assert!(table.learn(endpoint(1), hash(1), true, now));
+        assert_eq!(table.key_for(endpoint(1), true, now), Some(hash(1)));
+    }
+
+    /// The forged first KEY an accepted Tunnel had nothing to contradict goes
+    /// when the hello reads.
+    #[test]
+    fn a_name_replaces_a_key_that_landed_before_it() {
+        let now = Instant::now();
+        let mut table = NattKeyTable::new();
+        assert!(table.learn(endpoint(1), hash(9), true, now));
+
+        table.name(endpoint(1), hash(1), now);
+
+        assert_eq!(table.key_for(endpoint(1), true, now), Some(hash(1)));
     }
 }

@@ -27,7 +27,10 @@ mod status_ping_sweep;
 pub(crate) use engine::ServerUdpEngine;
 pub(crate) use seal::ServerUdpSeal;
 pub(crate) use status_challenge::{StatusChallenges, os_rand16};
-pub(crate) use status_ping_sweep::{CryptPingArm, StatusPingSweep, os_crypt_ping_nonce};
+pub(crate) use status_ping_sweep::{
+    ANSWER_GRACE, CryptPingArm, FIRST_CONTACT_TICK, KEY_FLOOR, REASK_WINDOW, StatusPingSweep,
+    os_crypt_ping_nonce,
+};
 
 /// One received server-UDP datagram, tagged with the answering server's
 /// standard endpoint (the engine maps the UDP source back, ADR-0046) — the
@@ -40,7 +43,8 @@ pub(crate) type ServerUdpDatagram = (Vec<u8>, Ipv4Endpoint);
 /// to one gate.
 #[cfg(test)]
 pub(crate) mod tests {
-    use std::sync::{Arc, Mutex};
+    use parking_lot::Mutex;
+    use std::sync::Arc;
     use std::time::Duration;
 
     use rmule_ed2k::Opcode;
@@ -101,7 +105,7 @@ pub(crate) mod tests {
             } else {
                 &self.obfuscated
             };
-            list.lock().unwrap().push((to, datagram));
+            list.lock().push((to, datagram));
         }
 
         async fn recv(&self) -> Option<ServerUdpDatagram> {
@@ -248,6 +252,7 @@ pub(crate) mod tests {
             first_contact_tick: Duration::from_millis(250),
             tick: Duration::from_secs(5),
             reask: Duration::from_secs(1_200),
+            key_floor: Duration::from_secs(1_200),
             crypt: plain_arm(),
             resolver,
         };
@@ -287,8 +292,8 @@ pub(crate) mod tests {
         assert_eq!(pinged.server.fail_count, 1, "sending a ping counts nothing");
         assert_eq!(
             (pinged.ping, pinged.users, pinged.files),
-            (None, None, None),
-            "an unanswered ping measures nothing — unknown, not zero"
+            (crate::diagnostics::PingState::Awaiting, None, None),
+            "a ping in flight measures nothing — awaited, not zero"
         );
 
         // The server answers the challenge the fixed entropy minted.
@@ -301,7 +306,10 @@ pub(crate) mod tests {
             answered.server.fail_count, 0,
             "the answer absolves the whole tally"
         );
-        assert!(answered.ping.is_some(), "the gate timed the round trip");
+        assert!(
+            answered.ping.measured().is_some(),
+            "the gate timed the round trip"
+        );
         assert_eq!(answered.users, Some(1000));
         assert_eq!(answered.files, Some(2000));
     }
@@ -392,7 +400,8 @@ pub(crate) mod tests {
     #[tokio::test(start_paused = true)]
     async fn a_dead_server_pinged_alone_does_not_say_the_network_is_down() {
         let (live, dead) = (server("127.0.0.1", 4661), server("127.0.0.2", 4799));
-        let (sweep, engine, diagnostics) = round_trip_harness(&[live.clone(), dead.clone()]);
+        let (mut sweep, engine, diagnostics) = round_trip_harness(&[live.clone(), dead.clone()]);
+        sweep.reask = Duration::from_secs(16_200);
         let mut state = SweepState::default();
 
         sweep.ping_next(&mut state).await;
@@ -416,7 +425,6 @@ pub(crate) mod tests {
             .transport()
             .sends
             .lock()
-            .unwrap()
             .iter()
             .filter(|(_, d)| d.get(1) == Some(&0x96))
             .count();
@@ -439,7 +447,10 @@ pub(crate) mod tests {
 
         let forged = row(&diagnostics, &listed);
         assert_eq!(forged.server.fail_count, 1, "the tally stands");
-        assert_eq!((forged.ping, forged.users), (None, None));
+        assert_eq!(
+            (forged.ping, forged.users),
+            (crate::diagnostics::PingState::Awaiting, None)
+        );
     }
 
     // ----- ADR-0052's amendment: a server listed by host name -----
@@ -457,7 +468,7 @@ pub(crate) mod tests {
 
         sweep.ping_next(&mut SweepState::default()).await;
 
-        let sends = sweep.seal.transport().sends.lock().unwrap().clone();
+        let sends = sweep.seal.transport().sends.lock().clone();
         assert_eq!(sends.len(), 1);
         assert_eq!(
             sends[0].0,
@@ -477,7 +488,10 @@ pub(crate) mod tests {
             .await;
 
         let answered = row(&diagnostics, &named);
-        assert!(answered.ping.is_some(), "the named row shows its ping");
+        assert!(
+            answered.ping.measured().is_some(),
+            "the named row shows its ping"
+        );
         assert_eq!((answered.users, answered.files), (Some(1000), Some(2000)));
         assert_eq!(
             diagnostics.snapshot().servers.len(),
@@ -520,7 +534,6 @@ pub(crate) mod tests {
                 .transport()
                 .sends
                 .lock()
-                .unwrap()
                 .iter()
                 .all(|(to, _)| to == &udp(&answers, 4)),
             "nothing is sent for a name without an address"
@@ -573,7 +586,6 @@ pub(crate) mod tests {
             .transport()
             .sends
             .lock()
-            .unwrap()
             .iter()
             .map(|(to, _)| *to)
             .collect::<Vec<_>>();

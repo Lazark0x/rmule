@@ -155,8 +155,7 @@ mod tests {
 
     use super::{NotifyDirectoryWatch, WatchFault, WatchSignal};
 
-    /// Which errors are about one path and which about the watch (ADR-0103,
-    /// "A watch that fails while running is re-established").
+    /// Which errors are about one path and which about the watch (ADR-0103).
     #[test]
     fn an_error_naming_a_path_under_the_directory_drops_only_that_path() {
         let tmp = tempfile::tempdir().unwrap();

@@ -2,7 +2,7 @@
 //! command — the credit ring seeded, the server-UDP and client-UDP fronts
 //! bound, the port-mapping runtime started, the Durable Store's downloads
 //! attached — ending in the [`CoreActor`] that owns them for the session's
-//! life (ADR-0093: "the actor's prologue").
+//! life (ADR-0093).
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -30,14 +30,16 @@ use crate::download::SharedRuntime;
 use crate::service::activity::{Activities, unix_now};
 use crate::service::{CoreEvent, SharedReaskReplySink};
 
-use super::{CoreActor, CoreWiring, download, registry_check, send_event, share_flush};
+use super::{
+    CoreActor, CoreWiring, credit_flush, download, registry_check, send_event, share_flush,
+};
 
 /// Run the prologue over `wiring`, then the actor it builds, until the
 /// inbox closes and Quit has run.
 pub(in crate::service) async fn run_core_with_adapters<S, P, L, K>(
     mut wiring: CoreWiring<S, P, L, K>,
     inbox: crate::service::inbox::Inbox,
-    evt_tx: mpsc::Sender<CoreEvent>,
+    evt_tx: crate::service::Outbox,
     diagnostics: crate::diagnostics::DiagnosticsState,
 ) where
     S: SourceLookupService,
@@ -52,8 +54,7 @@ pub(in crate::service) async fn run_core_with_adapters<S, P, L, K>(
         CoreEvent::ObfuscationPolicyAtStart {
             policy: wiring.hello_adverts.obfuscation.get(),
         },
-    )
-    .await;
+    );
     // Credit-ring restart continuity: the ring is seeded before
     // any activity can touch it.
     if let Some(dir) = wiring.clients_met_dir.as_deref() {
@@ -62,7 +63,7 @@ pub(in crate::service) async fn run_core_with_adapters<S, P, L, K>(
     // The managed server list is a level from the actor's first instant
     // (ADR-0080): a consumer that snapshots before sending any command still
     // sees what the store holds, exactly as it sees a recovered download.
-    match wiring.server_list.servers() {
+    match super::server::load_server_list(&wiring.server_list, &evt_tx).await {
         Ok(servers) => diagnostics.set_servers(servers),
         Err(error) => {
             tracing::warn!(%error, "managed server list unreadable at start; surfacing it empty");
@@ -97,6 +98,11 @@ pub(in crate::service) async fn run_core_with_adapters<S, P, L, K>(
     wiring
         .hello_refusals
         .install(diagnostics.clone(), evt_tx.downgrade());
+    // The verified-identity cell, for the same reason: a link binds its
+    // Secure User Identification in the one ledger (ADR-0041).
+    wiring
+        .secured_identities
+        .install(Arc::clone(&wiring.credit), evt_tx.downgrade());
     // The login deadline every establishment arms, installed on
     // the same cell and for the same reason: establishment runs off this actor
     // and must not hold a serve start — or a front end — open on a server that
@@ -129,16 +135,13 @@ pub(in crate::service) async fn run_core_with_adapters<S, P, L, K>(
     // A UDP-bind failure disables discovery — downloads still work via the connected
     // server and peer source-exchange.
     let global_source_registry: GlobalSourceRegistry =
-        Arc::new(std::sync::Mutex::new(HashMap::new()));
-    let global_source_servers: SharedServerList = Arc::new(std::sync::Mutex::new(Vec::new()));
+        Arc::new(parking_lot::Mutex::new(HashMap::new()));
+    let global_source_servers: SharedServerList = Arc::new(parking_lot::Mutex::new(Vec::new()));
     // The level keeps it the managed list minus the dead and the IP-filtered
     // (ADR-0051, ADR-0052).
     diagnostics.install_swept_servers(Arc::clone(&global_source_servers), wiring.ip_filter.clone());
-    // The runner → callback-relay channel for per-server Low-ID callbacks
-    // (ADR-0051). The download runtime holds `global_callback_tx` (cloned to
-    // each runner) so the relay's recv stays open for the actor's lifetime.
-    let (global_callback_tx, global_callback_rx) = mpsc::channel(32);
-    let kad_source_registry: KadSourceRegistry = Arc::new(std::sync::Mutex::new(HashMap::new()));
+    let kad_source_registry: KadSourceRegistry = Arc::new(parking_lot::Mutex::new(HashMap::new()));
+    let kad_ask_clock = crate::source_discovery::AskClock::shared(wiring.config.kad_reask_interval);
     let own_identity = wiring.shared_server_session.own_identity().clone();
     // A late Kad helper test names no server to report through, so the
     // Awaited Testers report it on the bus itself (ADR-0075, Run Log).
@@ -163,6 +166,11 @@ pub(in crate::service) async fn run_core_with_adapters<S, P, L, K>(
     }
     let interface_refresh = spawn_interface_refresh(&wiring.shared_server_session);
     let share_flush = share_flush::ShareFlush::start(&wiring.registry, &diagnostics);
+    let credit_flush = credit_flush::CreditFlush::start(
+        wiring.credit.clone(),
+        Arc::clone(&wiring.store),
+        evt_tx.clone(),
+    );
     // The Address Learning rows a snapshot reports (ADR-0084) are read from
     // the store, never copied into the diagnostics state: one writer, one
     // truth, and a row that cannot drift from the verdict it describes.
@@ -202,7 +210,7 @@ pub(in crate::service) async fn run_core_with_adapters<S, P, L, K>(
             // consumer already knows from the other two roles.
             if let Some(half_bound) = diagnostics.record_server_udp_bind(transport.binds()) {
                 tracing::warn!(%half_bound, "server-UDP Family Pair came up half");
-                send_event(&evt_tx, CoreEvent::SocketBoundWithoutFamily { half_bound }).await;
+                send_event(&evt_tx, CoreEvent::SocketBoundWithoutFamily { half_bound });
             }
             Some(spawn_server_udp_front(
                 Arc::new(transport),
@@ -210,7 +218,6 @@ pub(in crate::service) async fn run_core_with_adapters<S, P, L, K>(
                 &wiring.hello_adverts.obfuscation,
                 &server_facts,
                 &own_identity,
-                global_callback_rx,
                 &global_source_servers,
                 &global_source_registry,
                 diagnostics.clone(),
@@ -310,7 +317,7 @@ pub(in crate::service) async fn run_core_with_adapters<S, P, L, K>(
                     if half_bound.forfeited(rmule_net::family::Consequence::Ipv4UdpAdvert) {
                         wiring.udp_ports_advert.withhold_client_udp();
                     }
-                    send_event(&evt_tx, CoreEvent::SocketBoundWithoutFamily { half_bound }).await;
+                    send_event(&evt_tx, CoreEvent::SocketBoundWithoutFamily { half_bound });
                 }
                 let (reask_rx, reply_tx) = spawn_client_udp_front(
                     Arc::clone(&socket),
@@ -320,6 +327,7 @@ pub(in crate::service) async fn run_core_with_adapters<S, P, L, K>(
                         buddy_slot: &wiring.buddy_slot,
                         reask_reply: &reask_reply_sink,
                         kad_inlet: kad_inlet.clone(),
+                        bans: wiring.kad_cells.adapters.ban_store.clone(),
                     },
                     &diagnostics,
                     NattFrontWiring {
@@ -332,6 +340,7 @@ pub(in crate::service) async fn run_core_with_adapters<S, P, L, K>(
                         admit: wiring.tunnel_admit.clone(),
                         claims: wiring.awaited_inbound.clone(),
                         peer_pin: peer_pin.clone(),
+                        roster: wiring.peer_roster.clone(),
                         events: evt_tx.downgrade(),
                         hello_adverts: wiring.hello_adverts.clone(),
                         firewalled_front: wiring.firewalled_front.clone(),
@@ -372,8 +381,7 @@ pub(in crate::service) async fn run_core_with_adapters<S, P, L, K>(
                         port: wiring.settings.udp_port,
                         kind: error.kind(),
                     },
-                )
-                .await;
+                );
                 (None, None, None)
             }
         };
@@ -407,6 +415,7 @@ pub(in crate::service) async fn run_core_with_adapters<S, P, L, K>(
         diagnostics.clone(),
         Arc::clone(&wiring.port_mapping_preferences),
         self_reach.clone(),
+        evt_tx.downgrade(),
     );
     // A **Punched Path**'s one PCP `PEER` pin (ADR-0091) goes to the running
     // mapping runtime, which owns the backends and the route table. Weakly, so
@@ -427,11 +436,21 @@ pub(in crate::service) async fn run_core_with_adapters<S, P, L, K>(
         buddy: wiring.hello_adverts.buddy.clone(),
     });
     let remember_peers = wiring.settings.remember_peers;
+    if wiring.restore_at_attach {
+        download::adopt_part_files(
+            &wiring.store,
+            wiring.settings.temp_dir.clone(),
+            wiring.settings.download_dir.clone(),
+            &evt_tx,
+        )
+        .await;
+    }
     let (restoring, remembered) = download::attach_downloads(
         &wiring.store,
         &diagnostics,
         &evt_tx,
         wiring.restore_at_attach,
+        &wiring.served_downloads,
     )
     .await;
 
@@ -445,22 +464,35 @@ pub(in crate::service) async fn run_core_with_adapters<S, P, L, K>(
     // asks the one selector (ADR-0061). Bounded and never awaited on the answer
     // — a full inbox costs a punch attempt, not a download.
     let (download_reach_tx, download_reach_rx) = mpsc::channel(16);
+    // The runs' in-place reports (ADR-0115, step 6): each waits on its own
+    // answer, so a report never queues behind another run's.
+    let (in_place_tx, in_place_rx) = mpsc::channel(16);
+    let hash_turn = crate::directory_scan::HashTurn::default();
     let download_runtime = DownloadRuntime {
         shared: Arc::new(SharedRuntime {
+            write_cache: crate::download::write_cache::WriteCache::default(),
+            hash_turn: hash_turn.clone(),
             download_reach_tx,
             source_lookup_timeout: wiring.config.source_lookup_timeout,
             callback_timeout: wiring.config.callback_timeout,
             store: Arc::clone(&wiring.store),
             source_lookup: Arc::clone(&wiring.source_lookup),
             source_asks: Arc::default(),
+            connection_budget: crate::download::connection_budget::ConnectionBudget::shared(
+                wiring.config.peer_connections,
+            ),
+            bans: wiring.kad_cells.adapters.ban_store.clone(),
+            queue_standings: crate::download::queue_standings::QueueStandings::shared(),
+            spent_names: crate::download::spent_names::SpentNames::shared(),
+            held_places: crate::held_places::SharedHeldPlaces::default(),
             peer_transfer: Arc::clone(&wiring.peer_transfer),
             credit: Arc::clone(&wiring.credit),
             evt_tx: evt_tx.clone(),
             diagnostics: diagnostics.clone(),
             server_session: wiring.shared_server_session.clone(),
             awaited_inbound: wiring.awaited_inbound.clone(),
+            peer_links: wiring.peer_links.clone(),
             global_source_registry,
-            global_callback_tx,
             kad_source_registry: kad_source_registry.clone(),
             reask_reply_sink,
             client_udp_tx: client_udp_reply_tx.clone(),
@@ -471,8 +503,11 @@ pub(in crate::service) async fn run_core_with_adapters<S, P, L, K>(
             reach: self_reach.clone(),
             peer_roster: wiring.peer_roster.clone(),
             resolver: crate::name_resolver::system_resolver(),
+            completion_fs: Arc::new(crate::download::OsCompletionFs),
+            copy_turn: Arc::new(tokio::sync::Semaphore::new(1)),
+            in_place_tx,
         }),
-        peer_concurrency: wiring.config.effective_peer_concurrency_per_download(),
+        streaming_window_parts: wiring.config.streaming_window_parts,
         finished_tx: finished_tx.clone(),
         discovery: crate::download::DiscoveryLiveness {
             global_servers: Arc::clone(&global_source_servers),
@@ -482,8 +517,9 @@ pub(in crate::service) async fn run_core_with_adapters<S, P, L, K>(
     };
 
     // Read before the actor takes a command: the Registry Check's start look.
-    let registry_at_start = crate::registry::SharedFileRegistry::list(&*wiring.registry).ok();
+    let registry_at_start = crate::registry::SharedFileRegistry::rows(&*wiring.registry).ok();
     let share_guards = wiring.share_guards.clone();
+    let temp_dir = wiring.settings.temp_dir.clone();
     // **Peer Reach** (ADR-0061, ADR-0091): both reach arms end in it, over
     // the handles woven above.
     let peer_reach = crate::peer_reach::PeerReacher::new(crate::peer_reach::PeerReachWiring {
@@ -502,24 +538,33 @@ pub(in crate::service) async fn run_core_with_adapters<S, P, L, K>(
         diagnostics,
         server_list_update_in_flight: Arc::new(AtomicBool::new(false)),
         server_connect_in_flight: Arc::new(AtomicBool::new(false)),
+        clock_watch: super::clock_watch::ClockWatch::new(
+            std::time::Instant::now(),
+            std::time::SystemTime::now(),
+        ),
         finished_tx,
         registry_check: registry_check::spawn_registry_check(scan_tx.clone(), registry_at_start),
         directories: super::shared_directory::DirectoryList {
+            temp_dir,
             guards: share_guards,
+            turn: hash_turn,
             ..Default::default()
         },
         scan_tx,
+        scan_writes: super::scan::ScanWrites::default(),
         serve_ended_tx,
         kad_ended_tx,
         activities: Activities::restoring(restoring, remembered),
         live_searches,
         global_source_servers,
         kad_source_registry,
+        kad_ask_clock,
         kad: None,
         activity_generation: 0,
         server_udp,
         own_identity,
         user_hash,
+        stopping: Default::default(),
         download_runtime,
         client_udp_reask_rx,
         client_udp_reply_tx,
@@ -529,10 +574,12 @@ pub(in crate::service) async fn run_core_with_adapters<S, P, L, K>(
         peer_reach,
         interface_refresh,
         share_flush,
+        credit_flush: Some(credit_flush),
         port_mapping,
         trail,
         intent: super::server_intent::IntentLedger::default(),
         remember_peers,
+        offer_checks: super::offer_check::OfferChecks::default(),
     };
     // The listener is up from attach (ADR-0095): before any download
     // restored below starts, and before any connect.
@@ -544,7 +591,10 @@ pub(in crate::service) async fn run_core_with_adapters<S, P, L, K>(
     actor
         .run(
             inbox,
-            finished_rx,
+            super::RunNotices {
+                finished: finished_rx,
+                in_place: in_place_rx,
+            },
             scan_rx,
             download_reach_rx,
             serve_ended_rx,

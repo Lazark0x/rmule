@@ -256,7 +256,9 @@ wait_for_ipc() {
 resolve_server() {
     SERVER_HOST="${ED2K_SERVER_HOST:?ED2K_SERVER_HOST is required}"
     SERVER_PORT="${ED2K_SERVER_PORT:-4661}"
-    SERVER_ADDR="$(getent hosts "$SERVER_HOST" | awk '{ print $1; exit }')"
+    # `getent hosts` on an address literal is a reverse lookup: it prints nothing
+    # unless the runtime's DNS holds a PTR for it. `ahostsv4` takes the literal.
+    SERVER_ADDR="$(getent ahostsv4 "$SERVER_HOST" | awk '{ print $1; exit }')"
     if [ -z "$SERVER_ADDR" ]; then
         echo "could not resolve ED2K_SERVER_HOST=${SERVER_HOST}" >&2
         exit 1

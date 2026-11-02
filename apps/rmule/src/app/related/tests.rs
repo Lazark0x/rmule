@@ -13,8 +13,7 @@ use crate::fixture::*;
 use crate::state::{SearchStatus, UiState};
 use crate::theme::Theme;
 
-/// An app attached to a real core, so a command is queued rather than
-/// answered with "core not attached".
+/// An app attached to a real core.
 fn attached(state: UiState) -> App {
     let core = rmule_core::Core::builder(
         rmule_core::CoreConfig::default(),
@@ -65,7 +64,7 @@ async fn from_a_search_result() {
     );
     let mut app = attached(state);
     app.chrome.active = ViewId::Searches;
-    // g: first row by name, clip_low.avi.
+    // g: the first row, most sources on top.
     keys(
         &mut app,
         &[
@@ -76,7 +75,7 @@ async fn from_a_search_result() {
             KeyCode::Enter,
         ],
     );
-    assert_landed(&app, file_hash(0x11), "clip_low.avi");
+    assert_landed(&app, file_hash(0x33), "distro_hot.iso");
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -98,12 +97,9 @@ async fn from_a_download_whose_name_is_not_known() {
         &mut app,
         &[
             DOWN,
-            DOWN,
             KeyCode::Char('m'),
-            DOWN,
-            DOWN,
-            DOWN,
-            DOWN,
+            KeyCode::Char('G'),
+            KeyCode::Char('k'),
             KeyCode::Enter,
         ],
     );
@@ -130,23 +126,27 @@ async fn a_dimmed_item_sends_nothing_and_stays_on_its_tab() {
     assert_eq!(app.chrome.active, ViewId::Transfers);
 }
 
-/// A UI-only run — no client attached — dims the item with its
-/// reason even where the level last said the server grants it; nothing is
-/// queued and the tab stays.
+/// A stopped core dims the item with its reason even where the level last
+/// said the server grants it; nothing is queued and the tab stays.
 #[tokio::test(flavor = "multi_thread")]
-async fn with_no_core_attached_the_item_is_dimmed_and_nothing_is_queued() {
+async fn with_the_core_stopped_the_item_is_dimmed_and_nothing_is_queued() {
     let mut app = App::new(Theme::default_dark());
     app.state = connected_granting(three_downloads(), true);
-    app.state.ui_only = Some(crate::state::AttachFailure::OpenStore);
+    app.state.core_alive = false;
     app.chrome.active = ViewId::Transfers;
     keys(
         &mut app,
-        &[KeyCode::Char('m'), DOWN, DOWN, DOWN, DOWN, KeyCode::Enter],
+        &[
+            KeyCode::Char('m'),
+            KeyCode::Char('G'),
+            KeyCode::Char('k'),
+            KeyCode::Enter,
+        ],
     );
     assert!(app.pending_commands.is_empty());
     assert_eq!(app.chrome.active, ViewId::Transfers);
     assert_eq!(
         crate::views::related::unavailable(&app.state),
-        Some("no core attached")
+        Some("the engine has stopped")
     );
 }

@@ -45,9 +45,12 @@ impl DockerCommand {
 /// A multi-stage build under the plain `docker build` — no BuildKit; colima's
 /// engine defaults to the legacy builder — commits every stage as its own
 /// image, and only the final stage gets `-t`: every earlier stage is dangling
-/// the moment the build succeeds. [`Docker::prune_bench_stage_images`] sweeps
-/// exactly the images carrying this label, so it never touches an unrelated
-/// dangling image on the host.
+/// the moment the build succeeds. That stage image is also the recipe's only
+/// layer cache, so [`Docker::prune_bench_stage_images`] deletes the cache of
+/// every recipe that carries the label (`rmule-node`, `amule-kad-patched`); the
+/// `rmule-tools` driver image no longer does, it takes a prebuilt binary. The
+/// sweep removes exactly the images carrying this label, so it never touches an
+/// unrelated dangling image on the host.
 pub const BENCH_STAGE_LABEL: &str = "org.rmule.bench.stage=1";
 
 /// Whether a failed `docker build`'s combined output names one of the four
@@ -298,20 +301,6 @@ impl Docker {
         ])
     }
 
-    /// `docker image inspect -f {{.Id}} <tag>` — whether an image is present
-    /// locally at all. A flow whose counterparty image was never built records a
-    /// **Documented Absence** naming that, rather than failing in a way that
-    /// looks like the counterparty refused something.
-    pub fn inspect_image(&self, tag: impl Into<OsString>) -> DockerCommand {
-        self.command(vec![
-            OsString::from("image"),
-            OsString::from("inspect"),
-            OsString::from("-f"),
-            OsString::from("{{.Id}}"),
-            tag.into(),
-        ])
-    }
-
     /// `docker image inspect -f '{{ index .Config.Labels "<key>" }}' <tag>` —
     /// one label off an image, which prints `<no value>` when it is unset.
     pub fn image_label(&self, tag: impl Into<OsString>, key: &str) -> DockerCommand {
@@ -320,6 +309,21 @@ impl Docker {
             OsString::from("inspect"),
             OsString::from("-f"),
             OsString::from(format!("{{{{ index .Config.Labels \"{key}\" }}}}")),
+            tag.into(),
+        ])
+    }
+
+    /// `docker image inspect -f '{{.Id}}' <tag>` — the image's content id, which
+    /// tells two builds of one tag apart, and whether the image is present at
+    /// all: a flow whose counterparty image was never built records a
+    /// **Documented Absence** naming that, rather than failing in a way that
+    /// looks like the counterparty refused something.
+    pub fn image_id(&self, tag: impl Into<OsString>) -> DockerCommand {
+        self.command(vec![
+            OsString::from("image"),
+            OsString::from("inspect"),
+            OsString::from("-f"),
+            OsString::from("{{.Id}}"),
             tag.into(),
         ])
     }
@@ -338,6 +342,7 @@ impl Docker {
     /// lifecycle flags, name, network, ip, capabilities, workdir, ports, volumes,
     /// env, then the image and its command.
     pub fn run_container(&self, container: RunContainer) -> DockerCommand {
+        let container = container.on_the_run_clock();
         let mut args = vec![OsString::from("run")];
 
         if container.detach {
@@ -418,7 +423,7 @@ impl Docker {
         args: impl IntoIterator<Item = OsString>,
     ) -> DockerCommand {
         let mut command_args = vec![OsString::from("exec"), container.into()];
-        command_args.extend(args);
+        command_args.extend(crate::fastclock::stretched(args.into_iter().collect()));
         self.command(command_args)
     }
 
@@ -429,7 +434,19 @@ impl Docker {
     /// the rename and grabs the pre-shutdown file (a 15-byte seed
     /// instead of aMule's ~237-byte 21-tag SaveServerMet output).
     pub fn wait(&self, container: impl Into<OsString>) -> DockerCommand {
-        self.command(vec![OsString::from("wait"), container.into()])
+        let container = container.into();
+        if crate::fastclock::scale() > 1 {
+            return DockerCommand::new(
+                "sh",
+                [
+                    "-c".into(),
+                    crate::fastclock::WAIT_PAST_THE_EXIT_HANG.into(),
+                    self.runtime.clone(),
+                    container,
+                ],
+            );
+        }
+        self.command(vec![OsString::from("wait"), container])
     }
 
     /// `docker cp <container>:<src> <dest>` — copy a file out of a container.
@@ -451,6 +468,12 @@ impl Docker {
     /// keeps its address, so no later container on the network takes it.
     pub fn pause_container(&self, container: impl Into<OsString>) -> DockerCommand {
         self.command(vec![OsString::from("pause"), container.into()])
+    }
+
+    /// `docker unpause <container>` — thaws what [`Self::pause_container`]
+    /// froze, so its logs end and its stop runs its own handlers.
+    pub fn unpause_container(&self, container: impl Into<OsString>) -> DockerCommand {
+        self.command(vec![OsString::from("unpause"), container.into()])
     }
 
     /// `docker stop --time <timeout_secs> <container>` — SIGTERM, then
@@ -549,6 +572,38 @@ pub struct RunContainer {
 }
 
 impl RunContainer {
+    /// This container as a fast-clock run takes it; at real speed, itself.
+    fn on_the_run_clock(mut self) -> Self {
+        let scale = crate::fastclock::scale();
+        if scale == 1 {
+            return self;
+        }
+        let image = self.image.to_string_lossy().into_owned();
+        if let Some(fast) = crate::fastclock::counterparty_image(&image) {
+            self.image = fast.into();
+            return self.env(crate::fastclock::SWITCH, scale.to_string());
+        }
+        let runs =
+            |test: &dyn Fn(&str) -> bool| self.args.iter().any(|arg| test(&arg.to_string_lossy()));
+        let rmule = image.contains("interop-rmule-tools")
+            || runs(&|arg| arg.ends_with(crate::rmule::tools_binary()));
+        if !rmule || runs(&|arg| arg == "cargo") {
+            return self;
+        }
+        self.args = crate::fastclock::stretched(self.args);
+        let (library, mount) = crate::fastclock::library_volume();
+        crate::fastclock::rmule_env()
+            .into_iter()
+            .fold(self.volume(library, mount), |container, (key, value)| {
+                container.env(key, value)
+            })
+    }
+
+    /// The image the container starts from.
+    pub fn image(&self) -> &OsStr {
+        &self.image
+    }
+
     /// Run `image` with no options yet.
     pub fn new(image: impl Into<OsString>) -> Self {
         Self {

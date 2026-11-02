@@ -5,6 +5,7 @@
 
 use std::collections::{HashSet, VecDeque};
 
+use rmule_peer::PartIndex;
 use rmule_primitives::{Ed2kFileLink, Ipv4Endpoint, PeerEndpoint};
 use tokio::sync::mpsc;
 
@@ -13,19 +14,20 @@ use crate::adapters::{
     SourceLookupService, WorkerBrief,
 };
 use crate::callback::{DownloadAsk, DownloadReach, PendingCallback};
-use crate::credit::KeyBinding;
-use crate::download::persist::{PersistError, finalize_download, persist_streamed_part};
+use crate::download::persist::{Landed, PersistError};
 use crate::download::state::{Decision, DownloadState};
 use crate::download::worker_pool::{WorkerChannels, WorkerFact, WorkerId, WorkerPool};
+use crate::download::write_cache::CachedBytes;
 use crate::error::DownloadFailure;
-use crate::global_sources::GlobCallbackSend;
 use crate::peer_roster::PeerRelation;
-use crate::service::{CoreEvent, DownloadEvent, DownloadId, send_download_event};
+use crate::service::{DownloadEvent, DownloadId, send_download_event};
 use crate::storage::DownloadRepository;
 
 use super::callbacks::CallbackContext;
 use super::fleet::{enter_phase, refresh_parts};
-use super::{RunnerContext, WORKER_SHUTDOWN_TIMEOUT, now};
+use super::persist_lane::{Landing, LaneFact, PartToLand, PersistLane, RecoveryToCheck, plan_of};
+use super::republish::Republished;
+use super::{RunnerContext, WORKER_SHUTDOWN_TIMEOUT, now, served, wait_until_stop};
 
 /// Everything one download run carries across loop turns, owned as one value so
 /// the `select!` loop and [`enact_drain`] share a single `&mut ctx`: the
@@ -39,7 +41,7 @@ pub(super) struct LoopCtx<'a, S, P> {
     pub(super) runner: &'a RunnerContext<S, P>,
     pub(super) download_id: DownloadId,
     pub(super) file: &'a Ed2kFileLink,
-    pub(super) evt_tx: &'a mpsc::Sender<CoreEvent>,
+    pub(super) evt_tx: &'a crate::service::Outbox,
     pub(super) worker_pool: WorkerPool<'a, S, P>,
     pub(super) command_channels: WorkerChannels,
     pub(super) file_hash_only_parts: Vec<u32>,
@@ -49,12 +51,25 @@ pub(super) struct LoopCtx<'a, S, P> {
     /// the RemoteQueued stage of its Source Book as the last drain left it
     /// ([`hold_queued_relations`]).
     pub(super) queued_relations: HashSet<Ipv4Endpoint>,
+    /// The sources this run awaits an uploader's grant from, filed in the
+    /// Peer Links and held to the same stage (ADR-0057).
+    pub(super) awaited_grants: super::awaited_grants::AwaitedGrants,
+    /// This run's **Held Places**, republished after a drain that moved them
+    /// (see [`Republished`]) and
+    /// withdrawn when the run ends (ADR-0116).
+    pub(super) held_places: crate::held_places::HeldPlacesSeat,
+    /// The run's finished parts on their way to the store.
+    pub(super) persist: PersistLane<'a>,
+    /// The generation the drain's tail last republished at.
+    pub(super) republished: Option<Republished>,
 }
 
 /// Carry out one `Vec<Decision>` against the live runtime — the only async
-/// surface in the download loop. Decisions drain in order; a `PersistPart` or
-/// a failed `Spawn` feeds its follow-up decisions back onto the queue (the
-/// persist / spawn round-trips), so the loop stays flat — no recursion.
+/// surface in the download loop. Decisions drain in order; a failed `Spawn`
+/// feeds its follow-up decisions back onto the queue (the spawn round-trip),
+/// so the loop stays flat — no recursion. New bytes and a `PersistPart` go on
+/// the run's [`PersistLane`], and a landing comes back as a fact of the fleet
+/// loop.
 /// `Fail` tears the fleet down and returns the reason. Every successful drain
 /// ends by refreshing the diagnostics scheduler counts from `ctx.state`, so no
 /// individual enact site repeats it and none can forget it; a `Fail` returns
@@ -71,7 +86,7 @@ where
         match decision {
             Decision::Emit(event) => {
                 follow_event(ctx, &event);
-                send_download_event(ctx.evt_tx, event).await;
+                send_download_event(ctx.evt_tx, event);
             }
             Decision::Phase { slot, phase } => {
                 enter_phase(&ctx.runner.rt.diagnostics, ctx.download_id, slot, phase);
@@ -89,12 +104,12 @@ where
                     .update_worker(ctx.download_id, slot, |entry| entry.identify(software));
             }
             Decision::Send { peer, command } => ctx.command_channels.send(peer, command).await,
-            Decision::EndWorker { peer } => {
+            Decision::EndWorker { peer, cancel } => {
                 // The brain released the worker: it ends, and its channel with
                 // it. The Peer Roster's download leg (ADR-0059)
                 // forgets it here, the one site every retirement passes —
                 // its own later `Disconnected` is a released worker's, stale.
-                ctx.command_channels.end(peer).await;
+                ctx.command_channels.end(peer, cancel).await;
                 if let Some(v4) = peer.as_v4() {
                     ctx.runner
                         .rt
@@ -102,79 +117,96 @@ where
                         .forget(PeerRelation::Download(ctx.download_id), v4);
                 }
             }
-            Decision::RecordCredit { user_hash, bytes } => {
-                let _ = ctx.runner.rt.credit.record_download(user_hash, bytes);
+            Decision::BanSender { peer } => {
+                let mut bans = ctx.runner.rt.bans.lock().await;
+                bans.ban(peer.ip(), std::time::Instant::now());
             }
-            Decision::BindIdentity {
+            Decision::RecordCredit {
                 user_hash,
-                public_key,
+                at,
+                bytes,
             } => {
-                // Atomic compare-and-set in the ledger (ADR-0041); the
-                // *consequence* of a mismatch lives here: report the theft.
-                // The stored key is untouched and unsecured accrual continues.
-                let binding = ctx.runner.rt.credit.bind_public_key(user_hash, &public_key);
-                if matches!(binding, Ok(KeyBinding::Mismatch)) {
-                    let _ = ctx
-                        .evt_tx
-                        .send(CoreEvent::SecuredIdentityMismatch { user_hash })
-                        .await;
+                let _ = ctx.runner.rt.credit.credit_download(user_hash, at, bytes);
+            }
+            Decision::WriteBytes { offset, bytes } => {
+                let cached = room_for(ctx, bytes.len(), queue).await;
+                ctx.persist.gather(offset, bytes, cached);
+                let at = std::time::Instant::now();
+                if ctx.persist.checkpoint_due(at) {
+                    let parts = ctx.state.take_checkpoint();
+                    ctx.persist.take_checkpoint(at, parts);
                 }
             }
             Decision::PersistPart {
                 part_index,
                 peer,
                 offset,
-                bytes,
+                len,
+                read_cells,
             } => {
-                let result = persist_streamed_part(
-                    ctx.runner,
-                    ctx.download_id,
-                    ctx.file,
-                    ctx.state.resolved(),
+                // A full lane holds the drain: the workers wait on the brain
+                // and the sockets on the workers.
+                while ctx.persist.full() {
+                    let fact = next_fact(ctx).await;
+                    queue.extend(after_fact(ctx, fact));
+                }
+                let plan = crate::planning::PartPlan {
                     part_index,
                     offset,
-                    &bytes,
-                    &mut ctx.file_hash_only_parts,
-                    ctx.evt_tx,
-                )
-                .await;
-                match result {
-                    // The part file changed under the run (what it cost is
-                    // said and dropped, ADR-0094), or the store could not
-                    // record the part: the run ends.
-                    Err(PersistError::Ended(end)) => queue.push_front(Decision::Fail(end)),
-                    Err(PersistError::Rejected(reason)) => {
-                        queue.extend(ctx.state.on_persist_result(
-                            now(),
-                            part_index,
-                            peer,
-                            Err(reason),
-                        ));
-                    }
-                    Ok(()) => {
-                        queue.extend(ctx.state.on_persist_result(now(), part_index, peer, Ok(())))
-                    }
-                }
+                    len,
+                };
+                let part = PartToLand {
+                    plan,
+                    peer,
+                    read_cells,
+                };
+                let resolved = ctx.state.resolved().clone();
+                ctx.persist.take_part(part, resolved);
+            }
+            Decision::CheckRecovery {
+                part_index,
+                root,
+                recovery_data,
+            } => {
+                let recovery = RecoveryToCheck {
+                    plan: plan_of(ctx.file, part_index),
+                    root,
+                    recovery_data,
+                };
+                ctx.persist.take_recovery(part_index, recovery);
             }
             Decision::PersistProvisionalHashes(hashes) => {
+                // The set judges every part recorded: none may land behind
+                // its back under the set it replaces.
+                settle_lane(ctx, queue).await;
                 // A store that cannot keep the set fails the run through the
                 // one whole-fleet terminal, so every worker is
                 // told `Shutdown` and every roster relation ends — never a
                 // bare early return that leaves the fleet running unowned.
-                if ctx
+                match ctx
                     .runner
                     .rt
                     .store
                     .record_provisional_part_hashes(ctx.download_id, &hashes)
-                    .is_err()
                 {
-                    queue.push_front(Decision::Fail(DownloadFailure::StoreFailed));
+                    Err(_) => queue.push_front(Decision::Fail(DownloadFailure::StoreFailed)),
+                    Ok(disproved) => {
+                        crate::download::persist::hash_set_learned(
+                            ctx.runner,
+                            ctx.download_id,
+                            &hashes,
+                        );
+                        refetch_disproved(ctx, &disproved, queue);
+                        served::rule_range(ctx.runner, ctx.download_id, &hashes);
+                    }
                 }
             }
             Decision::DistrustPeer { user_hash } => {
-                // Durable beside the download's record; the brain
-                // already holds it for this run, so a failed write costs only
-                // a resumed run's memory of it.
+                // Durable beside the download's record. A write that fails
+                // fails the run through the one whole-fleet terminal, as a
+                // provisional set the store cannot keep does: a run that
+                // went on believing the peer persisted would let a resumed
+                // one dial it again.
                 if let Err(error) = ctx
                     .runner
                     .rt
@@ -182,12 +214,23 @@ where
                     .distrust_peer(ctx.download_id, user_hash)
                 {
                     tracing::warn!(%error, "could not persist a distrusted peer");
+                    queue.push_front(Decision::Fail(DownloadFailure::StoreFailed));
+                }
+            }
+            Decision::ContestKadAichRoot => {
+                // Durable beside the download's record, as a distrusted peer
+                // is: a resumed run that trusted the contested root again
+                // would let its recovery data blame honest cells.
+                if let Err(error) = ctx.runner.rt.store.contest_kad_aich_root(ctx.download_id) {
+                    tracing::warn!(%error, "could not persist a contested Kad AICH root");
+                    queue.push_front(Decision::Fail(DownloadFailure::StoreFailed));
                 }
             }
             Decision::Spawn {
                 peer,
                 slot,
                 want_sources,
+                opening,
             } => {
                 // The crypt side this peer's record stated — the server-lookup
                 // reply (ADR-0046), a source-exchange answer (ADR-0042), a Kad
@@ -198,6 +241,7 @@ where
                     peer_crypt: ctx.state.peer_crypt(peer),
                     own_status: ctx.state.our_part_status(),
                     want_sources,
+                    opening,
                 };
                 if ctx
                     .worker_pool
@@ -219,44 +263,56 @@ where
                         .update_worker(ctx.download_id, slot, |entry| entry.mark_remembered());
                 }
             }
-            Decision::SendReaskPing { peer, ping } => {
-                // One `0x90` in flight per peer endpoint across the Download
-                // Set (ADR-0107): the reply names no file, so a second
-                // download's ping to this endpoint waits, its latch handed
-                // back to the brain, until the first is answered or lapses.
+            Decision::SendReaskPing {
+                peer,
+                ping,
+                answered_from,
+            } => {
+                // One reask in flight per answering endpoint across the
+                // Download Set (ADR-0107): the reply names no file, so a
+                // second download's reask answered there waits, its latch
+                // handed back to the brain, until the first is answered or
+                // lapses.
                 let at = now();
-                let claimed = ctx
-                    .runner
-                    .rt
-                    .reask_reply_sink
-                    .lock()
-                    .expect("reask reply sink mutex")
-                    .claim_ping(ping.to, ctx.download_id, at);
+                let claimed = ctx.runner.rt.reask_reply_sink.lock().claim_ping(
+                    answered_from,
+                    ctx.download_id,
+                    at,
+                );
                 if !claimed {
                     ctx.state.on_ping_held(at, peer);
                     continue;
                 }
                 if let Some(tx) = &ctx.runner.rt.client_udp_tx {
+                    ctx.state.on_ping_left(at, peer);
                     let _ = tx.send(ping).await;
                 }
             }
+            Decision::CallStandingWaiters { peer } => {
+                // A grant on the peer's Queue Standing: every other download
+                // waiting on it joins this link (ADR-0107), found under the
+                // names the granted worker's hello proved.
+                let mut names = vec![crate::adapters::LinkName::Endpoint(peer)];
+                names.extend(
+                    ctx.state
+                        .peer_crypt(peer)
+                        .user_hash()
+                        .map(crate::adapters::LinkName::User),
+                );
+                ctx.runner.rt.peer_links.call_waiters(&names);
+            }
             Decision::Finalize => {
                 // Normal completion: release each held slot silently, no
-                // `OP_CANCELTRANSFER` (ADR-0056).
+                // `OP_CANCELTRANSFER` (ADR-0056). The fleet loop sees every
+                // part verified and ends; the completion move follows it
+                // (ADR-0115).
                 shut_down_every_worker(ctx, false).await;
-                finalize_download(
-                    ctx.runner,
-                    ctx.download_id,
-                    ctx.file,
-                    std::mem::take(&mut ctx.file_hash_only_parts),
-                    ctx.evt_tx,
-                )
-                .await?;
             }
             Decision::RequestCallback {
                 low_id,
                 server,
                 want_sources,
+                on_a_link,
             } => {
                 // File the server-relayed road so the accept-router can adopt the
                 // called-back peer, then ask the server to relay the callback
@@ -264,58 +320,40 @@ where
                 // road is filed under the candidate's key — one minted with no
                 // server known is resolved to the live one. Filing precedes the
                 // request so an unusually fast dial-back always finds it.
-                let key = CallbackKey { server, low_id };
+                let key = CallbackKey::Server { server, low_id };
                 let brief = AdoptionBrief {
                     file: ctx.file.clone(),
                     own_status: ctx.state.our_part_status(),
                     want_sources,
                 };
                 ctx.callbacks.await_callback(key, brief);
+                // A Low-ID peer linked to us already is ridden over that link
+                // (ADR-0107, "One peer, one link"): asked for a callback it
+                // would open nothing, its `TryToConnect` finding the socket
+                // it holds.
+                if ride_callback_link(ctx, key, want_sources).await {
+                    continue;
+                }
+                if on_a_link {
+                    queue.extend(ctx.state.on_no_link(now(), key));
+                    continue;
+                }
                 let session = {
                     let slot = ctx.runner.rt.server_session.slot().lock().await;
                     slot.as_ref().filter(|handle| handle.is_alive()).cloned()
                 };
-                if let Some(session) = session {
-                    tracing::info!(
-                        low_id = low_id.as_u32(),
-                        "server callback: asking the connected server to relay OP_CALLBACK"
-                    );
-                    session.request_callback(low_id).await;
-                }
-            }
-            Decision::RequestGlobalCallback {
-                low_id,
-                source_server,
-                want_sources,
-            } => {
-                // Per-server (global) callback (ADR-0051): file the server-relayed road
-                // under `{ server: Some(source_server), low_id }` (already concrete — the
-                // called-back peer dials in reporting `connected_server =
-                // source_server`), then ask the discovery task to UDP-send
-                // OP_GLOBCALLBACKREQUEST to that server carrying rmule's own contact.
-                // Filing precedes the send so an unusually fast dial-back always
-                // finds it.
-                let key = CallbackKey {
-                    server: Some(source_server),
-                    low_id,
+                let sent = match session {
+                    Some(session) => {
+                        tracing::info!(
+                            low_id = low_id.as_u32(),
+                            "server callback: asking the connected server to relay OP_CALLBACK"
+                        );
+                        session.request_callback(low_id).await
+                    }
+                    None => false,
                 };
-                let brief = AdoptionBrief {
-                    file: ctx.file.clone(),
-                    own_status: ctx.state.our_part_status(),
-                    want_sources,
-                };
-                ctx.callbacks.await_callback(key, brief);
-                if let Some(requester) = ctx.callbacks.facts.requester() {
-                    let _ = ctx
-                        .runner
-                        .rt
-                        .global_callback_tx
-                        .send(GlobCallbackSend {
-                            requester,
-                            low_id,
-                            source_server,
-                        })
-                        .await;
+                if !sent {
+                    queue.extend(never_left(ctx, key));
                 }
             }
             Decision::RequestBuddyCallback {
@@ -344,6 +382,7 @@ where
                             },
                             key: candidate.key(),
                             retire_tx: ctx.callbacks.retire_tx.clone(),
+                            held_tx: ctx.callbacks.held_tx.clone(),
                         },
                     })
                     .await;
@@ -397,6 +436,7 @@ where
                             road: DownloadAsk::DirectUdp,
                             key: candidate.key(),
                             retire_tx: ctx.callbacks.retire_tx.clone(),
+                            held_tx: ctx.callbacks.held_tx.clone(),
                         },
                     })
                     .await;
@@ -441,6 +481,7 @@ where
                             road: DownloadAsk::Traversal(silence),
                             key: candidate.key(),
                             retire_tx: ctx.callbacks.retire_tx.clone(),
+                            held_tx: ctx.callbacks.held_tx.clone(),
                         },
                     })
                     .await;
@@ -470,6 +511,12 @@ where
                         crate::diagnostics::WorkerPhase::ShutDown,
                     );
                 }
+                // What is on the lane lands: a verified part stays verified
+                // for the next run, and the file is left to whoever deletes it.
+                // Every other end keeps what arrived (ADR-0117 §4).
+                let mut after = VecDeque::new();
+                let keep = !matches!(reason, DownloadFailure::Cancelled);
+                end_lane(ctx, keep, &mut after).await;
                 shut_down_every_worker(ctx, cancel).await;
                 let live = ctx.command_channels.iter().map(|c| c.id).collect();
                 await_worker_shutdown(&mut ctx.fact_rx, live).await;
@@ -477,20 +524,199 @@ where
             }
         }
     }
-    // The diagnostics refresh rides inside every successful drain:
-    // each of the seven enact sites bundled an identical refresh before, so
-    // folding it here means a new site cannot forget it. `Fail` returns above
-    // without refreshing — matching the stop path's prior behaviour (the
-    // diagnostics row is removed on teardown regardless).
+    // The diagnostics refresh rides inside every successful drain that moved
+    // the brain: each of the seven enact sites bundled an identical refresh
+    // before, so folding it here means a new site cannot forget it. `Fail`
+    // returns above without refreshing — matching the stop path's prior
+    // behaviour (the diagnostics row is removed on teardown regardless).
+    let at = now();
+    if !Republished::due(ctx.republished, &ctx.state, at) {
+        return Ok(());
+    }
+    ctx.republished = Some(Republished::of(&ctx.state, at));
     refresh_parts(&ctx.runner.rt.diagnostics, ctx.download_id, &ctx.state);
+    ctx.state.hold_connections();
+    ctx.state.hold_standings();
+    ctx.held_places.hold(ctx.state.held_places());
     hold_queued_relations(ctx);
+    ctx.awaited_grants.hold(&ctx.state);
     Ok(())
 }
 
-/// The Peer Roster's `Queued` leg (ADR-0059 "Roster relations"): this run
+/// What the brain makes of a lane's `fact`, as the decisions it answers: the
+/// run ends on an end.
+pub(super) fn after_fact<S, P>(ctx: &mut LoopCtx<'_, S, P>, fact: LaneFact) -> Vec<Decision> {
+    match fact {
+        LaneFact::Done => Vec::new(),
+        LaneFact::Ended(end) => vec![Decision::Fail(end)],
+        LaneFact::Recovery {
+            part_index,
+            bad_blocks,
+        } => ctx.state.on_recovery_checked(now(), part_index, bad_blocks),
+        LaneFact::Landing(landing) => after_landing(ctx, landing),
+    }
+}
+
+/// What the brain makes of `landing`: a rejected part goes back to its repair.
+fn after_landing<S, P>(ctx: &mut LoopCtx<'_, S, P>, landing: Landing) -> Vec<Decision> {
+    let Landing {
+        part_index,
+        peer,
+        result,
+        cells,
+    } = landing;
+    match result {
+        // The part file changed under the run (what it cost is said and
+        // dropped, ADR-0094), or the store could not record the part: the
+        // run ends.
+        Err(PersistError::Ended(end)) => vec![Decision::Fail(end)],
+        Err(PersistError::Rejected(reason)) => {
+            ctx.state
+                .on_persist_result(now(), part_index, peer, Err(reason), cells)
+        }
+        Ok(landed) => {
+            if landed == Landed::FileHashOnly {
+                ctx.file_hash_only_parts.push(part_index.value());
+            }
+            ctx.state
+                .on_persist_result(now(), part_index, peer, Ok(()), cells)
+        }
+    }
+}
+
+/// The next fact off the lane.
+async fn next_fact<S, P>(ctx: &mut LoopCtx<'_, S, P>) -> LaneFact
+where
+    S: Send,
+    P: Send,
+{
+    ctx.persist.next_fact().await
+}
+
+/// `len` bytes of the Write Cache for an arrival. A run past its share waits
+/// for its own lane; a node with no room left waits for any lane, its own work
+/// going on meanwhile. The drain waits here, and the workers and the sockets
+/// behind it. A stop waits for nothing: its arrival goes over the cap, and a
+/// stalled volume stands between no run and its end.
+async fn room_for<S, P>(
+    ctx: &mut LoopCtx<'_, S, P>,
+    len: usize,
+    queue: &mut VecDeque<Decision>,
+) -> CachedBytes
+where
+    S: Send,
+    P: Send,
+{
+    let cache = ctx.runner.rt.write_cache.clone();
+    if !ctx.persist.over_share()
+        && let Some(cached) = cache.try_take(len)
+    {
+        return cached;
+    }
+    ctx.persist.write_gathered();
+    let mut stop_rx = ctx.runner.stop_rx.clone();
+    while ctx.persist.over_share() && ctx.persist.busy() {
+        tokio::select! {
+            fact = ctx.persist.next_fact() => queue.extend(after_fact(ctx, fact)),
+            _ = wait_until_stop(&mut stop_rx) => return CachedBytes::over_the_cap(),
+        }
+    }
+    // A lane the disk ended takes no byte, and its run ends behind this drain.
+    while !ctx.persist.ended() {
+        tokio::select! {
+            cached = cache.take(len) => return cached,
+            fact = ctx.persist.next_fact(), if ctx.persist.busy() => {
+                queue.extend(after_fact(ctx, fact));
+            }
+            _ = wait_until_stop(&mut stop_rx) => return CachedBytes::over_the_cap(),
+        }
+    }
+    CachedBytes::over_the_cap()
+}
+
+/// End the lane with its run: what is gathered goes to the file and what is on
+/// the lane lands, then a run that keeps what arrived commits the checkpoint
+/// that claims it. A cancel's bytes go nowhere, and a lane the disk ended
+/// claims nothing.
+pub(super) async fn end_lane<S, P>(
+    ctx: &mut LoopCtx<'_, S, P>,
+    keep: bool,
+    queue: &mut VecDeque<Decision>,
+) where
+    S: Send,
+    P: Send,
+{
+    if !keep {
+        ctx.persist.drop_gathered();
+    }
+    ctx.persist.write_gathered();
+    settle_lane(ctx, queue).await;
+    if keep && !ctx.persist.ended() {
+        let parts = ctx.state.take_checkpoint();
+        ctx.persist
+            .take_checkpoint(std::time::Instant::now(), parts);
+        settle_lane(ctx, queue).await;
+    }
+}
+
+/// Land everything on the lane, its decisions on `queue`.
+pub(super) async fn settle_lane<S, P>(ctx: &mut LoopCtx<'_, S, P>, queue: &mut VecDeque<Decision>)
+where
+    S: Send,
+    P: Send,
+{
+    while ctx.persist.busy() {
+        let fact = next_fact(ctx).await;
+        queue.extend(after_fact(ctx, fact));
+    }
+}
+
+/// A server-relayed ask for `key`'s callback that never left — no live
+/// session, no requester endpoint to name, or a send nothing took: the brain
+/// hears it now, so the slot goes to the candidate's next road rather than
+/// waiting out the callback deadline for an invitation nobody carried. The
+/// answer is the brain's decisions, for the queue.
+fn never_left<S, P>(ctx: &mut LoopCtx<'_, S, P>, key: CallbackKey) -> Vec<Decision> {
+    tracing::debug!(?key, "server callback ask never left; its road ends now");
+    ctx.state.on_traversal_retired(
+        now(),
+        key,
+        crate::diagnostics::NattRetirement::CallbackNotSent,
+    )
+}
+
+/// The parts a part hash set disproved as it arrived, dropped by the store in
+/// the write that recorded it: no longer verified by the file hash at
+/// finalize, said, and fetched again.
+fn refetch_disproved<S, P>(
+    ctx: &mut LoopCtx<'_, S, P>,
+    disproved: &[crate::VerifiedPartRecord],
+    queue: &mut VecDeque<Decision>,
+) {
+    if disproved.is_empty() {
+        return;
+    }
+    let lost: Vec<u32> = disproved.iter().map(|part| part.part_index).collect();
+    tracing::warn!(
+        download_id = ctx.download_id.as_u64(),
+        parts = lost.len(),
+        "parts fetched before the part hash set arrived do not match it; fetching them again"
+    );
+    ctx.file_hash_only_parts.retain(|part| !lost.contains(part));
+    ctx.runner.rt.diagnostics.parts_lost(ctx.download_id, &lost);
+    queue.push_back(Decision::Emit(DownloadEvent::PartsDisproved {
+        download_id: ctx.download_id,
+        parts: u32::try_from(lost.len()).unwrap_or(u32::MAX),
+        bytes: disproved.iter().map(|part| part.len).sum(),
+    }));
+    let parts: Vec<PartIndex> = lost.iter().copied().map(PartIndex::new).collect();
+    queue.extend(ctx.state.refetch(now(), &parts));
+}
+
+/// The Peer Roster's `Queued` leg (ADR-0059): this run
 /// holds the relation on exactly the endpoints its Source Book records stand
 /// at in their RemoteQueued stage — aMule's `DS_ONQUEUE` clients, known after
-/// their sockets closed. Held to the stage after every drain, so however a
+/// their sockets closed. Held to the stage by the drain's tail, so however a
 /// record leaves it — the TCP full ask, a `0x92`, a merge into the record
 /// that proved it the same peer, an endpoint another record took — its
 /// relation goes with it; the run's lease ends whatever is left.
@@ -525,7 +751,7 @@ fn follow_event<S, P>(ctx: &LoopCtx<'_, S, P>, event: &DownloadEvent) {
 /// The fleet's whole-fleet terminal — a completion's `Finalize` or any
 /// `Fail` (cancel, pause, or an involuntary failure): tell every still-live
 /// worker to shut down and end each one's Peer Roster `Download` relation
-/// right here, read off the fleet's own live set (ADR-0059 "Roster relations").
+/// right here, read off the fleet's own live set (ADR-0059).
 /// Neither path passes `EndWorker`, and a worker's
 /// own later `Disconnected` is never read by the loop again — nor sent at all
 /// by an aborted task — so this is the one terminal these relations
@@ -547,9 +773,9 @@ where
 }
 
 /// Wait for every worker just told to shut down — the `live` incarnations —
-/// to report its terminal `Disconnected` fact, capped by
-/// `WORKER_SHUTDOWN_TIMEOUT` for one that never does; a released worker's late
-/// fact counts for nothing. `fact_rx` cannot close here to end the wait on its
+/// to report its terminal `Disconnected` fact or the end of its stream, capped
+/// by `WORKER_SHUTDOWN_TIMEOUT` for one wedged past both; a released worker's
+/// late fact counts for nothing. `fact_rx` cannot close here to end the wait on its
 /// own: `WorkerPool` keeps its own `fact_tx` clone alive for the run's whole
 /// lifetime so a worker backfilled after this point can still join the stream
 /// (ADR-0030), and that clone outlives this drain — it only drops with `ctx`
@@ -570,7 +796,7 @@ async fn await_worker_shutdown(
                 Some((
                     worker,
                     _,
-                    PeerWorkerEvent::Disconnected | PeerWorkerEvent::CryptIncompatible,
+                    None | Some(PeerWorkerEvent::Disconnected | PeerWorkerEvent::CryptIncompatible),
                 )) => {
                     still_shutting_down.remove(&worker);
                 }
@@ -583,4 +809,39 @@ async fn await_worker_shutdown(
 }
 
 #[cfg(test)]
+mod drain_bench;
+#[cfg(test)]
 mod tests;
+
+/// Hand the run a worker riding `key`'s peer over its Peer Link, when one is
+/// filed under the callback the key names; whether one was.
+async fn ride_callback_link<S, P>(
+    ctx: &mut LoopCtx<'_, S, P>,
+    key: CallbackKey,
+    want_sources: bool,
+) -> bool
+where
+    S: SourceLookupService,
+    P: PeerTransferService,
+{
+    let CallbackKey::Server {
+        server: Some(server),
+        low_id,
+    } = ctx.callbacks.routing_key(key)
+    else {
+        return false;
+    };
+    let brief = WorkerBrief {
+        peer_crypt: rmule_primitives::PeerCrypt::unknown(),
+        own_status: ctx.state.our_part_status(),
+        want_sources,
+        opening: crate::adapters::WorkerOpening::Probe,
+    };
+    let ridden = ctx.runner.rt.peer_transfer.lock().await.ride_callback_link(
+        low_id,
+        server,
+        ctx.file.clone(),
+        brief,
+    );
+    ridden.is_some_and(|worker| ctx.callbacks.hand_ridden(key, worker).is_ok())
+}

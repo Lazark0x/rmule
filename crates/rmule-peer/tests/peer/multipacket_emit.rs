@@ -16,15 +16,14 @@ use std::net::Ipv4Addr;
 
 use rmule_peer::multipacket::RequestItem;
 use rmule_peer::{
-    AnswerItem, FileProbeStatus, HashSetAnswer, HelloAnswer, MiscOptions1, MiscOptions2,
-    MultiPacketAnswer, NoticeEvent, PartRanges, PeerCommand, PeerError, PeerEvent, PeerHelloBody,
-    PeerOutput, PeerPacket, PeerSession, RequesterCommand, RequesterEvent, ServerCommand,
-    ServerEvent,
+    AnswerItem, FileProbeStatus, HelloAnswer, MiscOptions1, MiscOptions2, MultiPacketAnswer,
+    NoticeEvent, PartRanges, PeerCommand, PeerError, PeerEvent, PeerHelloBody, PeerOutput,
+    PeerPacket, PeerSession, RequesterCommand, RequesterEvent, ServerCommand, ServerEvent,
 };
 use rmule_primitives::session::drain;
 use rmule_primitives::{
-    ClientId, ED2K_PART_SIZE, Ed2kText, FileHash, Ipv4Endpoint, Packet, PacketProtocol, PartHash,
-    Tag, UserHash,
+    ClientId, ED2K_PART_SIZE, Ed2kText, FileHash, Ipv4Endpoint, Packet, PacketProtocol, Tag,
+    UserHash,
 };
 use rmule_testkit::peer_session::{events, peer_at, serverless_ctx, writes};
 
@@ -67,7 +66,7 @@ fn misc1_plain() -> Tag {
 
 /// `CT_EMULE_MISCOPTIONS2` with only bit 5 (`SupportExtMultiPacket`) lit.
 fn misc2_ext() -> Tag {
-    MiscOptions2::from_bits(1 << 5).to_tag()
+    MiscOptions2::from_bits((1 << 4) | (1 << 5)).to_tag()
 }
 
 fn hash() -> FileHash {
@@ -83,7 +82,7 @@ fn peer_without_multipacket_gets_the_standalone_quintet() {
     session.handle_command(PeerCommand::Requester(RequesterCommand::RequestFile {
         file_hash: hash(),
         file_size: ED2K_PART_SIZE + 1,
-        own_status: rmule_peer::PartBitmap::downloader_empty(ED2K_PART_SIZE + 1), // multi-part → SetReqId included
+        own_status: rmule_peer::WireStatus::downloader_empty(ED2K_PART_SIZE + 1), // multi-part → SetReqId included
         want_sources: true,
         want_aich_root: true,
     }));
@@ -108,7 +107,7 @@ fn peer_with_multipacket_but_not_ext_gets_one_base_0x92_bundle() {
     session.handle_command(PeerCommand::Requester(RequesterCommand::RequestFile {
         file_hash: hash(),
         file_size: ED2K_PART_SIZE + 1,
-        own_status: rmule_peer::PartBitmap::downloader_empty(ED2K_PART_SIZE + 1),
+        own_status: rmule_peer::WireStatus::downloader_empty(ED2K_PART_SIZE + 1),
         want_sources: true,
         want_aich_root: true,
     }));
@@ -144,7 +143,7 @@ fn ext_peer_gets_a_0xa4_bundle_carrying_the_file_size() {
     session.handle_command(PeerCommand::Requester(RequesterCommand::RequestFile {
         file_hash: hash(),
         file_size: big,
-        own_status: rmule_peer::PartBitmap::downloader_empty(big),
+        own_status: rmule_peer::WireStatus::downloader_empty(big),
         want_sources: true,
         want_aich_root: true,
     }));
@@ -186,7 +185,7 @@ fn sub_part_file_omits_setreqid_and_optional_items_are_gated() {
     session.handle_command(PeerCommand::Requester(RequesterCommand::RequestFile {
         file_hash: hash(),
         file_size: ED2K_PART_SIZE - 1,
-        own_status: rmule_peer::PartBitmap::downloader_empty(ED2K_PART_SIZE - 1), // sub-part → no part-status ask
+        own_status: rmule_peer::WireStatus::downloader_empty(ED2K_PART_SIZE - 1), // sub-part → no part-status ask
         want_sources: false,
         want_aich_root: false,
     }));
@@ -217,7 +216,7 @@ fn exact_one_part_size_file_omits_setreqid_one_byte_over_includes_it() {
     session.handle_command(PeerCommand::Requester(RequesterCommand::RequestFile {
         file_hash: hash(),
         file_size: ED2K_PART_SIZE,
-        own_status: rmule_peer::PartBitmap::downloader_empty(ED2K_PART_SIZE),
+        own_status: rmule_peer::WireStatus::downloader_empty(ED2K_PART_SIZE),
         want_sources: false,
         want_aich_root: false,
     }));
@@ -233,7 +232,7 @@ fn exact_one_part_size_file_omits_setreqid_one_byte_over_includes_it() {
     session.handle_command(PeerCommand::Requester(RequesterCommand::RequestFile {
         file_hash: hash(),
         file_size: ED2K_PART_SIZE + 1,
-        own_status: rmule_peer::PartBitmap::downloader_empty(ED2K_PART_SIZE + 1),
+        own_status: rmule_peer::WireStatus::downloader_empty(ED2K_PART_SIZE + 1),
         want_sources: false,
         want_aich_root: false,
     }));
@@ -255,7 +254,7 @@ fn the_decision_core_gates_setreqid_identically_in_both_wire_shapes() {
     session.handle_command(PeerCommand::Requester(RequesterCommand::RequestFile {
         file_hash: hash(),
         file_size: ED2K_PART_SIZE - 1,
-        own_status: rmule_peer::PartBitmap::downloader_empty(ED2K_PART_SIZE - 1),
+        own_status: rmule_peer::WireStatus::downloader_empty(ED2K_PART_SIZE - 1),
         want_sources: false,
         want_aich_root: false,
     }));
@@ -278,7 +277,7 @@ fn request_file_before_identify_puts_no_bytes_on_the_wire() {
     session.handle_command(PeerCommand::Requester(RequesterCommand::RequestFile {
         file_hash: hash(),
         file_size: ED2K_PART_SIZE + 1,
-        own_status: rmule_peer::PartBitmap::downloader_empty(ED2K_PART_SIZE + 1),
+        own_status: rmule_peer::WireStatus::downloader_empty(ED2K_PART_SIZE + 1),
         want_sources: true,
         want_aich_root: true,
     }));
@@ -305,14 +304,14 @@ fn emitted_bundle_round_trips_through_a_serving_session_into_file_probed() {
     // (`aich_file_hash_request_and_answer_round_trip_between_two_sessions`).
     let fh = FileHash::from_bytes([0xC7; FileHash::BYTE_LEN]);
     let name = Ed2kText::from_utf8("bundle.bin");
-    let bitmap = rmule_peer::PartBitmap::decode(2, &[0b11]).unwrap();
+    let bitmap = rmule_peer::WireStatus::decode(2, &[0b11]).unwrap();
 
     // Downloader: peer advertises full multipacket + ext, so RequestFile emits 0xA4.
     let mut downloader = identified_against(vec![misc1_multipacket(), misc2_ext()]);
     downloader.handle_command(PeerCommand::Requester(RequesterCommand::RequestFile {
         file_hash: fh,
         file_size: ED2K_PART_SIZE + 1,
-        own_status: rmule_peer::PartBitmap::downloader_empty(ED2K_PART_SIZE + 1),
+        own_status: rmule_peer::WireStatus::downloader_empty(ED2K_PART_SIZE + 1),
         want_sources: false,
         want_aich_root: false,
     }));
@@ -392,7 +391,7 @@ fn misc2_ext_sx2() -> Tag {
 
 #[test]
 fn sx2_peer_gets_the_sources2_sub_per_the_source_ask_policy() {
-    // ADR-0054: "the SX request sub per the existing source-ask policy" — a
+    // ADR-0054 — a
     // peer that advertised SourceExchange2 (ADR-0055) is asked with the v4
     // `0x83` sub inside the bundle, the same variant the granular
     // `RequestSources` command selects for it.
@@ -401,7 +400,7 @@ fn sx2_peer_gets_the_sources2_sub_per_the_source_ask_policy() {
     session.handle_command(PeerCommand::Requester(RequesterCommand::RequestFile {
         file_hash: hash(),
         file_size: size,
-        own_status: rmule_peer::PartBitmap::downloader_empty(size),
+        own_status: rmule_peer::WireStatus::downloader_empty(size),
         want_sources: true,
         want_aich_root: true,
     }));
@@ -440,16 +439,16 @@ fn the_bundles_probe_is_recorded_so_request_parts_does_not_reprobe() {
     // Live wiring: `RequestFile`'s multi-part item set carries the
     // name + status pair, so the session records the probe as in flight. A
     // `RequestParts` that follows must not re-issue the standalone
-    // `0x58`+`0x4F` on top of the bundle — it only adds the hash-set ask —
-    // and the slot flow still advances to `OP_STARTUPLOADREQ` once the
-    // bundled answer and the hash set land.
+    // `0x58`+`0x4F` on top of the bundle, and the slot flow advances to
+    // `OP_STARTUPLOADREQ` once the bundled answer lands — no hash-set ask
+    // stands between them (ADR-0026).
     let fh = hash();
     let size = ED2K_PART_SIZE + 1;
     let mut session = identified_against(vec![misc1_multipacket(), misc2_ext()]);
     session.handle_command(PeerCommand::Requester(RequesterCommand::RequestFile {
         file_hash: fh,
         file_size: size,
-        own_status: rmule_peer::PartBitmap::downloader_empty(size),
+        own_status: rmule_peer::WireStatus::downloader_empty(size),
         want_sources: false,
         want_aich_root: false,
     }));
@@ -459,40 +458,31 @@ fn the_bundles_probe_is_recorded_so_request_parts_does_not_reprobe() {
         vec![0xA4]
     );
 
-    let ranges = PartRanges::new([(0, 1024), (0, 0), (0, 0)]).unwrap();
+    let ranges = PartRanges::new([(0, 1024), (0, 0), (0, 0)]);
     session.handle_command(PeerCommand::Requester(RequesterCommand::RequestParts {
         file_hash: fh,
         file_size: size,
         ranges,
     }));
     let out = drain(|| session.poll_output());
-    assert_eq!(
-        writes(&out).iter().map(Packet::opcode).collect::<Vec<_>>(),
-        vec![0x51],
-        "the probe rode the bundle: RequestParts adds only the hash-set ask"
+    assert!(
+        writes(&out).is_empty(),
+        "the probe rode the bundle: RequestParts adds nothing before its answer"
     );
 
     let answer = MultiPacketAnswer {
         file_hash: fh,
         items: vec![
             AnswerItem::Name(Ed2kText::from_utf8("bundled.bin")),
-            AnswerItem::Status(rmule_peer::PartBitmap::decode(2, &[0b11]).unwrap()),
+            AnswerItem::Status(rmule_peer::WireStatus::decode(2, &[0b11]).unwrap()),
         ],
         unknown_sub: None,
     };
     session.handle_bytes(&answer.encode_packet().encode());
-    let hashes = HashSetAnswer {
-        file_hash: fh,
-        part_hashes: vec![
-            PartHash::from_bytes([0xAA; 16]),
-            PartHash::from_bytes([0xBB; 16]),
-        ],
-    };
-    session.handle_bytes(&hashes.encode_packet().encode());
     let out = drain(|| session.poll_output());
     assert_eq!(
         writes(&out).iter().map(Packet::opcode).collect::<Vec<_>>(),
         vec![0x54],
-        "probe (from the bundle) + hash set → the slot flow sends STARTUPLOADREQ"
+        "the bundle's answer is the probe's: the slot flow sends STARTUPLOADREQ"
     );
 }

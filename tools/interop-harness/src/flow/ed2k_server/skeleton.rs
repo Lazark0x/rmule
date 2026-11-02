@@ -5,11 +5,10 @@
 //! (download, search, SUI capture, or the Low-ID callback-capability
 //! observation) against them and assert its observable outcome.
 
-use std::fs;
 use std::path::Path;
 use std::time::Duration;
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Result, bail};
 
 use crate::artifacts::RunLayout;
 use crate::flow::bench::{Bench, ED2K_SERVER_PORT, Eserver, run_checked};
@@ -20,6 +19,7 @@ use crate::rmule::{
     run_rmule_callback_capability_in_container, run_rmule_download,
     run_rmule_download_in_container, run_rmule_search, run_rmule_search_in_container,
 };
+use crate::verdict::Verdict;
 
 /// Bounded runtime for the Low-ID callback capability observation.
 /// rmule reaches a High ID within a few seconds of login; the bound only has to
@@ -94,6 +94,9 @@ pub struct ServerSkeletonOptions<'a> {
     /// datagram and server crypt-ping after each change meet the new one.
     /// Read only by `rmule-serves-amule-downloads`.
     pub rmule_peer_crypt_flip: &'a [String],
+    /// The name the serving rmule shares the synthetic file under. Read only
+    /// by `rmule-serves-amule-downloads`.
+    pub rmule_serve_file_name: Option<&'a str>,
 }
 
 /// Run the skeleton: eserver + aMule sharer, then the one
@@ -259,13 +262,13 @@ fn write_callback_capability_verdict(
         report.callback_capable,
         report.download_completed,
         if report.callback_capable {
-            "CALLBACK_CAPABLE"
+            Verdict::Pass
         } else {
-            "FAIL"
+            Verdict::Fail
         },
     );
     let path = layout.root().join("amule-low-id-callback-verdict.toml");
-    fs::write(&path, &text).with_context(|| format!("write {}", path.display()))?;
+    crate::verdict::write(&path, &text)?;
     println!("{text}");
     println!(
         "amule-low-id-callback verdict written to {}",

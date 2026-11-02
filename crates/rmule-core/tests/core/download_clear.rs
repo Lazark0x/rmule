@@ -3,6 +3,8 @@
 //! in the Shared File Registry — and a download that has not completed cannot
 //! be cleared.
 
+use rmule_peer::PartIndex;
+
 use std::sync::Arc;
 
 use rmule_core::{
@@ -24,6 +26,7 @@ async fn start(core: &mut Core, file: Ed2kFileLink, name: &str) -> DownloadId {
         source_hint: Some(ServerEndpoint::new("127.0.0.1", 4661).unwrap()),
         name: rmule_testkit::file_name(name),
         if_taken: rmule_core::NameTaken::Refuse,
+        kad_aich_root: None,
     }))
     .await
     .unwrap();
@@ -70,7 +73,7 @@ async fn a_cleared_download_leaves_its_file_on_disk_and_in_the_registry() {
             outcome: PeerDownloadOutcome {
                 peer_hashes: Vec::new(),
                 parts: vec![DownloadedPart {
-                    part_index: 0,
+                    part_index: PartIndex::new(0),
                     offset: 0,
                     bytes: bytes.clone(),
                 }],
@@ -80,6 +83,15 @@ async fn a_cleared_download_leaves_its_file_on_disk_and_in_the_registry() {
     let id = start(&mut core, link.clone(), "kept.bin").await;
     next_expected(&mut core, "the completed download shared", |event| {
         matches!(event, CoreEvent::Serve(ServeEvent::FileShared { .. }))
+    })
+    .await;
+    // Shared as its file lands in place; completed once its part file is
+    // gone (ADR-0115).
+    next_expected(&mut core, "the download completed", |event| {
+        matches!(
+            event,
+            CoreEvent::Download(DownloadEvent::DownloadCompleted { .. })
+        )
     })
     .await;
 
@@ -156,9 +168,9 @@ async fn a_download_not_completed_is_never_cleared() {
         "{answer:?}"
     );
 
-    core.send(CoreCommand::Download(
-        DownloadCommand::ClearCompletedDownloads,
-    ))
+    core.send(CoreCommand::Download(DownloadCommand::ClearDownloads {
+        download_ids: vec![id],
+    }))
     .await
     .unwrap();
     // The pause after it is answered in order, so a clear it raced would
@@ -208,7 +220,7 @@ async fn a_download_completed_in_an_earlier_run_is_listed_at_attach_until_cleare
             outcome: PeerDownloadOutcome {
                 peer_hashes: Vec::new(),
                 parts: vec![DownloadedPart {
-                    part_index: 0,
+                    part_index: PartIndex::new(0),
                     offset: 0,
                     bytes: bytes.clone(),
                 }],
@@ -216,8 +228,13 @@ async fn a_download_completed_in_an_earlier_run_is_listed_at_attach_until_cleare
         })
         .build();
     let id = start(&mut core, link, "earlier.bin").await;
-    next_expected(&mut core, "the completed download shared", |event| {
-        matches!(event, CoreEvent::Serve(ServeEvent::FileShared { .. }))
+    // Not its share: a row is still Completing when that lands, and a quit
+    // there leaves it Completing for the next attach to finish.
+    next_expected(&mut core, "the download completed", |event| {
+        matches!(
+            event,
+            CoreEvent::Download(DownloadEvent::DownloadCompleted { .. })
+        )
     })
     .await;
     core.shutdown().await;
@@ -248,7 +265,13 @@ async fn a_download_completed_in_an_earlier_run_is_listed_at_attach_until_cleare
         "{recovered:?}"
     );
 
-    let answer = clear(&mut core, DownloadCommand::ClearCompletedDownloads).await;
+    let answer = clear(
+        &mut core,
+        DownloadCommand::ClearDownloads {
+            download_ids: vec![id],
+        },
+    )
+    .await;
     assert!(
         matches!(answer, CoreEvent::Download(DownloadEvent::DownloadCleared { download_id }) if download_id == id),
         "{answer:?}"

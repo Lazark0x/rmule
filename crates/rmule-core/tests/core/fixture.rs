@@ -6,11 +6,15 @@
 //! Anything a second crate would want belongs in `rmule-testkit` instead —
 //! `test_identity`, `file_link`, and the fakes already live there.
 
+use rmule_peer::WireStatus;
+
+use parking_lot::Mutex;
 use rmule_core::{DurableStore, open_durable_store};
 use rmule_testkit::HANG_GUARD;
+use std::collections::VecDeque;
 use std::net::SocketAddrV4;
 use std::path::Path;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use rmule_core::{
     ClientUdpBind, Core, CoreConfig, CoreError, CoreEvent, DurableAppConfig,
@@ -33,7 +37,7 @@ mod session;
 pub use dual_stack::{
     host_binds_ipv6, reserve_dual_stack_port, reserve_dual_stack_port_from, skip_without_ipv6,
 };
-pub use kad::StubKad;
+pub use kad::{StubKad, until_kad_holds_a_contact};
 pub use search_server::LoopbackSearchServer;
 pub use session::{
     connect_and_settle, connect_server, list_and_connect, list_server, search_result, start_search,
@@ -92,15 +96,12 @@ pub fn file_config_store(dir: impl AsRef<Path>) -> DurableAppConfig {
 /// A leg that moves bytes wants `rmule_testkit::file_link` instead, which
 /// digests them.
 pub fn stub_link(name: &str, size: u64, seed: u8) -> Ed2kFileLink {
-    Ed2kFileLink {
-        name: Ed2kText::from_utf8(name),
+    Ed2kFileLink::new(
+        Ed2kText::from_utf8(name),
         size,
-        file_hash: FileHash::from_bytes([seed; FileHash::BYTE_LEN]),
-        part_hash_set: None,
-        aich_root: None,
-        ipv6_sources: Vec::new(),
-        sources: Default::default(),
-    }
+        FileHash::from_bytes([seed; FileHash::BYTE_LEN]),
+    )
+    .expect("a size eD2k addresses")
 }
 
 /// A server on the eD2k default port that the leg records but never reaches —
@@ -249,14 +250,19 @@ pub async fn next_matching(core: &mut Core, pred: impl Fn(&CoreEvent) -> bool) -
     next_expected(core, "a matching core event", pred).await
 }
 
+/// How many of the newest skipped events a timeout names.
+const SKIPPED_NAMED: usize = 40;
+
 /// [`next_matching`] naming what the leg is waiting for, so a timeout says
-/// which step of the sequence never arrived.
+/// which step of the sequence never arrived, and how far the run got: the
+/// events it skipped on the way.
 pub async fn next_expected(
     core: &mut Core,
     waiting_for: &str,
     pred: impl Fn(&CoreEvent) -> bool,
 ) -> CoreEvent {
-    timeout(EVENT_BUDGET, async {
+    let mut skipped = VecDeque::with_capacity(SKIPPED_NAMED);
+    let waited = timeout(EVENT_BUDGET, async {
         loop {
             let event = core
                 .next_event()
@@ -265,10 +271,17 @@ pub async fn next_expected(
             if pred(&event) {
                 return event;
             }
+            if skipped.len() == SKIPPED_NAMED {
+                skipped.pop_front();
+            }
+            skipped.push_back(format!("{event:?}"));
         }
     })
-    .await
-    .unwrap_or_else(|_| panic!("timed out waiting for: {waiting_for}"))
+    .await;
+    waited.unwrap_or_else(|_| {
+        let skipped = Vec::from(skipped).join("\n  ");
+        panic!("timed out waiting for: {waiting_for}\nnewest skipped events:\n  {skipped}")
+    })
 }
 
 /// Pump events until the serve activity reports the listener it bound.
@@ -437,7 +450,7 @@ fn next_band_port() -> u16 {
     static CURSOR: std::sync::LazyLock<Mutex<u16>> =
         std::sync::LazyLock::new(|| Mutex::new(band_offset()));
 
-    let mut cursor = CURSOR.lock().expect("port cursor is never poisoned");
+    let mut cursor = CURSOR.lock();
     let candidate = *cursor;
     *cursor = if candidate + 1 >= PORT_BAND.end {
         PORT_BAND.start
@@ -473,7 +486,7 @@ pub async fn serve_called_back(
     file_name: &str,
     file_bytes: &[u8],
 ) {
-    use rmule_peer::{PartBitmap, PeerCommand, PeerEvent};
+    use rmule_peer::{PeerCommand, PeerEvent};
     let _ = timeout(Duration::from_secs(10), async {
         while let Some(event) = conn.next_event().await {
             match event {
@@ -499,11 +512,7 @@ pub async fn serve_called_back(
                             rmule_peer::BundledAsk::SetReqId => {
                                 PeerCommand::Server(ServerCommand::AnswerFileStatus {
                                     file_hash,
-                                    bitmap: PartBitmap::decode(
-                                        rmule_primitives::part_count(file_bytes.len() as u64),
-                                        &[0xFF],
-                                    )
-                                    .unwrap(),
+                                    bitmap: WireStatus::whole(file_bytes.len() as u64),
                                 })
                             }
                             _ => continue,
@@ -512,11 +521,7 @@ pub async fn serve_called_back(
                     }
                 }
                 PeerEvent::Server(ServerEvent::FileIdSet { file_hash }) => {
-                    let bitmap = PartBitmap::decode(
-                        rmule_primitives::part_count(file_bytes.len() as u64),
-                        &[0xFF],
-                    )
-                    .unwrap();
+                    let bitmap = WireStatus::whole(file_bytes.len() as u64);
                     conn.send(PeerCommand::Server(ServerCommand::AnswerFileStatus {
                         file_hash,
                         bitmap,
@@ -527,7 +532,7 @@ pub async fn serve_called_back(
                 PeerEvent::Server(ServerEvent::HashSetRequested { file_hash }) => {
                     conn.send(PeerCommand::Server(ServerCommand::AnswerHashSet {
                         file_hash,
-                        part_hashes: Vec::new(),
+                        part_hashes: rmule_primitives::PartHashList::default(),
                     }))
                     .await
                     .unwrap();

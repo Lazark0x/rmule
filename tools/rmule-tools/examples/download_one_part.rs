@@ -2,8 +2,8 @@
 //!
 //! Reads `RMULE_LIVE_TRANSFER_PEER` (ipv4:port) and
 //! `RMULE_LIVE_TRANSFER_FILE` (ed2k file link) from the environment,
-//! opens a `rmule_net::peer::Connection`, issues `RequestParts` for
-//! part 0, accumulates bytes, verifies the `Md4` (`ed2k::Ed2kBlue`)
+//! opens a `rmule_net::peer::Connection`, asks the hash set and issues
+//! `RequestParts` for part 0, accumulates bytes, verifies the `Md4` (`ed2k::Ed2kBlue`)
 //! part hash against `HashSetReceived.part_hashes[0]`, writes the
 //! verified bytes to a tempfile, and prints a summary.
 //!
@@ -39,7 +39,7 @@ async fn main() -> Result<()> {
         Ed2kLink::File(f) => f,
         _ => anyhow::bail!("RMULE_LIVE_TRANSFER_FILE must be an ed2k file link"),
     };
-    let part0_len = std::cmp::min(file.size, ED2K_PART_SIZE);
+    let part0_len = std::cmp::min(file.size(), ED2K_PART_SIZE);
 
     let identity = ClientIdentity::new(
         UserHash::from_bytes([0x42; 16]),
@@ -60,7 +60,7 @@ async fn main() -> Result<()> {
         ..Default::default()
     };
     let mut conn = Connection::connect(peer, ctx, options).await?;
-    let ranges = PartRanges::new([(0, part0_len), (0, 0), (0, 0)])?;
+    let ranges = PartRanges::new([(0, part0_len), (0, 0), (0, 0)]);
 
     let mut accumulated: Vec<u8> = Vec::new();
     let mut part_hashes: Option<Vec<PartHash>> = None;
@@ -70,9 +70,16 @@ async fn main() -> Result<()> {
     while let Some(event) = conn.next_event().await {
         match event {
             PeerEvent::Connection(ConnectionEvent::Identified { .. }) => {
+                // The session asks a hash set only when told (ADR-0025).
+                conn.send(PeerCommand::Requester(RequesterCommand::RequestHashSet {
+                    file_hash: file.file_hash,
+                    file_size: file.size(),
+                }))
+                .await
+                .ok();
                 conn.send(PeerCommand::Requester(RequesterCommand::RequestParts {
                     file_hash: file.file_hash,
-                    file_size: file.size,
+                    file_size: file.size(),
                     ranges,
                 }))
                 .await

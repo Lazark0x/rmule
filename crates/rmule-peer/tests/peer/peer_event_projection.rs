@@ -42,7 +42,7 @@ fn hash_set_answer_projects_hashes_losslessly() {
     ];
     let packet = PeerPacket::HashSetAnswer(HashSetAnswer {
         file_hash,
-        part_hashes: hashes.clone(),
+        part_hashes: rmule_primitives::PartHashList::new(hashes.clone()).unwrap(),
     });
     match PeerEvent::from_peer_packet(&packet) {
         Some(PeerEvent::Requester(RequesterEvent::HashSetReceived {

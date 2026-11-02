@@ -5,12 +5,12 @@
 use std::net::{Ipv4Addr, Ipv6Addr};
 
 use rmule_peer::{
-    CT_EMULE_BUDDYIP, CT_EMULE_BUDDYUDP, ClientSoftware, ConnectionEvent, MiscOptions1,
+    CT_EMULE_BUDDYIP, CT_EMULE_BUDDYUDP, CT_NAME, ClientSoftware, ConnectionEvent, MiscOptions1,
     MiscOptions2, PeerHelloBody, PeerIdentity, SourceExchangeSupport, UdpPortsAdvert,
 };
 use rmule_primitives::{
-    CT_MOD_IP_V6, ClientId, CryptStance, Ipv4Endpoint, Tag, TagName, TagValue, UserHash,
-    ipv6_address_tag,
+    CT_MOD_IP_V6, ClientId, CryptStance, Ed2kIp, Ed2kText, Ipv4Endpoint, Tag, TagName, TagValue,
+    UserHash, ipv6_address_tag,
 };
 
 use crate::adapters::ServeInput;
@@ -19,6 +19,8 @@ use crate::adapters::ServeInput;
 pub(crate) struct HelloFacts {
     /// The user hash it names.
     pub(crate) user_hash: UserHash,
+    /// The nickname it names (`CT_NAME`).
+    pub(crate) nickname: Option<Ed2kText>,
     /// Its server-assigned id.
     pub(crate) client_id: ClientId,
     /// The server it says it is logged in to.
@@ -31,8 +33,14 @@ pub(crate) struct HelloFacts {
     pub(crate) udp_version: u8,
     /// Its extended-requests claim (`MiscOptions1`).
     pub(crate) extended_requests_version: u8,
+    /// Its data-compression claim (`MiscOptions1`).
+    pub(crate) data_compression_version: u8,
+    /// Its AICH claim (`MiscOptions1`).
+    pub(crate) aich_version: u8,
     /// Its crypt stance (`MiscOptions2`).
     pub(crate) crypt: CryptStance,
+    /// Whether it claims large files (`MiscOptions2` bit 4).
+    pub(crate) large_files: bool,
     /// The IPv6 it names (`CT_MOD_IP_V6`).
     pub(crate) ipv6: Option<Ipv6Addr>,
     /// The software it reads as.
@@ -46,19 +54,24 @@ pub(crate) struct HelloFacts {
 impl HelloFacts {
     /// A hello naming `user_hash` and little else: a High ID on 4662 on no
     /// server, crypt-capable as aMule 2.3.3 advertises by default, claiming
-    /// extended requests as aMule 2.3.3 does, with no reask contact, no
+    /// extended requests and AICH as aMule 2.3.3 does, compression not at all,
+    /// with no reask contact, no
     /// IPv6, no buddy, nothing said about source exchange, and naming no
     /// client.
     pub(crate) fn of(user_hash: UserHash) -> Self {
         Self {
             user_hash,
+            nickname: None,
             client_id: ClientId::from_u32(0x0100_007F),
             connected_server: None,
             tcp_port: 4662,
             udp_port: 0,
             udp_version: 0,
             extended_requests_version: 2,
+            data_compression_version: 0,
+            aich_version: 1,
             crypt: CryptStance::new(true, true, false),
+            large_files: true,
             ipv6: None,
             software: nameless_software(),
             serving_buddy: None,
@@ -69,11 +82,26 @@ impl HelloFacts {
     /// The identity a session reads off a hello saying these facts.
     pub(crate) fn identity(self) -> PeerIdentity {
         let mut tags = vec![
-            MiscOptions1::from_bits(u32::from(self.extended_requests_version) << 8)
-                .with_udp_version(self.udp_version)
-                .to_tag(),
-            MiscOptions2::from_stance(self.crypt).to_tag(),
+            MiscOptions1::from_bits(
+                u32::from(self.extended_requests_version) << 8
+                    | u32::from(self.data_compression_version) << 20
+                    | u32::from(self.aich_version) << 29,
+            )
+            .with_udp_version(self.udp_version)
+            .to_tag(),
+            if self.large_files {
+                MiscOptions2::from_stance(self.crypt).with_large_files()
+            } else {
+                MiscOptions2::from_stance(self.crypt)
+            }
+            .to_tag(),
         ];
+        if let Some(nickname) = self.nickname {
+            tags.push(Tag::new(
+                TagName::length_prefixed_id(CT_NAME),
+                TagValue::String(nickname),
+            ));
+        }
         if self.udp_port != 0 {
             tags.push(UdpPortsAdvert::new(self.udp_port, 0).to_tag());
         }
@@ -81,10 +109,9 @@ impl HelloFacts {
             tags.push(ipv6_address_tag(CT_MOD_IP_V6, address));
         }
         if let Some(buddy) = self.serving_buddy {
-            let ip = u32::from_le_bytes(buddy.ip.octets());
             tags.push(Tag::new(
                 TagName::compact_id(CT_EMULE_BUDDYIP),
-                TagValue::U32(ip),
+                TagValue::U32(Ed2kIp::new(buddy.ip).wire()),
             ));
             tags.push(Tag::new(
                 TagName::compact_id(CT_EMULE_BUDDYUDP),

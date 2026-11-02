@@ -4,8 +4,8 @@
 //! a **Related-Files Search** rides the first alone, and only on a session
 //! already up with a server that grants it (ADR-0037). A
 //! keyword search asked for with no session waits for the operator's connect
-//! and is sent the moment it lands (ADR-0093, "Connecting is the operator's
-//! act"); no search dials a server. Any
+//! and is sent the moment it lands (ADR-0095, "Connecting is the operator's act"); no search dials
+//! a server. Any
 //! number run side by side and none waits on another: each
 //! search is registered live before its request goes out, and every eD2k
 //! answer reaches the searches it belongs to by **Search Attribution**
@@ -42,8 +42,7 @@ where
                     CoreEvent::CommandRejected {
                         reason: CoreCommandRejectReason::SearchIdInUse,
                     },
-                )
-                .await;
+                );
             }
             SearchCommand::StartSearch {
                 search_id,
@@ -64,8 +63,7 @@ where
                     send_event(
                         &self.evt_tx,
                         SearchEvent::SearchMoreRefused { search_id }.into(),
-                    )
-                    .await;
+                    );
                 }
             }
             SearchCommand::CancelSearch { search_id } => {
@@ -75,8 +73,7 @@ where
                         CoreEvent::CommandRejected {
                             reason: CoreCommandRejectReason::UnknownSearch,
                         },
-                    )
-                    .await;
+                    );
                 }
             }
         }

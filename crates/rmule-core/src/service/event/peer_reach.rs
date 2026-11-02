@@ -7,12 +7,9 @@ use rmule_primitives::UserHash;
 /// mirror of the ADR-0061 chooser's `CallbackTarget`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PeerReach {
-    /// The peer's server-assigned client id: its LowID/HighID class, and (when
-    /// LowID) the id a server callback names.
-    pub id: rmule_primitives::ClientId,
-    /// Its dialable TCP endpoint. Used only when the peer turns out to be
-    /// HighID; a LowID peer has no plain dial, so a last-seen endpoint is fine.
-    pub tcp: rmule_primitives::PeerEndpoint,
+    /// What it can be reached by on its own, which picks the route tree's
+    /// first fork.
+    pub address: ReachAddress,
     /// The peer advertised `SupportsDirectUDPCallback` (ADR-0047): it can be
     /// reached by an `OP_DIRECTCALLBACKREQ` (`0x95`) to its Kad UDP port.
     pub supports_direct_udp_callback: bool,
@@ -30,12 +27,16 @@ pub struct PeerReach {
     /// ExtSX record's tag, or a Kad `ip6` row (ADR-0087). Rung 0 of the
     /// ADR-0061 route tree dials it directly, Low ID included, whenever rmule
     /// holds a Known IPv6 of its own. Defaults to `None` for an IPv4-only
-    /// caller; a `tcp` that is already IPv6 is read as one too.
+    /// caller; an [`address`](Self::address) that is already IPv6 is read as
+    /// one too.
     pub ipv6: Option<rmule_primitives::Ipv6Endpoint>,
     /// The peer speaks eMuleAI's NAT-T (ADR-0091): `CT_MOD_MISCOPTIONS` bit 1
     /// in its hello, or the uTP bit in a source record's connect options.
     /// With it, rung 1 of the route tree punches rather than drops.
     pub supports_natt: bool,
+    /// The crypt stance its source record stated, when one did: how a punch at
+    /// it goes out (ADR-0091, security rule 13).
+    pub crypt: Option<rmule_primitives::CryptStance>,
     /// The peer's eD2k user hash, when the caller holds it (a hello, a source
     /// record, a Kad publish). It is the **one name for a peer that survives
     /// its address changing under a NAT**, so it is what the rendezvous ledger
@@ -43,6 +44,44 @@ pub struct PeerReach {
     /// 1's buddy coordinator cannot be enacted — a hint could never be matched
     /// to the attempt it answers.
     pub user_hash: Option<UserHash>,
+}
+
+/// What a peer can be reached by on its own, as [`PeerReach`] carries it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ReachAddress {
+    /// A High-ID peer's dialable TCP endpoint.
+    Dial(rmule_primitives::PeerEndpoint),
+    /// A Low ID: no plain dial, and the id a server callback names.
+    LowId(rmule_primitives::ClientId),
+    /// A firewalled Kad publisher: no plain dial and no id any server knows.
+    /// Its buddy and its Kad UDP port are all there is.
+    KadRow,
+}
+
+impl From<rmule_primitives::PeerEndpoint> for ReachAddress {
+    fn from(endpoint: rmule_primitives::PeerEndpoint) -> Self {
+        Self::Dial(endpoint)
+    }
+}
+
+impl ReachAddress {
+    /// The endpoint a plain dial goes to, when one can.
+    #[must_use]
+    pub const fn dial(self) -> Option<rmule_primitives::PeerEndpoint> {
+        match self {
+            Self::Dial(endpoint) => Some(endpoint),
+            Self::LowId(_) | Self::KadRow => None,
+        }
+    }
+
+    /// The Low ID a server knows the peer by, when one does.
+    #[must_use]
+    pub const fn low_id(self) -> Option<rmule_primitives::ClientId> {
+        match self {
+            Self::LowId(id) => Some(id),
+            Self::Dial(_) | Self::KadRow => None,
+        }
+    }
 }
 
 /// A peer's Kad buddy as [`PeerReach`] carries it.

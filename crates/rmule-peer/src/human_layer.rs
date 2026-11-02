@@ -45,8 +45,9 @@
 
 use std::net::Ipv4Addr;
 
-use rmule_primitives::{ClientId, Ed2kText, Packet, PacketProtocol, WireReader, WireTruncated};
-use thiserror::Error;
+use rmule_primitives::{ClientId, Ed2kText, Packet, PacketProtocol, WireReader, write_wire_string};
+
+use crate::error::WireFault;
 
 use crate::opcode::PeerOpcode;
 
@@ -55,7 +56,7 @@ use crate::opcode::PeerOpcode;
 /// `PeerOpcode` variant (see the module doc). `packet.rs` special-cases the
 /// raw `(protocol, opcode)` pair ahead of the shared registry. Payload-less
 /// on rmule's side: it is never emitted (rmule never browses) and, received,
-/// is an unsolicited answer to parse-count-drop, never inspected.
+/// is an unsolicited answer to parse-count-drop.
 pub(crate) const OP_ASKSHAREDFILESDIRANS: u8 = 0x60;
 
 /// `OP_ASKSHAREDDENIEDANS` under Edonkey — collides with `OP_FILEDESC` under
@@ -63,6 +64,14 @@ pub(crate) const OP_ASKSHAREDFILESDIRANS: u8 = 0x60;
 /// [`OP_ASKSHAREDFILESDIRANS`]). rmule both emits this (the browse-denied
 /// reply) and may receive an unsolicited copy (dropped).
 pub(crate) const OP_ASKSHAREDDENIEDANS: u8 = 0x61;
+
+/// The name at the head of `OP_ASKSHAREDFILESDIR` and
+/// `OP_ASKSHAREDFILESDIRANS`, read for whether it fits: aMule reads it before
+/// anything decides (`ClientTCPSocket.cpp:923`, `:963`) and rmule never uses it.
+pub(crate) fn read_directory_name(packet: &Packet) -> Result<(), WireFault> {
+    WireReader::new(packet.payload()).read_len16_bytes("directory name")?;
+    Ok(())
+}
 
 /// `OP_FILEDESC` under Emule — the other side of [`OP_ASKSHAREDDENIEDANS`]'s
 /// collision.
@@ -91,12 +100,12 @@ impl Message {
     /// Decode `<len2><text>`. The declared length must exactly account for
     /// the whole frame (aMule's strict check); only the *read* is capped to
     /// `MAX_CLIENT_MSG_LEN` bytes.
-    pub fn decode_packet(packet: &Packet) -> Result<Self, HumanLayerDecodeError> {
+    pub fn decode_packet(packet: &Packet) -> Result<Self, WireFault> {
         let payload = packet.payload();
         let mut reader = WireReader::new(payload);
         let declared_len = usize::from(reader.read_u16_le("message length")?);
         if declared_len + 2 != payload.len() {
-            return Err(HumanLayerDecodeError::SizeMismatch {
+            return Err(WireFault::LengthMismatch {
                 declared: declared_len,
                 actual: payload.len(),
             });
@@ -111,9 +120,7 @@ impl Message {
     pub fn encode_packet(&self) -> Packet {
         let text = self.text.as_bytes();
         let mut payload = Vec::with_capacity(2 + text.len());
-        let len = u16::try_from(text.len()).expect("chat message length exceeds u16");
-        payload.extend_from_slice(&len.to_le_bytes());
-        payload.extend_from_slice(text);
+        write_wire_string(&mut payload, text);
         Packet::new(
             PeerOpcode::Message.protocol(),
             PeerOpcode::Message.as_u8(),
@@ -145,13 +152,8 @@ impl FileDesc {
     /// primitive reads are not safe-guarded — but the comment string itself
     /// is a **safe read**, clamped to whatever remains rather than rejected,
     /// and trailing bytes past it are tolerated.
-    pub fn decode_packet(packet: &Packet) -> Result<Self, HumanLayerDecodeError> {
-        if packet.protocol() != PacketProtocol::Emule || packet.opcode() != OP_FILEDESC {
-            return Err(HumanLayerDecodeError::WrongFrame {
-                opcode: packet.opcode(),
-            });
-        }
-        let mut reader = WireReader::new(packet.payload());
+    pub fn decode_packet(packet: &Packet) -> Result<Self, WireFault> {
+        let mut reader = WireReader::new(packet.body_of(PacketProtocol::Emule, OP_FILEDESC)?);
         let rating = reader.read_u8("rating")?;
         let declared_len =
             usize::try_from(reader.read_u32_le("comment length")?).unwrap_or(usize::MAX);
@@ -189,11 +191,12 @@ pub struct ChangeClientId {
 impl ChangeClientId {
     const PAYLOAD_LEN: usize = 8;
 
-    /// Read the change, which is a fixed eight bytes.
-    pub fn decode_packet(packet: &Packet) -> Result<Self, HumanLayerDecodeError> {
+    /// Read the change's eight bytes; aMule reads no more
+    /// (`ClientTCPSocket.cpp:774-775`).
+    pub fn decode_packet(packet: &Packet) -> Result<Self, WireFault> {
         let payload = packet.payload();
-        if payload.len() != Self::PAYLOAD_LEN {
-            return Err(HumanLayerDecodeError::WrongPayloadLen {
+        if payload.len() < Self::PAYLOAD_LEN {
+            return Err(WireFault::WrongSize {
                 expected: Self::PAYLOAD_LEN,
                 actual: payload.len(),
             });
@@ -235,10 +238,10 @@ impl PublicIpAnswer {
     const PAYLOAD_LEN: usize = 4;
 
     /// Read the answer, which is one IPv4 address.
-    pub fn decode_packet(packet: &Packet) -> Result<Self, HumanLayerDecodeError> {
+    pub fn decode_packet(packet: &Packet) -> Result<Self, WireFault> {
         let payload = packet.payload();
         if payload.len() != Self::PAYLOAD_LEN {
-            return Err(HumanLayerDecodeError::WrongPayloadLen {
+            return Err(WireFault::WrongSize {
                 expected: Self::PAYLOAD_LEN,
                 actual: payload.len(),
             });
@@ -258,52 +261,4 @@ impl PublicIpAnswer {
             self.ip.octets().to_vec(),
         )
     }
-}
-
-impl From<WireTruncated> for HumanLayerDecodeError {
-    fn from(truncated: WireTruncated) -> Self {
-        Self::Truncated {
-            needed: truncated.needed,
-            actual: truncated.available,
-        }
-    }
-}
-
-/// Why a human-layer packet with real fields could not be decoded.
-#[derive(Clone, Copy, Debug, Error, PartialEq, Eq)]
-pub enum HumanLayerDecodeError {
-    /// The decoder was handed some other opcode — these opcodes collide
-    /// across protocols, so the frame check is part of decoding.
-    #[error("not the expected human-layer frame: opcode 0x{opcode:02X}")]
-    WrongFrame {
-        /// The opcode that arrived.
-        opcode: u8,
-    },
-
-    /// The payload ended inside the header.
-    #[error("human-layer payload truncated: needed at least {needed} bytes, had {actual}")]
-    Truncated {
-        /// Bytes the header requires.
-        needed: usize,
-        /// Bytes present.
-        actual: usize,
-    },
-
-    /// A fixed-size packet was not that size.
-    #[error("human-layer payload wrong size: expected {expected} bytes, had {actual}")]
-    WrongPayloadLen {
-        /// The size the shape requires.
-        expected: usize,
-        /// The size that arrived.
-        actual: usize,
-    },
-
-    /// A declared text length overruns the frame that carries it.
-    #[error("declared length {declared} does not match frame size {actual}")]
-    SizeMismatch {
-        /// The length declared.
-        declared: usize,
-        /// The frame's own size.
-        actual: usize,
-    },
 }

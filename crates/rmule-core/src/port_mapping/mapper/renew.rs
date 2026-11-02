@@ -3,19 +3,27 @@
 use super::super::renewal::PERMANENT_POLL;
 use super::{
     DesiredMapping, Duration, GrantAnswer, Instant, MAX_RENEW_FAILURES, MIN_RENEW_GAP,
-    MappingCommand, MappingError, MappingProtocol, Phase, PortMapper, backoff_delay,
-    clamp_hold_off, clamp_lease, renewal_delay,
+    MappingCommand, MappingError, MappingLease, MappingProtocol, MappingStatus, Phase, PortMapper,
+    backoff_delay, clamp_hold_off, clamp_lease, renewal_delay,
 };
 
 impl PortMapper {
+    /// The leases a tick may fire on: renewals are firing, and no re-add is
+    /// outstanding on the row. The rows a tick fires and the instant the
+    /// runtime sleeps until both read this, so a past-due row is either fired
+    /// or no wake at all (ADR-0086).
+    pub(super) fn renewable(&self) -> impl Iterator<Item = (&DesiredMapping, &MappingLease)> {
+        let firing = matches!(self.phase, Phase::Mapped) || self.reracing.is_some();
+        self.leases
+            .iter()
+            .filter(move |(mapping, _)| firing && !self.readd_outstanding.contains(*mapping))
+    }
+
     /// Emit a renewal for every lease that is due.
     pub(super) fn fire_due_renewals(&mut self, now: Instant) {
         let due: Vec<_> = self
-            .leases
-            .iter()
-            .filter(|(mapping, lease)| {
-                lease.renew_at <= now && !self.readd_outstanding.contains(*mapping)
-            })
+            .renewable()
+            .filter(|(_, lease)| lease.renew_at <= now)
             .map(|(mapping, lease)| (*mapping, lease.protocol, lease.external.port()))
             .collect();
         for (mapping, protocol, external_port) in due {
@@ -70,7 +78,18 @@ impl PortMapper {
                     0,
                     draw,
                 );
+                let mut moved = None;
                 if let Some(held) = self.leases.get_mut(&mapping) {
+                    // UPnP keys a mapping by its external port: an answer on
+                    // another one is a second mapping beside the old. The move
+                    // is the gateway's 718, so the old port is usually another
+                    // host's by now; the release checks the gateway's entry and
+                    // deletes it only while it still forwards here.
+                    if held.protocol.keys_by_external_port()
+                        && held.external.port() != grant.external.port()
+                    {
+                        moved = Some((held.protocol, held.external.port()));
+                    }
                     held.external = grant.external;
                     held.lease = lease;
                     held.granted_at = now;
@@ -78,6 +97,19 @@ impl PortMapper {
                     held.attempt = 0;
                     held.failures = 0;
                     held.status = status;
+                }
+                if let Some((protocol, external_port)) = moved {
+                    self.commands.push_back(MappingCommand::Release {
+                        protocol,
+                        mapping,
+                        external_port,
+                    });
+                }
+                // A renewal the store no longer takes (a TCP port that moved,
+                // an address gone private) must not leave the last grant it
+                // took standing for a lease.
+                if status != MappingStatus::Mapped {
+                    self.withdraw_grant(mapping);
                 }
                 self.readd_succeeded |= was_readd;
             }

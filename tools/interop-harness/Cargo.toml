@@ -13,6 +13,7 @@ publish.workspace = true
 dist = false
 
 [dependencies]
+parking_lot.workspace = true
 anyhow.workspace = true
 clap.workspace = true
 # The search-wire leg reads the server tap's packed eD2k frames.
@@ -36,6 +37,7 @@ toml.workspace = true
 [dev-dependencies]
 assert_cmd.workspace = true
 predicates.workspace = true
+socket2.workspace = true
 tempfile.workspace = true
 
 [lints]

@@ -5,9 +5,8 @@
 //! [`KeywordQuery::contradicts`] when the server already said it answers it and
 //! only a field the row carries can overrule that.
 
-use icu_normalizer::DecomposingNormalizerBorrowed;
-
 use super::{KeywordQuery, SearchResult};
+use crate::fold_accents_and_case;
 
 /// Where a phrase splits into tokens, beside whitespace: every character
 /// aMule's keyword tokenizer splits on (`SearchManager.h:135`) or ed2k-server's
@@ -23,29 +22,11 @@ const SEPARATORS: [char; 32] = [
 /// `SEPARATORS`, folded by case and — Lugdunum's reading, the looser of the
 /// two — by accent: decomposed (NFD), combining marks dropped.
 fn words(text: &str) -> Vec<String> {
-    DecomposingNormalizerBorrowed::new_nfd()
-        .normalize(text)
-        .chars()
-        .filter(|c| !is_combining_mark(*c))
-        .flat_map(char::to_lowercase)
-        .collect::<String>()
+    fold_accents_and_case(text)
         .split(|c: char| c.is_whitespace() || SEPARATORS.contains(&c))
         .filter(|word| !word.is_empty())
         .map(str::to_owned)
         .collect()
-}
-
-/// The combining-mark blocks an NFD decomposition of a Latin, Greek or
-/// Cyrillic accented letter splits into.
-fn is_combining_mark(c: char) -> bool {
-    matches!(
-        c,
-        '\u{0300}'..='\u{036F}'
-            | '\u{1AB0}'..='\u{1AFF}'
-            | '\u{1DC0}'..='\u{1DFF}'
-            | '\u{20D0}'..='\u{20FF}'
-            | '\u{FE20}'..='\u{FE2F}'
-    )
 }
 
 /// One clause's verdict against a row: proven, refuted, or not decidable
@@ -78,8 +59,16 @@ impl KeywordQuery {
     /// ASCII case-insensitive. A field the row does not carry proves nothing,
     /// so the row does not match — aMule drops a result of unknown type the
     /// same way (`SearchList.cpp:1130-1140`).
+    ///
+    /// **A query naming one file** by its hash proves by that hash and any
+    /// size it gave, and by nothing else: the answer comes from a hash index
+    /// and carries none of the phrase's words.
     #[must_use]
     pub fn matches(&self, result: &SearchResult) -> bool {
+        if let Some(named) = self.named_file() {
+            return result.file_hash() == named.file_hash
+                && named.size.is_none_or(|size| result.file_size() == size);
+        }
         self.keywords_in(result)
             && self
                 .constraint_verdicts(result)

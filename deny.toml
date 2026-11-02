@@ -49,16 +49,27 @@ ignore = false
 yanked = "warn"
 ignore = [
     { id = "RUSTSEC-2026-0293", reason = "ringbuf is pinned to 0.4 by librqbit-utp and its only ring holds u8 elements, whose drop cannot panic." },
-    { id = "RUSTSEC-2023-0071", reason = "The rsa crate is only used to sign, verify and generate keys, never to decrypt, and no patched release exists." },
-    # The four below are in tools/ed2ksrv-differ only. Its oracle, ed2k-server,
-    # is pinned to an exact upstream commit and itself pins `bytes =1.6`,
-    # `tracing-subscriber =0.3.18` and `flate2 =1.0.30`, so a lockfile update
-    # cannot move them; re-pinning the oracle would void the fixtures captured
-    # against it. The differ is a test tool that is never built into a release.
+    { id = "RUSTSEC-2023-0071", reason = "Signing is the private-key operation, on bytes a peer chose, so the one call is blinded (`RandomizedSigner`). The key is the wire's 384 bits, factorable offline from the public half, so a timing leak gives nothing more. No patched release exists." },
+    # The rest are in tools/ed2ksrv-differ only. Its oracle, ed2k-server, is
+    # pinned to the bench's exact upstream commit (ADR-0045) and itself pins
+    # every direct dependency with `=`, so a lockfile update cannot move these.
+    # The differ is a test tool that is never built into a release: it calls
+    # the oracle's parsers and talks to one on loopback, and never opens the
+    # admin panel or the update check, the oracle's only TLS.
     { id = "RUSTSEC-2026-0007", reason = "bytes 1.6.1, held by the pinned oracle; the differ only decodes captured fixtures and talks to a loopback oracle." },
     { id = "RUSTSEC-2025-0055", reason = "tracing-subscriber 0.3.18, held by the pinned oracle; the differ's log goes to the developer's own terminal." },
     { id = "RUSTSEC-2025-0056", reason = "adler, an unmaintained checksum crate reached through the oracle's flate2 pin; no advisory describes an exploitable flaw." },
     { id = "RUSTSEC-2024-0436", reason = "paste, an unmaintained proc-macro reached through the oracle's jemalloc bindings; it runs at build time only." },
+    { id = "RUSTSEC-2026-0346", reason = "rustls 0.22, held by the oracle's tokio-rustls and ureq pins; the differ makes no TLS connection." },
+    { id = "RUSTSEC-2026-0349", reason = "rustls 0.22, held by the oracle's tokio-rustls and ureq pins; the differ makes no TLS connection." },
+    { id = "RUSTSEC-2026-0049", reason = "rustls-webpki 0.102, held by the oracle's rustls; the differ verifies no certificate." },
+    { id = "RUSTSEC-2026-0098", reason = "rustls-webpki 0.102, held by the oracle's rustls; the differ verifies no certificate." },
+    { id = "RUSTSEC-2026-0099", reason = "rustls-webpki 0.102, held by the oracle's rustls; the differ verifies no certificate." },
+    { id = "RUSTSEC-2026-0104", reason = "rustls-webpki 0.102, held by the oracle's rustls; the differ parses no revocation list." },
+    { id = "RUSTSEC-2026-0382", reason = "rustls-webpki 0.102, held by the oracle's rustls; the differ verifies no certificate." },
+    { id = "RUSTSEC-2026-0387", reason = "crypto-bigint 0.5, held by the oracle's admin-login crypto; the differ signs nothing." },
+    { id = "RUSTSEC-2026-0009", reason = "time 0.3.36, held by the oracle's pins; the differ parses no untrusted date." },
+    { id = "RUSTSEC-2026-0386", reason = "tokio 1.38, held by the oracle's `=1.38` pin; the differ calls no AsyncFd constructor with a foreign descriptor." },
 ]
 
 [bans]

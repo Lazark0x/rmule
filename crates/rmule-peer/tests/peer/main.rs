@@ -33,6 +33,7 @@ mod truncation;
 // does with frames that arrive out of turn.
 mod emule_info_exchange;
 mod ext_protocol_gates;
+mod peer_frame_legs;
 mod peer_inbound_handshake;
 mod peer_secure_ident;
 mod peer_session;
@@ -47,12 +48,14 @@ mod human_layer_session;
 mod multipacket_emit;
 mod multipacket_session;
 mod peer_session_aich;
+mod peer_session_asked_ranges;
 mod peer_session_parts;
 mod peer_session_slot;
 mod source_exchange_session;
 
 // Serving through a session: the upload half of the same state machine.
 mod peer_serve_session;
+mod served_block_frames;
 mod source_exchange_serve;
 
 // Captures: aMule-authored bytes decoded, and rmule's answers re-encoded
@@ -62,6 +65,7 @@ mod amule_source_ask_capture;
 mod buddy_callback_capture;
 mod client_software_capture;
 mod direct_callback_capture;
+mod large_file_capture;
 mod multipacket_forward_capture;
 mod natt_transport_capture;
 mod obfuscation_capture;

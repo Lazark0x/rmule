@@ -10,7 +10,7 @@ use rmule_peer::{
     SourceExchangeEntry, SourceExchangeVersion,
 };
 use rmule_primitives::{
-    ClientId, FileHash, Ipv4Endpoint, Packet, PacketProtocol, PeerSource, SourceSighting, UserHash,
+    ClientId, FileHash, Ipv4Endpoint, Packet, PacketProtocol, PeerSource, SourceClaim, UserHash,
 };
 
 fn empty_body() -> PeerHelloBody {
@@ -49,7 +49,7 @@ fn umbrella_decodes_answer_sources_at_the_default_advert_nibble() {
     // needed — an *empty* answer only resolves at nibble 1 (the documented
     // zero-count corner), and the honest default is now 3.
     let fh = FileHash::from_bytes([0x91; 16]);
-    let source = SourceSighting::plain(PeerSource::new(ClientId::from_u32(0x0203_0405), 4662));
+    let source = SourceClaim::plain(PeerSource::new(ClientId::from_u32(0x0203_0405), 4662));
     let packet = AnswerSources {
         file_hash: fh,
         sources: vec![SourceExchangeEntry::plain(source)],
@@ -89,7 +89,7 @@ fn umbrella_dispatches_answer_sources2_for_the_requester_consume() {
     // umbrella decodes it to `AnswerSources2`, which the session routes through
     // the same consume core as 0x82.
     let fh = FileHash::from_bytes([0x93; 16]);
-    let source = SourceSighting::plain(PeerSource::new(ClientId::from_u32(0x0203_0405), 4662));
+    let source = SourceClaim::plain(PeerSource::new(ClientId::from_u32(0x0203_0405), 4662));
     let packet = AnswerSources2 {
         version: SourceExchangeVersion::V4,
         file_hash: fh,

@@ -6,6 +6,9 @@
 //! a `reqwest` error, which is what keeps the machinery testable against a
 //! canned-bytes fake and portable across fetch backends.
 
+use std::future::Future;
+use std::pin::Pin;
+
 use thiserror::Error;
 
 /// Why a bounded fetch failed. HTTP-client-agnostic on purpose (see the
@@ -53,27 +56,25 @@ pub enum FetchError {
     },
 }
 
+/// What [`Fetcher::get`] returns: a boxed future, so `dyn Fetcher` exists.
+pub type FetchFuture<'a> = Pin<Box<dyn Future<Output = Result<Vec<u8>, FetchError>> + Send + 'a>>;
+
 /// Fetch a URL to bounded bytes — the crate's sole I/O seam.
 ///
-/// Both acquisition pipelines — server.met and nodes.dat — are generic over
-/// this. [`ReqwestFetcher`](crate::ReqwestFetcher) is the only
+/// Both acquisition pipelines — server.met and nodes.dat — run over a
+/// `&dyn Fetcher`. [`ReqwestFetcher`](crate::ReqwestFetcher) is the only
 /// production implementation (rustls, redirect/size/timeout caps) and the
 /// crate's only I/O corner; unit tests drive the pipelines with a fake that
 /// returns canned bytes, so no socket opens in the deterministic tier.
 ///
-/// The `-> impl Future + Send` shape (RPITIT, not `async_trait`) matches the
-/// repo's other async seams (`rmule_core::adapters`), keeping the fetch on
-/// static dispatch with no boxing.
-pub trait Fetcher {
+/// One GET a session is not worth a type parameter on every holder: the actor
+/// keeps its capability as `Arc<dyn Fetcher>`, which is why the future is boxed.
+pub trait Fetcher: Send + Sync {
     /// `GET url`, returning up to `max_bytes` of response body.
     ///
     /// A response that *would* exceed `max_bytes` fails with
     /// [`FetchError::TooLarge`] rather than buffering unboundedly. A non-2xx
     /// status fails with [`FetchError::Status`] — the caller must not parse a
     /// mirror's error page as a server list.
-    fn get(
-        &self,
-        url: &str,
-        max_bytes: usize,
-    ) -> impl std::future::Future<Output = Result<Vec<u8>, FetchError>> + Send;
+    fn get<'a>(&'a self, url: &'a str, max_bytes: usize) -> FetchFuture<'a>;
 }

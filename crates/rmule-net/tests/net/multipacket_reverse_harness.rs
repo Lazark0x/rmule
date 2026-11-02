@@ -56,7 +56,7 @@ async fn request_file_bundles_against_a_multipacket_uploader_and_probes_availabl
     conn.send(PeerCommand::Requester(RequesterCommand::RequestFile {
         file_hash,
         file_size: ED2K_PART_SIZE + 1,
-        own_status: rmule_peer::PartBitmap::downloader_empty(ED2K_PART_SIZE + 1), // multi-part → the bundle carries Name + SetReqId
+        own_status: rmule_peer::WireStatus::downloader_empty(ED2K_PART_SIZE + 1), // multi-part → the bundle carries Name + SetReqId
         want_sources: false,
         want_aich_root: false,
     }))

@@ -1,4 +1,4 @@
-//! ADR-0064: the per-`(IP, opcode)` leaky flood limiter and the port-53
+//! ADR-0064: the per-`(IP, opcode, proof)` leaky flood limiter and the port-53
 //! entry gate for `KadNode`'s datagram entry point.
 //!
 //! Both gates are key-independent and explicit-time,
@@ -15,7 +15,10 @@
 //! offender (aMule bans the IP at its eD2k client-list layer there; rmule
 //! only reports it — see `KadEvent::FloodOffenderDetected`), a LAN sender is
 //! exempt entirely, and an opportunistic sweep bounds the table's memory by
-//! evicting fully-decayed buckets no more often than every 12 minutes.
+//! evicting fully-decayed buckets no more often than every 12 minutes. The
+//! one departure is the key: a datagram with a valid receiver key counts apart
+//! from one without, so forged plaintext cannot bring a keyed sender's bucket
+//! to the line (ADR-0064).
 
 use std::collections::HashMap;
 use std::net::Ipv4Addr;
@@ -24,6 +27,7 @@ use std::time::Duration;
 use rmule_primitives::AccountingKey;
 
 use crate::KadInstant;
+use crate::buddy::{KADEMLIA_CALLBACK_REQ, KADEMLIA_FINDBUDDY_REQ};
 use crate::opcode::{
     KADEMLIA2_BOOTSTRAP_REQ, KADEMLIA2_HELLO_REQ, KADEMLIA2_PING, KADEMLIA2_PUBLISH_KEY_REQ,
     KADEMLIA2_PUBLISH_NOTES_REQ, KADEMLIA2_PUBLISH_SOURCE_REQ, KADEMLIA2_REQ,
@@ -56,8 +60,8 @@ const MAX_BUCKETS: usize = 50_000;
 
 /// The allowed requests per minute for a request opcode's leaky bucket
 /// (aMule's `PacketTracking.cpp` table, ADR-0064). `None` means untracked:
-/// every response opcode (solicitation correlation owns those, per the ADR)
-/// and every request opcode this node does not dispatch.
+/// every response opcode, which solicitation correlation owns, per the ADR.
+/// The **Kad Send Gate** reads the same table: what rmule enforces it obeys.
 ///
 /// The keyword (`0x33`/`0x43`) and notes (`0x35`/`0x45`) request buckets are
 /// tracked because `node.rs` dispatches all four, and leaving them out left an
@@ -79,8 +83,9 @@ const MAX_BUCKETS: usize = 50_000;
 /// them. It does. eMule 0.70b has since moved `PUBLISH_KEY_REQ` to 4; that is
 /// recorded as downstream drift and deliberately **not** adopted, because
 /// following eMule here implies advertising a Kad version rmule cannot yet
-/// support (`KADEMLIA_VERSION` stays at 8 until `TAGTYPE_BSOB` decoding lands).
-const fn request_rate_per_minute(opcode: u8) -> Option<u32> {
+/// support (`KADEMLIA_VERSION` stays at 8: a v9 node is published the `BSOB`
+/// `TAG_KADAICHHASHPUB`, which rmule's tag lists step over rather than keep).
+pub(crate) const fn request_rate_per_minute(opcode: u8) -> Option<u32> {
     match opcode {
         KADEMLIA2_BOOTSTRAP_REQ => Some(2),
         KADEMLIA2_HELLO_REQ => Some(3),
@@ -91,6 +96,8 @@ const fn request_rate_per_minute(opcode: u8) -> Option<u32> {
         KADEMLIA2_PUBLISH_KEY_REQ => Some(3),
         KADEMLIA2_PUBLISH_SOURCE_REQ | KADEMLIA2_PUBLISH_NOTES_REQ => Some(2),
         KADEMLIA_FIREWALLED_REQ | KADEMLIA_FIREWALLED2_REQ => Some(2),
+        KADEMLIA_FINDBUDDY_REQ => Some(2),
+        KADEMLIA_CALLBACK_REQ => Some(1),
         KADEMLIA2_PING => Some(2),
         _ => None,
     }
@@ -171,10 +178,10 @@ impl Bucket {
     }
 }
 
-/// The per-`(IP, opcode)` leaky flood table (ADR-0064).
+/// The per-`(IP, opcode, proven)` leaky flood table (ADR-0064).
 #[derive(Debug)]
 pub(crate) struct FloodTable {
-    buckets: HashMap<(AccountingKey, u8), Bucket>,
+    buckets: HashMap<(AccountingKey, u8, bool), Bucket>,
     last_swept: Option<KadInstant>,
 }
 
@@ -190,8 +197,15 @@ impl FloodTable {
     /// caller's job (the datagram entry point applies `net::is_lan_ip` before
     /// calling); an untracked opcode (every response, and every request opcode
     /// without a pinned bucket in [`request_rate_per_minute`]) always admits
-    /// without allocating a bucket.
-    pub(crate) fn gate(&mut self, now: KadInstant, ip: Ipv4Addr, opcode: u8) -> FloodVerdict {
+    /// without allocating a bucket. `proven` is whether the datagram carried a
+    /// valid receiver key.
+    pub(crate) fn gate(
+        &mut self,
+        now: KadInstant,
+        ip: Ipv4Addr,
+        opcode: u8,
+        proven: bool,
+    ) -> FloodVerdict {
         // Buckets key on the accounting key, not the address (ADR-0087): a
         // sender delegated a whole `/64` can mint a fresh address per datagram,
         // so a per-`/128` bucket would be no limit at all. Kad's own contacts
@@ -202,7 +216,7 @@ impl FloodTable {
             return FloodVerdict::Admit;
         };
         self.sweep_if_due(now);
-        let key = (ip, bucket_opcode(opcode));
+        let key = (ip, bucket_opcode(opcode), proven);
         // Bound the table: a fresh key at the ceiling forces an eviction first,
         // so `buckets.len()` never exceeds `MAX_BUCKETS`.
         if !self.buckets.contains_key(&key) && self.buckets.len() >= MAX_BUCKETS {
@@ -227,7 +241,7 @@ impl FloodTable {
     /// saturated.
     fn make_room(&mut self, now: KadInstant) {
         let before = self.buckets.len();
-        self.buckets.retain(|(_, opcode), bucket| {
+        self.buckets.retain(|(_, opcode, _), bucket| {
             let rate = request_rate_per_minute(*opcode)
                 .expect("only rate-tracked opcodes ever enter the table");
             !bucket.is_drained(now, rate)
@@ -257,7 +271,7 @@ impl FloodTable {
             return;
         }
         self.last_swept = Some(now);
-        self.buckets.retain(|(_, opcode), bucket| {
+        self.buckets.retain(|(_, opcode, _), bucket| {
             let rate = request_rate_per_minute(*opcode)
                 .expect("only rate-tracked opcodes ever enter the table");
             !bucket.is_drained(now, rate)
@@ -289,18 +303,20 @@ mod tests {
             (KADEMLIA2_PUBLISH_NOTES_REQ, 2),
             (KADEMLIA_FIREWALLED_REQ, 2),
             (KADEMLIA_FIREWALLED2_REQ, 2),
+            (KADEMLIA_FINDBUDDY_REQ, 2),
+            (KADEMLIA_CALLBACK_REQ, 1),
         ];
         for (opcode, rate) in cases {
             let mut table = FloodTable::new();
             for n in 1..=rate {
                 assert_eq!(
-                    table.gate(T0, ip(1), opcode),
+                    table.gate(T0, ip(1), opcode, false),
                     FloodVerdict::Admit,
                     "opcode {opcode:#04x} touch {n} within rate {rate}"
                 );
             }
             assert_eq!(
-                table.gate(T0, ip(1), opcode),
+                table.gate(T0, ip(1), opcode, false),
                 FloodVerdict::Drop { offender: false },
                 "opcode {opcode:#04x} touch {} past rate {rate}",
                 rate + 1
@@ -315,15 +331,15 @@ mod tests {
         // separately (as rmule did until 2026-09-12) this sender would get 4.
         let mut table = FloodTable::new();
         assert_eq!(
-            table.gate(T0, ip(1), KADEMLIA_FIREWALLED_REQ),
+            table.gate(T0, ip(1), KADEMLIA_FIREWALLED_REQ, false),
             FloodVerdict::Admit
         );
         assert_eq!(
-            table.gate(T0, ip(1), KADEMLIA_FIREWALLED2_REQ),
+            table.gate(T0, ip(1), KADEMLIA_FIREWALLED2_REQ, false),
             FloodVerdict::Admit
         );
         assert_eq!(
-            table.gate(T0, ip(1), KADEMLIA_FIREWALLED2_REQ),
+            table.gate(T0, ip(1), KADEMLIA_FIREWALLED2_REQ, false),
             FloodVerdict::Drop { offender: false },
             "the third check in a minute is over the shared 2/min allowance"
         );
@@ -334,17 +350,17 @@ mod tests {
         let mut table = FloodTable::new();
         // Fill to the ceiling with distinct source IPs, each touched once.
         for n in 0..MAX_BUCKETS as u32 {
-            table.gate(T0, Ipv4Addr::from(n), KADEMLIA2_HELLO_REQ);
+            table.gate(T0, Ipv4Addr::from(n), KADEMLIA2_HELLO_REQ, false);
         }
         assert_eq!(table.buckets.len(), MAX_BUCKETS);
 
         // Drive one existing bucket well over its rate — an active offender.
         let offender = Ipv4Addr::from(0u32);
         for _ in 0..20 {
-            table.gate(T0, offender, KADEMLIA2_HELLO_REQ);
+            table.gate(T0, offender, KADEMLIA2_HELLO_REQ, false);
         }
         assert!(matches!(
-            table.gate(T0, offender, KADEMLIA2_HELLO_REQ),
+            table.gate(T0, offender, KADEMLIA2_HELLO_REQ, false),
             FloodVerdict::Drop { .. }
         ));
 
@@ -352,13 +368,13 @@ mod tests {
         // must survive (a low-count bucket is sacrificed in its place).
         let newcomer = Ipv4Addr::new(198, 51, 100, 1);
         assert_eq!(
-            table.gate(T0, newcomer, KADEMLIA2_HELLO_REQ),
+            table.gate(T0, newcomer, KADEMLIA2_HELLO_REQ, false),
             FloodVerdict::Admit
         );
         assert_eq!(table.buckets.len(), MAX_BUCKETS, "cap holds after eviction");
         assert!(
             matches!(
-                table.gate(T0, offender, KADEMLIA2_HELLO_REQ),
+                table.gate(T0, offender, KADEMLIA2_HELLO_REQ, false),
                 FloodVerdict::Drop { .. }
             ),
             "the active offender is never the eviction victim"

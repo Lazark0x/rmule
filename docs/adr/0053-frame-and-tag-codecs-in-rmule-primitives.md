@@ -30,6 +30,23 @@ holds such a packed answer from aMule.
 **Frame and tag codecs stay in `rmule-primitives`**, beside each other, with no separate
 codec crate. Kad keeps its own envelope and its own `0xE5` handling in `rmule-kad`.
 
+**A tag list steps past what the value model cannot hold.** `Tag::decode_or_step_prefix`
+reads one list entry: the tag when `TagValue` models its type, or nothing but the entry's
+width when the type is one eD2k defines and rmule never reads (`FLOAT32`, `BOOL`,
+`BOOLARRAY`, `BLOB`, `BSOB`, `STR17` to `STR22`) or the name is not UTF-8. aMule's and
+eMule's readers parse such a tag and ignore it. Only a truncated tag or a type byte eD2k
+does not define fails the message, because the next entry's offset is then unknowable.
+Every tolerant tag-list reader walks with it (the peer hello and every Kad tag loop), so
+the rule cannot drift between surfaces. A reader that wants one stepped `BSOB` reads it
+with `Tag::bsob_prefix`, which names the entry and borrows its value; the walk still moves by
+the width the step returned. The keyword answer's reader is the one that does:
+`TAG_KADAICHHASHRESULT`, the `BSOB` an eMule-family storer writes into keyword answers for
+every searcher (eMule 0.70b `kademlia/kademlia/Entry.cpp:680-710`), carries the AICH roots
+the file's publishers reported, and the keyword result keeps them from a storer at Kad v9 or
+later (ADR-0038). A value too short for its root count drops the roots, never the row. As a
+storer, rmule still steps past the publisher's `TAG_KADAICHHASHPUB`: it speaks Kad v8, so no
+publisher sends it one.
+
 **One packed-frame mechanism, all policy per surface.** `rmule_primitives::packed_frame`
 provides:
 

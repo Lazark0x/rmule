@@ -1,6 +1,5 @@
-//! The **Inbound Source** seam (ADR-0085): where an accepted peer connection
-//! comes from, and the one-byte push-back that lets ADR-0042's byte-0
-//! discrimination work on *any* stream rather than only a `TcpStream`.
+//! The one-byte push-back that lets ADR-0042's byte-0 discrimination work on
+//! *any* stream rather than only a `TcpStream` (ADR-0085).
 //!
 //! `TcpStream::peek` reads without consuming, which is convenient and
 //! socket-specific. Pushing the byte back instead keeps the discrimination
@@ -11,8 +10,9 @@ use std::io;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
-use rmule_primitives::PeerEndpoint;
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
+
+use crate::driver::{SendProgress, SendSide};
 
 /// A stream whose first byte was read and put back: the next read sees it
 /// again, then the underlying stream continues untouched. `None` pushes
@@ -28,6 +28,12 @@ impl<S> PushBack<S> {
     #[must_use]
     pub const fn new(inner: S, pushed: Option<u8>) -> Self {
         Self { inner, pushed }
+    }
+}
+
+impl<S: SendSide> SendSide for PushBack<S> {
+    fn send_progress(&self) -> Option<SendProgress> {
+        self.inner.send_progress()
     }
 }
 
@@ -67,18 +73,6 @@ impl<S: AsyncWrite + Unpin> AsyncWrite for PushBack<S> {
     fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
         Pin::new(&mut self.inner).poll_shutdown(cx)
     }
-}
-
-/// Where inbound peer connections come from. The accept loop is a *source* of
-/// streams plus the endpoint each dialer came from, so core's triage does not
-/// care whether a connection arrived on the IPv4 listener, the IPv6 one, or
-/// some later transport that is not a socket at all.
-pub trait InboundSource: Send + Sync {
-    /// The accepted stream type.
-    type Stream: AsyncRead + AsyncWrite + Unpin + Send + 'static;
-
-    /// Await the next inbound connection.
-    fn accept(&self) -> impl Future<Output = io::Result<(Self::Stream, PeerEndpoint)>> + Send;
 }
 
 #[cfg(test)]

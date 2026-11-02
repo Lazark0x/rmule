@@ -140,7 +140,8 @@ impl Capabilities {
     }
 
     /// 64-bit file sizes are dispatched end-to-end (search, get-sources,
-    /// links) — gated per-server on the granted large-files flag.
+    /// links, peer transfer) — gated per-server on the granted large-files
+    /// flag, and per-peer on its hello's claim.
     #[must_use]
     pub const fn supports_large_files(self) -> bool {
         true

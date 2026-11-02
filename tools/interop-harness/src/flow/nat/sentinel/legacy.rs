@@ -14,9 +14,10 @@
 //! and every plain record in the plan names an address the stimulus container
 //! *holds* and a port it *listens on* — so aMule's dial lands on a **Source
 //! Sink** that writes down which record it decoded, and the passive **Capture
-//! Sidecar** on aMule's own netns records the SYN independently. A desync shows
-//! up as the record *after* the sentinel going undialled (or dialled at the
-//! wrong endpoint) while the one before it is dialled.
+//! Sidecar** on aMule's own netns records the SYN independently. The sentinel's
+//! address sits inline, so a reader that walks six bytes a record shows up as
+//! the record *after* the sentinel going undialled, a SYN at the endpoint those
+//! bytes spell, and nothing else moved.
 
 use std::ffi::OsString;
 use std::fs;
@@ -37,7 +38,8 @@ use crate::flow::logs::{collect_amule_diagnostics, collect_amule_logs, retain_ar
 use super::plan::{
     AMULE_SERVER_UDP_PORT, BENCH_SUBNET, CONTROL_FIRST_RECORDS, CONTROL_SECOND_RECORDS,
     PACKED_FIRST_RECORDS, PACKED_SECOND_RECORDS, Record, STIMULUS_IP, STIMULUS_TCP_PORT,
-    STIMULUS_UDP_PORT, TCP_RECORDS, all_records, list_spec, sink_address_cidrs, sink_ports,
+    STIMULUS_UDP_PORT, TCP_RECORDS, all_records, inline_misread, list_spec, sink_address_cidrs,
+    sink_ports,
 };
 
 /// The stimulus's readiness marker.
@@ -421,6 +423,13 @@ fn count_wire_rows(bench: &Bench, capture: &str, pcap: &str) -> Vec<(String, u64
     for record in all_records() {
         rows.push((format!("syn_{}", record.label), syn_filter(record)));
     }
+    let (misread_host, misread_port) = inline_misread(&TCP_RECORDS[1]);
+    rows.push((
+        "syn_inline_misread".to_owned(),
+        format!(
+            "tcp[tcpflags] & tcp-syn != 0 and dst host {misread_host} and dst port {misread_port}"
+        ),
+    ));
     rows.push((
         "syn_broadcast_id".to_owned(),
         "tcp[tcpflags] & tcp-syn != 0 and dst host 255.255.255.255".to_owned(),

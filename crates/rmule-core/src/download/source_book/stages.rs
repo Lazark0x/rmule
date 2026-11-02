@@ -7,38 +7,62 @@
 use rmule_peer::PeerIdentity;
 use rmule_primitives::{Ipv4Endpoint, Ipv6Endpoint, PeerEndpoint, UserHash};
 
-use super::record::{DialRoad, Lane, Live, RecordId, Stage};
+use super::asks::AskName;
+use super::record::{DialRoad, Heard, Lane, Live, Record, RecordId, Stage};
 use super::road::PendingRoad;
 use super::standing::ReaskFacts;
-use super::{Adopted, DialEnd, NextDial, Release, SourceBook, WorkerEnd};
+use super::{Adopted, DialEnd, MergeEnd, NextDial, Release, SourceBook, WorkerEnd};
 use crate::adapters::CallbackKey;
+use crate::callback::BuddyContact;
 use crate::dialable::{DialPosition, choose_dial};
-use crate::download::state::{CallbackCapability, LowIdCandidate, LowIdRoute};
+use crate::download::spent_names::Spend;
+use crate::download::state::{CallbackCapability, LowIdCandidate, LowIdRoad, LowIdRoute};
 
 impl SourceBook {
-    /// Take the next dial for a free slot, while the stages hold fewer than
-    /// `cap`: the High-ID lane's first record, else the first Low-ID candidate
-    /// the admission rule admits — the connected server's lane before the
-    /// global one, a skipped candidate keeping its place. The record moves to
-    /// Dialing or CallbackPending here.
+    /// Whether a fill would find a next dial: a High-ID record pooled, or a
+    /// Low-ID candidate the admission rule admits. Asked before the
+    /// **Connection Budget** is, so a fill with nothing to open spends no road.
+    pub(crate) fn has_next_dial(
+        &self,
+        capability: &CallbackCapability,
+        dial: DialPosition,
+    ) -> bool {
+        !self.lanes.is_empty(Lane::HighId)
+            || [Lane::LowIdConnected, Lane::LowIdGlobal]
+                .into_iter()
+                .any(|lane| {
+                    self.lanes
+                        .iter(lane)
+                        .any(|id| self.low_id_route(id, capability, dial).is_some())
+                })
+    }
+
+    /// Take the next dial for a road the **Connection Budget** admitted
+    /// (ADR-0116): the High-ID lane's first record, else the first Low-ID
+    /// candidate the admission rule admits — the connected server's lane before
+    /// the global one, a skipped candidate keeping its place. The record moves
+    /// to Dialing or CallbackPending here. A pooled record is read against the
+    /// **Spent Names** at its turn: a peer another run spent is dead here too,
+    /// so its record leaves, as stock's `RemoveSource` takes a dead client off
+    /// every file (`DownloadQueue.cpp:763-785`, ADR-0090).
     pub(crate) fn next_dial(
         &mut self,
-        cap: usize,
         capability: &CallbackCapability,
         dial: DialPosition,
     ) -> Option<NextDial> {
-        if self.slots_in_use() >= cap {
-            return None;
-        }
-        if let Some(id) = self.lanes.pop_front(Lane::HighId) {
+        while let Some(id) = self.lanes.pop_front(Lane::HighId) {
+            let Some(endpoint) = self.first_unspent(id) else {
+                self.remove(id);
+                continue;
+            };
             let record = self.records.get_mut(&id)?;
-            let endpoint = *record.endpoints.first()?;
             record.stage = Stage::Dialing(Live {
                 road: DialRoad::HighId,
                 endpoint,
             });
             return Some(NextDial::Worker(endpoint));
         }
+        self.drop_spent_candidates();
         let (lane, id, route) = [Lane::LowIdConnected, Lane::LowIdGlobal]
             .into_iter()
             .find_map(|lane| {
@@ -65,6 +89,43 @@ impl SourceBook {
         }
     }
 
+    /// The endpoint the record `id` is dialed at: its first one no run spent,
+    /// which it then leads with.
+    fn first_unspent(&mut self, id: RecordId) -> Option<PeerEndpoint> {
+        let record = self.records.get(&id)?;
+        let first = record
+            .endpoints
+            .iter()
+            .copied()
+            .find(|&endpoint| !self.blocks.is_spent(endpoint))?;
+        let record = self.records.get_mut(&id)?;
+        record.endpoints.retain(|&held| held != first);
+        record.endpoints.insert(0, first);
+        Some(first)
+    }
+
+    /// Every Low-ID candidate a run spent the key of leaves its lane.
+    fn drop_spent_candidates(&mut self) {
+        for lane in [Lane::LowIdConnected, Lane::LowIdGlobal] {
+            let spent: Vec<RecordId> = self
+                .lanes
+                .iter(lane)
+                .filter(|id| {
+                    self.records
+                        .get(id)
+                        .and_then(|record| record.candidate)
+                        .is_some_and(|candidate| {
+                            self.blocks.is_spent(AskName::LowId(candidate.key()))
+                        })
+                })
+                .collect();
+            for id in spent {
+                self.lanes.remove(lane, id);
+                self.remove(id);
+            }
+        }
+    }
+
     /// Whether nothing the book holds can still reach a slot: no High ID
     /// pooled, no Low-ID candidate any road admits, and nothing holding a
     /// queue standing, whose TCP full ask re-dials.
@@ -80,7 +141,7 @@ impl SourceBook {
             && !self
                 .records
                 .values()
-                .any(|record| matches!(record.stage, Stage::RemoteQueued(_)))
+                .any(|record| matches!(record.stage, Stage::RemoteQueued(_) | Stage::RoadHeld))
     }
 
     /// Which route, if any, `id`'s candidate is reached by — the admission
@@ -128,7 +189,7 @@ impl SourceBook {
             && let Stage::Dialing(live) = record.stage
             && live.endpoint == endpoint
         {
-            record.stage = Stage::Worker(live, None);
+            record.stage = Stage::Worker(live, Heard::default());
         }
     }
 
@@ -162,7 +223,7 @@ impl SourceBook {
         let record = self.records.get_mut(&id)?;
         let hello_hash = record.stage.identity().map(PeerIdentity::user_hash);
         if failed {
-            self.blocks.spend(endpoint);
+            self.blocks.spend(endpoint, record.dead_spend());
             record.standing = None;
         }
         if record.standing.is_some() {
@@ -211,13 +272,24 @@ impl SourceBook {
                 // scenario reads it.
                 tracing::info!(
                     peer = %endpoint,
-                    low_id = record.candidate.map_or(0, |candidate| candidate.low_id.as_u32()),
+                    key = ?record.candidate.map(|candidate| candidate.key()),
                     "rung-0 IPv6 dial failed; the Low-ID candidate falls to its callback roads"
                 );
                 self.hand_to_callback_road(id)
             }
             DialRoad::Callback => unreachable!("a called-back worker's end is taken above"),
         }))
+    }
+
+    /// The worker at `endpoint`'s source said it lacks the file (ADR-0090):
+    /// its record is spent under every name it holds and leaves the book,
+    /// whichever road reached it — a called-back source does not return to its
+    /// Low-ID lane, and a standing it held ends.
+    pub(crate) fn lacked_file(&mut self, endpoint: PeerEndpoint) -> Option<WorkerEnd> {
+        let id = self.aliases.endpoint(endpoint)?;
+        self.records.get(&id)?.live_at(endpoint)?;
+        self.spend_lacking(id);
+        Some(WorkerEnd::Release(Release::Gone))
     }
 
     /// A called-back source's worker ended without a queue rank (ADR-0090): its
@@ -323,11 +395,19 @@ impl SourceBook {
     /// The peer `key`'s callback asked for dialed in at `endpoint` and was
     /// adopted (ADR-0039): its record moves to Dialing there, keeping its
     /// candidate and `CallbackKey` beside the worker. The inbound endpoint
-    /// joins the record — a record that answered to it is the same peer.
+    /// joins the record — a record that answered to it is the same peer. A
+    /// dial-back after the fallback `0x52` makes that reading the source's
+    /// (ADR-0061).
     pub(crate) fn adopt(&mut self, key: CallbackKey, endpoint: PeerEndpoint) -> Option<Adopted> {
         let id = self.aliases.key(key)?;
-        if !matches!(self.records.get(&id)?.stage, Stage::CallbackPending(_)) {
+        let record = self.records.get_mut(&id)?;
+        let Stage::CallbackPending(pending) = &record.stage else {
             return None;
+        };
+        if pending.fallback_spelling_sent
+            && let Some(candidate) = record.candidate.as_mut()
+        {
+            candidate.buddy = candidate.buddy.map(BuddyContact::fallback_reading);
         }
         let holder = self
             .aliases
@@ -402,19 +482,25 @@ impl SourceBook {
     /// when rung 0 is open now — a sighting named a half not yet spent while
     /// the road was pending, or our Known IPv6 arrived — or the record holds a
     /// dialable half another channel proved: then it goes first in that lane.
+    /// One that ends with nowhere to go is spent under its Low-ID key, as stock
+    /// dead-lists a client whose callback lapsed (`BaseClient.cpp:1340-1346`).
+    /// A road that ends as the punch asked nobody to dial us, so it spends
+    /// nothing, unless a fallback spelling was earned: only a primary `0x52`
+    /// that left earns one, whatever became of it.
     pub(crate) fn end_callback(&mut self, key: CallbackKey, dial: DialPosition) -> Option<Release> {
         let id = self.aliases.key(key)?;
         let record = self.records.get(&id)?;
-        if !matches!(record.stage, Stage::CallbackPending(_)) {
+        let Stage::CallbackPending(pending) = &record.stage else {
             return None;
-        }
+        };
+        let invited = pending.road != LowIdRoad::Punch || pending.fallback_spelling_sent;
         let candidate = record.candidate?;
         if !self.half_closed(id, &candidate)
             && let Some(half) = choose_dial(None, candidate.ipv6, dial)
         {
             tracing::debug!(
                 %half,
-                low_id = candidate.low_id.as_u32(),
+                key = ?candidate.key(),
                 "a Low-ID road ended; rung 0 is open at the candidate's half"
             );
             return Some(self.back_to(id, Lane::of(&candidate, self.own_server), None));
@@ -430,6 +516,10 @@ impl SourceBook {
         });
         if let Some(first) = dialable {
             return Some(self.back_to(id, Lane::HighId, Some(first)));
+        }
+        if invited {
+            self.blocks
+                .spend(AskName::LowId(candidate.key()), Spend::DeadLowId);
         }
         self.remove(id);
         Some(Release::Gone)
@@ -478,12 +568,48 @@ impl SourceBook {
         let hash = identity.user_hash();
         let support = identity.source_exchange();
         let buddy = identity.serving_buddy();
-        record.stage = Stage::Worker(live, Some(Box::new(identity)));
+        let answered = matches!(&record.stage, Stage::Worker(_, heard) if heard.answered);
+        record.stage = Stage::Worker(
+            live,
+            Heard {
+                identity: Some(Box::new(identity)),
+                answered,
+            },
+        );
         self.learned(endpoint, support);
         if let Some(buddy) = buddy {
             self.hello_buddy(hash, buddy.buddy_udp);
         }
         self.blocks.distrusts(Some(hash))
+    }
+
+    /// The hello of the worker at `endpoint` names the peer's other address
+    /// on its listen port, and another record holds that endpoint: the two
+    /// are one source, folded here (ADR-0087). A record naming another User
+    /// Hash stays apart: a hello proves its own address, not who holds that
+    /// one. What the merge ended, for the brain to end.
+    pub(crate) fn fold_named_half(&mut self, endpoint: PeerEndpoint) -> Option<MergeEnd> {
+        let id = self.aliases.endpoint(endpoint)?;
+        let identity = self.records.get(&id)?.stage.identity()?;
+        let hash = identity.user_hash();
+        let port = identity.tcp_port();
+        let other = match endpoint {
+            PeerEndpoint::V4(_) => PeerEndpoint::V6(Ipv6Endpoint::new(identity.peer_ipv6()?, port)),
+            PeerEndpoint::V6(_) => {
+                let id = identity.client_id();
+                id.is_high_id()
+                    .then(|| PeerEndpoint::V4(Ipv4Endpoint::new(id.to_ipv4(), port)))?
+            }
+        };
+        let holder = self
+            .aliases
+            .endpoint(other)
+            .filter(|&holder| holder != id)?;
+        let named = self.user_hashes(self.records.get(&holder)?);
+        if named.iter().any(|&held| held != hash) {
+            return None;
+        }
+        self.merge(id, holder)
     }
 
     /// The source `hash` named its **serving buddy** in its own hello
@@ -492,11 +618,26 @@ impl SourceBook {
     /// since the hello is the newest statement of where the buddy is.
     fn hello_buddy(&mut self, hash: UserHash, buddy_udp: Ipv4Endpoint) {
         self.run.note_hello_buddy(hash, buddy_udp);
-        self.records
-            .values_mut()
-            .filter_map(|record| record.candidate.as_mut())
-            .filter(|candidate| candidate.user_hash == Some(hash))
-            .for_each(|candidate| candidate.learn_hello_buddy(buddy_udp));
+        let named = |record: &Record| {
+            record
+                .candidate
+                .as_ref()
+                .is_some_and(|candidate| candidate.user_hash == Some(hash))
+        };
+        let ids: Vec<RecordId> = self
+            .records
+            .iter()
+            .filter_map(|(id, record)| named(record).then_some(*id))
+            .collect();
+        for id in ids {
+            if let Some(candidate) = self
+                .records
+                .get_mut(&id)
+                .and_then(|record| record.candidate.as_mut())
+            {
+                candidate.learn_hello_buddy(buddy_udp);
+            }
+        }
     }
 
     /// The live worker at `endpoint` is proven to have served this file bad
@@ -505,6 +646,14 @@ impl SourceBook {
     /// none leaves nothing to key it by.
     pub(crate) fn distrust(&mut self, endpoint: PeerEndpoint) -> Option<UserHash> {
         let hash = self.identity(endpoint)?.user_hash();
-        self.blocks.distrust(hash).then_some(hash)
+        self.distrust_hash(hash).then_some(hash)
+    }
+
+    /// A writer whose hello named `user_hash` is proven to have served this
+    /// file bad data, whether or not its worker is still live (ADR-0117 §1):
+    /// distrust that hash. `true` when the distrust is new, for the brain to
+    /// persist.
+    pub(crate) fn distrust_hash(&mut self, user_hash: UserHash) -> bool {
+        self.blocks.distrust(user_hash)
     }
 }

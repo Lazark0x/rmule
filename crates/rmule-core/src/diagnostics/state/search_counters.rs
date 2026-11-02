@@ -9,7 +9,7 @@ impl DiagnosticsState {
     /// Count `rows` Search Result rows dropped because no live search's query
     /// they satisfy.
     pub fn count_search_rows_unattributed(&self, rows: u64) {
-        let mut inner = self.inner.lock().expect("diagnostics mutex poisoned");
+        let mut inner = self.inner.lock();
         inner.session.search_rows_unattributed_total = inner
             .session
             .search_rows_unattributed_total
@@ -18,9 +18,6 @@ impl DiagnosticsState {
 
     /// The session named the search its server holds more rows for, or none.
     pub(crate) fn set_search_more_results(&self, more: Option<ServerMoreResults>) {
-        self.inner
-            .lock()
-            .expect("diagnostics mutex poisoned")
-            .search_more_results = more;
+        self.inner.lock().search_more_results = more;
     }
 }

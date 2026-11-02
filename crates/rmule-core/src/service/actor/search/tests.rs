@@ -1,7 +1,6 @@
 //! A keyword search whose session ends as it starts: the ended session counts
 //! as none, so with no Server Intent the server leg is not sent, the Kad leg
-//! goes out, and the search completes on it (ADR-0034, "The legs are
-//! independent", "A server leg's states").
+//! goes out, and the search completes on it (ADR-0034, "Legs", "A server leg's states").
 
 use std::time::Duration;
 

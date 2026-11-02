@@ -7,37 +7,41 @@
 //! dash when neither name nor tag classifies the file, rather than guessing.
 
 use ratatui::Frame;
-use ratatui::layout::{Constraint, Rect};
+use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
-use ratatui::widgets::{Block, HighlightSpacing, Paragraph, Row, Table};
+use ratatui::widgets::Paragraph;
 
-use rmule_primitives::{Ed2kText, SearchResult};
+use rmule_primitives::{Ed2kFileClass, Ed2kText, SearchResult};
 
 use super::SearchesView;
 use super::sort::ResultsTable;
-use crate::row_selection::{MARKER, selection_style};
 use crate::state::{KnownFileMark, KnownFileMarks, SearchPane, SearchStatus, UiState};
-use crate::table_sort::{SortedTable, header_label, header_widths};
+use crate::table::widest;
+use crate::table::{self, Cell, Rows, Table};
+use crate::table_sort::SortedTable;
 use crate::theme::Theme;
-use crate::views::say_gave_way;
-use crate::wrap::{TableColumns, clamp_u16, gave_way, greedy_widths, wrap_text, wrapped_cell};
+use crate::views::human_size;
+use crate::words::search;
+use crate::words::{absent, hints, labels};
+use crate::wrap::{clamp_u16, display_width, wrap_text};
 
-/// Results table columns: Name · Size · Sources · Type. `Name` is greedy
-/// Its declared width is ignored and it takes everything the others
-/// leave over; when the pane is too narrow even for those, they shrink and
-/// every cell wraps. Nothing is ever clipped.
-const RESULT_COLS: [usize; 4] = [20, 11, 12, 10];
+/// Results table columns: Name · Size · Sources · Type. `Name` is greedy: its
+/// entry is the room it keeps before other columns give way to it, and it
+/// takes everything the others leave over.
+fn result_floors() -> [usize; 4] {
+    let classes: Vec<&str> = Ed2kFileClass::ALL
+        .iter()
+        .map(|class| search::file_class_words(*class))
+        .collect();
+    [30, crate::views::size_floor(), 7, widest(&classes)]
+}
 const RESULT_FLEX: usize = 0;
 /// The bounded columns and the most each asks for beyond its floor when a value
 /// drawn is wider: Size, Sources, Type.
 const RESULT_CAPS: [(usize, usize); 3] = [(1, 12), (2, 16), (3, 14)];
-/// The order the results table's columns give way in when the pane cannot
-/// hold every header: Type, Sources, then Size. Name never gives way.
-const RESULT_GIVE_WAY: [usize; 3] = [3, 2, 1];
-const COL_SPACING: u16 = 1;
-/// [`COL_SPACING`] as the header hit-test counts it.
-pub(super) const COL_SPACING_CELLS: usize = COL_SPACING as usize;
-const SYMBOL_W: u16 = 2;
+/// The order the results table's columns give way in: Type, Size, then
+/// Sources, which is what a result is picked by. Name never gives way.
+const RESULT_GIVE_WAY: [usize; 3] = [3, 1, 2];
 
 /// Source-count tint (spec §3.3 inventory parity): ≥100 green, ≥10 normal fg,
 /// else dim.
@@ -52,8 +56,8 @@ fn source_tint(count: u32, theme: &Theme) -> Color {
 }
 
 /// A marked row's look (ADR-0100): the mark's colour in place of the source
-/// tint, and an attribute as the second cue, so the mark survives a monochrome
-/// terminal and never reads as a source count.
+/// tint, and an attribute as the second cue, beside the mark's word. Have's
+/// attribute is for a theme with no colour alone.
 fn mark_style(mark: &KnownFileMark, theme: &Theme) -> Style {
     match mark {
         KnownFileMark::Downloading { .. } => Style::new()
@@ -62,7 +66,12 @@ fn mark_style(mark: &KnownFileMark, theme: &Theme) -> Style {
         KnownFileMark::Failed { .. } => Style::new()
             .fg(theme.mark_failed)
             .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
-        KnownFileMark::Have { .. } => Style::new().fg(theme.mark_have).add_modifier(Modifier::DIM),
+        // Dim would take back the contrast the palette holds the colour to,
+        // so it is only the cue where no colour is left to hold.
+        KnownFileMark::Have { .. } if theme.colourless() => {
+            Style::new().add_modifier(Modifier::DIM)
+        }
+        KnownFileMark::Have { .. } => Style::new().fg(theme.mark_have),
         KnownFileMark::Withheld { .. } => Style::new()
             .fg(theme.mark_withheld)
             .add_modifier(Modifier::UNDERLINED),
@@ -111,24 +120,18 @@ pub(super) fn result_type(result: &SearchResult) -> Option<String> {
     )
 }
 
-/// The *Type* cell: [`result_type`], or `—` for an unclassifiable row.
+/// The *Type* cell: [`result_type`], or the word for an unclassifiable row.
 fn result_type_text(result: &SearchResult) -> String {
-    result_type(result).unwrap_or_else(|| "—".to_string())
+    result_type(result).unwrap_or_else(|| absent::UNKNOWN.to_string())
 }
 
-/// Human-readable file size (binary units, one decimal above bytes).
-fn format_size(bytes: u64) -> String {
-    const UNITS: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];
-    let mut value = bytes as f64;
-    let mut unit = 0;
-    while value >= 1024.0 && unit < UNITS.len() - 1 {
-        value /= 1024.0;
-        unit += 1;
-    }
-    if unit == 0 {
-        format!("{bytes} B")
+/// The *Type* cell, its word for an unclassifiable row giving way to the mark.
+fn type_cell(result: &SearchResult, tint: Style) -> Cell {
+    let cell = Cell::new(result_type_text(result), tint);
+    if result_type(result).is_some() {
+        cell
     } else {
-        format!("{value:.1} {}", UNITS[unit])
+        cell.or_short(absent::SHORT)
     }
 }
 
@@ -140,30 +143,19 @@ fn results_title(
     reconnecting: bool,
 ) -> String {
     let Some(pane) = pane else {
-        return " Results ".to_string();
+        return search::RESULTS.to_string();
     };
     let status = match &pane.status {
         // Nothing will answer it: the core that ran it is gone.
         SearchStatus::Running | SearchStatus::WaitingForConnection if !core_alive => {
-            let mut stopped = super::no_core::STOPPED_WITH_THE_CORE.to_string();
-            if let Some(first) = stopped.get_mut(..1) {
-                first.make_ascii_uppercase();
-            }
-            stopped
+            crate::words::search::STOPPED_WITH_THE_ENGINE_TITLE.to_string()
         }
-        SearchStatus::WaitingForConnection if reconnecting => {
-            "Waiting for the reconnect · sent when it lands".to_string()
-        }
-        SearchStatus::WaitingForConnection => {
-            "Waiting for a connection · sent when you connect".to_string()
-        }
+        SearchStatus::WaitingForConnection if reconnecting => search::WAITING_RECONNECT.to_string(),
+        SearchStatus::WaitingForConnection => search::WAITING_CONNECTION.to_string(),
         SearchStatus::Running => {
             let running = match pane.waiting_for_turn {
-                Some(send_in) => format!(
-                    "Waiting its turn on this server · sent in {} s",
-                    crate::state::seconds(send_in)
-                ),
-                None => "Running…".to_string(),
+                Some(send_in) => search::waiting_turn(crate::state::seconds(send_in)),
+                None => search::STATUS_RUNNING.to_string(),
             };
             // Each leg by name: one may wait while the others run.
             match pane.legs {
@@ -183,29 +175,26 @@ fn results_title(
                     || (!related && (short_of_full(legs.sweep) || short_of_full(legs.kad))) =>
             {
                 format!(
-                    "Completed · {total} · {}",
+                    "{} · {}",
+                    search::status_completed(*total),
                     crate::state::legs_line(legs, related, reconnecting)
                 )
             }
-            _ => format!("Completed · {total}"),
+            _ => search::status_completed(*total),
         },
-        SearchStatus::Cancelled => "Cancelled".to_string(),
+        SearchStatus::Cancelled => search::STATUS_CANCELLED.to_string(),
         SearchStatus::Failed {
             reason: rmule_core::SearchFailure::RelatedSearchNotOffered,
-        } => "Refused".to_string(),
+        } => search::STATUS_REFUSED.to_string(),
         SearchStatus::Failed { reason } => {
-            format!("Failed · {}", crate::state::search_failure_words(*reason))
+            search::status_failed(crate::state::search_failure_words(*reason))
         }
     };
     let status = match super::more::status_clause(more, pane.more_ended) {
         Some(clause) => format!("{status} · {clause}"),
         None => status,
     };
-    if pane.skipped > 0 {
-        format!(" Results · {status} · {} skipped ", pane.skipped)
-    } else {
-        format!(" Results · {status} ")
-    }
+    search::results_title(&status, pane.skipped)
 }
 
 /// Whether a settled leg ended without saying what it would have.
@@ -230,10 +219,8 @@ impl SearchesView {
             .held
             .current_id()
             .and_then(|search_id| super::more::offered(state, search_id));
-        // The results pane is the active (accent-bordered) pane whenever the
-        // input is unfocused and neither the menu nor the filter editor is up.
+        // The results pane is the active pane whenever the input is unfocused and neither the menu nor the filter editor is up.
         let active = !self.input_focused && self.menu.is_none() && !self.filters_open;
-        let border = if active { theme.accent } else { theme.dim };
         let title = self.current_not_sent().map_or_else(
             || {
                 let related = self
@@ -248,32 +235,35 @@ impl SearchesView {
                     state.reconnect.is_some(),
                 )
             },
-            |_| " Results · Not sent ".to_string(),
+            |_| search::RESULTS_NOT_SENT.to_string(),
         );
-        let hint = if let Some(pane) = pane {
-            let x = if pane.status.is_live() && state.core_alive {
-                "x stop"
+        let reopen = self.held.can_reopen().then_some(hints::REOPEN);
+        let mut keys = Vec::new();
+        if let Some(pane) = pane {
+            let rows = !pane.results.is_empty();
+            if rows {
+                keys.extend([hints::ENTER_MENU, hints::FILTER]);
+            }
+            keys.push(hints::WALK_SEARCHES);
+            keys.push(if pane.status.is_live() && state.core_alive {
+                hints::STOP_SEARCH
             } else {
-                "x close"
-            };
-            let sort = if pane.results.is_empty() {
-                ""
-            } else {
-                "  s sort  S reverse"
-            };
-            let next = if more.is_some_and(|more| more.asks_left > 0) {
-                "  n more"
-            } else {
-                ""
-            };
-            format!(" [ ] search  {x}{next}{sort} ")
+                hints::CLOSE_SEARCH
+            });
+            keys.extend(
+                more.is_some_and(|more| more.asks_left > 0)
+                    .then_some(hints::MORE),
+            );
+            if rows {
+                keys.extend([hints::TAG, hints::SORT, hints::REVERSE, hints::ZOOM]);
+            }
         } else if self.current_refused() || self.current_not_sent().is_some() {
-            " [ ] search  x close ".to_string()
-        } else {
-            String::new()
-        };
-        let block = crate::views::title::titled(
-            Block::bordered().border_style(Style::new().fg(border)),
+            keys.extend([hints::WALK_SEARCHES, hints::CLOSE_SEARCH]);
+        }
+        keys.extend(reopen);
+        let hint = hints::line(&keys);
+        let block = crate::views::title::titled_first_key(
+            theme.pane(active),
             area.width,
             (&title, Style::new().fg(theme.fg)),
             (&hint, theme.dim_text()),
@@ -285,8 +275,7 @@ impl SearchesView {
         }
 
         // Nothing to click until a table is drawn.
-        self.header_area = Rect::default();
-        self.rows_area = Rect::default();
+        self.drawn = table::Drawn::default();
         match pane {
             Some(pane) if !pane.results.is_empty() => {
                 self.draw_table(frame, area, inner, state, theme);
@@ -297,20 +286,22 @@ impl SearchesView {
                     .or_else(|| self.related_message(pane))
                     .unwrap_or_else(|| {
                         match pane {
-                            None => "press / and type a query",
+                            None if self.held.current().is_some() => search::SEARCHING,
+                            None if self.input_focused => crate::words::search::TYPE_A_QUERY,
+                            None => crate::words::search::PRESS_SLASH,
                             Some(pane) => match pane.status {
                                 SearchStatus::Running | SearchStatus::WaitingForConnection
                                     if !state.core_alive =>
                                 {
-                                    super::no_core::STOPPED_WITH_THE_CORE
+                                    crate::words::search::STOPPED_WITH_THE_ENGINE
                                 }
                                 SearchStatus::WaitingForConnection => {
-                                    "waiting for a connection — press c on a server in Networks (1) to connect"
+                                    search::WAITING_FOR_A_CONNECTION
                                 }
-                                SearchStatus::Running => "searching…",
-                                SearchStatus::Completed { .. } => "no results",
-                                SearchStatus::Cancelled => "search cancelled",
-                                SearchStatus::Failed { .. } => "search failed",
+                                SearchStatus::Running => search::SEARCHING,
+                                SearchStatus::Completed { .. } => search::NO_RESULTS,
+                                SearchStatus::Cancelled => search::SEARCH_CANCELLED,
+                                SearchStatus::Failed { .. } => search::SEARCH_FAILED,
                             },
                         }
                         .to_string()
@@ -347,135 +338,83 @@ impl SearchesView {
             .held
             .current_mut()
             .and_then(|entry| entry.cursor.place(&ids));
-        self.results_state.select(selected);
+        self.selected = selected;
         let results = self.ordered(state);
 
-        // The Name column is greedy and wraps: a 200-character filename grows
-        // its row instead of being cut. Widths are computed rather than
-        // left to `Constraint::Fill` so an over-narrow pane shrinks the fixed
-        // columns instead of collapsing the name column to nothing.
-        let headers = header_widths(&self.sort);
-        let mut wants = [0; 4];
-        for (index, cap) in RESULT_CAPS {
-            let widest = results
-                .iter()
-                .map(|result| match index {
-                    1 => format_size(result.file_size()).chars().count(),
-                    2 => result_sources_text(result).chars().count(),
-                    _ => result_type_text(result).chars().count(),
-                })
-                .max()
-                .unwrap_or(0);
-            wants[index] = widest.min(cap);
-        }
-        let cols = greedy_widths(
-            usize::from(area.width.saturating_sub(SYMBOL_W)),
-            &TableColumns {
-                floors: &RESULT_COLS,
-                wants: &wants,
-                headers: &headers,
-                flex: RESULT_FLEX,
-                give_way: &RESULT_GIVE_WAY,
-            },
-            usize::from(COL_SPACING),
-        );
-        say_gave_way(
+        let key = self.order_key(state);
+        let wants = self.wants_memo.get(key, || {
+            let mut wants = vec![0; 4];
+            for (index, cap) in RESULT_CAPS {
+                let widest = results
+                    .iter()
+                    .map(|result| match index {
+                        1 => display_width(&human_size(result.file_size())),
+                        2 => display_width(&result_sources_text(result)),
+                        _ => display_width(&result_type_text(result)),
+                    })
+                    .max()
+                    .unwrap_or(0);
+                wants[index] = widest.min(cap);
+            }
+            wants
+        });
+        let marks = KnownFileMarks::of(state);
+        // The tint — or the mark — colours the whole row (inventory parity).
+        let cells = |index: usize, _: &[usize]| {
+            let result = results[index];
+            let mark = marks.get(result.file_hash(), result.file_size());
+            let tint = mark.map_or_else(
+                || Style::new().fg(source_tint(result_source_count(result), theme)),
+                |mark| mark_style(mark, theme),
+            );
+            // The mark's word opens the name, so a row never leans on its
+            // colour and attribute alone, and is the last thing a cut takes.
+            let name = result.primary_name().to_display_string();
+            let name = mark.map_or_else(
+                || name.clone(),
+                |mark| labels::marked(labels::mark_word(mark), &name),
+            );
+            vec![
+                Cell::new(name, tint),
+                Cell::new(human_size(result.file_size()), tint),
+                Cell::new(result_sources_text(result), tint),
+                type_cell(result, tint),
+            ]
+        };
+        let table = Table::of(
+            &self.sort,
+            &result_floors(),
+            RESULT_FLEX,
+            &RESULT_GIVE_WAY,
+            theme.header(),
+        )
+        .wants(&wants)
+        .empty(crate::words::rows::NO_MATCH);
+        let entry = self.held.current();
+        let tagged = |index: usize| {
+            entry.is_some_and(|entry| entry.tags.contains(&ResultsTable::identity(results[index])))
+        };
+        let total = self
+            .held
+            .current_pane(state)
+            .map_or(0, |pane| pane.results.len());
+        let rows = Rows {
+            count: results.len(),
+            selected,
+            focused: !self.input_focused,
+            cells: &cells,
+            marker: None,
+            tagged: Some(&tagged),
+            filter: entry.map(|entry| (&entry.filter, total)),
+        };
+        self.drawn = table::draw(
             frame,
-            pane,
-            &gave_way(ResultsTable::COLUMNS.iter().map(|c| c.label), &cols),
+            (pane, area),
+            &table,
+            &rows,
+            &mut self.viewport,
             theme,
         );
-        // The selected result's values in the columns that gave way.
-        let off_screen =
-            selected
-                .and_then(|index| results.get(index))
-                .map_or_else(Vec::new, |result| {
-                    let values = [
-                        result.primary_name().to_display_string(),
-                        format_size(result.file_size()),
-                        result_sources_text(result),
-                        result_type_text(result),
-                    ];
-                    crate::views::off_screen::hidden(
-                        ResultsTable::COLUMNS.iter().map(|c| c.label),
-                        &values,
-                        &cols,
-                    )
-                });
-        let area = crate::views::off_screen::draw(frame, area, &off_screen, theme);
-        // The arrow is part of the header's text, and every column is at
-        // least as wide as its header with the arrow, so a header is one line.
-        let header_style = Style::new().fg(theme.dim).add_modifier(Modifier::BOLD);
-        let (header_cells, header_heights): (Vec<_>, Vec<u16>) = ResultsTable::COLUMNS
-            .iter()
-            .zip(&cols)
-            .map(|(column, width)| {
-                let label = header_label(column.label, self.sort.arrow(column.column));
-                wrapped_cell(&label, *width, header_style, column.kind.right_aligned())
-            })
-            .unzip();
-        let header_h = header_heights.into_iter().max().unwrap_or(1);
-        let header = Row::new(header_cells).style(header_style).height(header_h);
-        self.header_area = Rect::new(
-            area.x.saturating_add(SYMBOL_W),
-            area.y,
-            area.width.saturating_sub(SYMBOL_W),
-            header_h.min(area.height),
-        );
-        self.rows_area = Rect::new(
-            area.x,
-            area.y.saturating_add(header_h),
-            area.width,
-            area.height.saturating_sub(header_h),
-        );
-
-        let marks = KnownFileMarks::of(state);
-        let mut heights = Vec::with_capacity(results.len());
-        let rows: Vec<Row> = results
-            .iter()
-            .map(|result| {
-                let tint = marks
-                    .get(result.file_hash(), result.file_size())
-                    .map_or_else(
-                        || Style::new().fg(source_tint(result_source_count(result), theme)),
-                        |mark| mark_style(mark, theme),
-                    );
-                let (name, name_h) = wrapped_cell(
-                    &result.primary_name().to_display_string(),
-                    cols[0],
-                    tint,
-                    false,
-                );
-                let (size, size_h) =
-                    wrapped_cell(&format_size(result.file_size()), cols[1], tint, true);
-                let (sources, sources_h) =
-                    wrapped_cell(&result_sources_text(result), cols[2], tint, true);
-                let (ftype, type_h) = wrapped_cell(&result_type_text(result), cols[3], tint, false);
-                let height = name_h.max(size_h).max(sources_h).max(type_h);
-                heights.push(height);
-                Row::new(vec![name, size, sources, ftype])
-                    // The tint — or the mark — applies to the whole row
-                    // (inventory parity).
-                    .style(tint)
-                    .height(height)
-            })
-            .collect();
-        self.row_heights = heights;
-
-        let widths: Vec<Constraint> = cols
-            .iter()
-            .map(|width| Constraint::Length(clamp_u16(*width)))
-            .collect();
-        self.header_cols = cols;
-        let table = Table::new(rows, widths)
-            .header(header)
-            .column_spacing(COL_SPACING)
-            .row_highlight_style(selection_style(theme, !self.input_focused))
-            .highlight_symbol(MARKER)
-            // The symbol's gutter is always there, so the header's column
-            // edges — and a click on them — do not move with the selection.
-            .highlight_spacing(HighlightSpacing::Always);
-        frame.render_stateful_widget(table, area, &mut self.results_state);
     }
 }
 

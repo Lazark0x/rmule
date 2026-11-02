@@ -14,26 +14,32 @@
 //! It never waits for room in the node's inbox while it holds the loop: a
 //! command the full inbox turned away goes back to the brain, the brain holds
 //! the core's further commands in their own bounded channel, and the driver
-//! waits for room beside the node's events (`pump_state/asks.rs`).
+//! waits for room beside the node's events (`pump_state/asks.rs`). Discovery's
+//! answers follow the same rule ([`sources_out`]), since discovery sends the
+//! commands this loop reads and reads the answers this loop sends.
 
 use std::collections::VecDeque;
 use std::ops::ControlFlow;
 use std::time::Instant;
 
+use rmule_primitives::FileHash;
 use tokio::sync::{mpsc, oneshot};
 
 use crate::adapters::kad_runtime::KadPumpCommand;
 use crate::adapters::kad_runtime::pump_state::{KadPumpInput, KadPumpState};
+use crate::kad_sources::KadAnswer;
 use crate::mailbox::Lease;
 use crate::search::{KadKeywordEnd, KadWalkFact};
 
 mod buddy_service;
 mod dial_back;
 mod enact;
+mod sources_out;
 
 pub(super) use buddy_service::BuddyService;
 pub(super) use dial_back::DialBack;
 pub(super) use enact::Enactor;
+pub(super) use sources_out::SourcesOut;
 
 /// How often the pump re-samples its sources for the ADR-0061 recruit
 /// trigger and the levels no write announces. The trigger paces itself at
@@ -99,6 +105,8 @@ impl Pump {
             Verdict(crate::firewalled::front::AdoptVerdict),
             /// The node's inbox has room for what it turned away.
             Room,
+            /// Discovery has room for an answer held for it, or is gone.
+            SourcesRoom(Option<tokio::sync::mpsc::OwnedPermit<(FileHash, KadAnswer)>>),
             /// A Reach Generation, an Own Address Generation or an
             /// obfuscation policy change: a source the brain samples moved,
             /// from whichever task wrote it.
@@ -108,7 +116,7 @@ impl Pump {
             Shutdown,
         }
         // Every store write that moved our own address is one wake here,
-        // whichever task wrote it (ADR-0084 "Own address ownership").
+        // whichever task wrote it (ADR-0084 "One owner of the Own Address").
         let mut own_address_changed = enactor.own_address_changed();
         // A live policy change re-arms the node before its next exchange
         // (ADR-0046): the brain samples the policy and tells the node.
@@ -131,6 +139,9 @@ impl Pump {
                 command = commands_rx.recv(), if state.takes_commands() => Step::Command(command),
                 event = handle.next_event() => Step::Event(event),
                 () = room.ready(), if state.awaits_room() => Step::Room,
+                room = enactor.sources.room(), if enactor.sources.holds() => {
+                    Step::SourcesRoom(room)
+                }
                 _ = recruit_tick.tick() => Step::RecruitTick,
                 Some(verdict) = verdicts_rx.recv() => Step::Verdict(verdict),
                 () = reach_generation.changed() => Step::Moved,
@@ -157,9 +168,18 @@ impl Pump {
                 // fires below, after the tap (if any) has finalized.
                 Step::Command(None) | Step::Shutdown | Step::Event(None) => break,
                 Step::Event(Some(event)) => KadPumpInput::Event(event),
-                Step::RecruitTick => KadPumpInput::Tick(enactor.sample()),
+                Step::RecruitTick => {
+                    enactor.buddy_service.slot.sweep(std::time::Instant::now());
+                    KadPumpInput::Tick(enactor.sample())
+                }
                 Step::Verdict(verdict) => KadPumpInput::BuddyVerdict(verdict),
                 Step::Room => KadPumpInput::Room,
+                // The discovery task dropped its sources: the pump ends.
+                Step::SourcesRoom(None) => break,
+                Step::SourcesRoom(Some(room)) => {
+                    enactor.sources.flow(room);
+                    continue;
+                }
                 Step::Moved => KadPumpInput::Sampled(enactor.sample()),
             };
             running = drive(&mut state, &mut enactor, &handle, input)

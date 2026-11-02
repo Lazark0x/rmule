@@ -34,6 +34,7 @@
 //! vocabulary a driver speaks lives in `config`, `command`, `event` and
 //! `diagnostic`, re-exported here.
 
+mod big_timer;
 mod buddy;
 mod command;
 mod config;
@@ -44,18 +45,20 @@ mod firewall;
 mod join;
 mod keyword;
 mod notes;
+mod send_gate;
 mod small_timer;
 mod source;
 mod start;
 mod udp_firewall;
 mod walk;
+mod walk_start;
 mod wire;
 
 pub use self::command::KadCommand;
 pub use self::config::{KadContactAdmission, KadNodeConfig, KadReachability, UdpFirewallHelper};
 pub use self::diagnostic::KadNodeDiagnostic;
 pub use self::event::{
-    KadCallbackWalkEnd, KadEvent, KadOutput, KadPublishRejection, RoutingCensus,
+    KadCallbackPace, KadCallbackWalkEnd, KadEvent, KadOutput, KadPublishRejection, RoutingCensus,
 };
 pub use self::start::{KadNodeStart, KadObfuscation, KadSelfCheck};
 
@@ -71,8 +74,8 @@ use crate::lookup_walk::{KadLookupWalk, KadWalkAction, KadWalkPurpose};
 use crate::reachability::{FirewallSelfCheck, UdpFirewallTester};
 use crate::source_store::SourceStore;
 use crate::{
-    BootstrapDialList, KadContactState, KadId, KadInstant, KadNodeEndpoint, KadPublishRequest,
-    KadRoutingTable,
+    BootstrapDialList, KadContactState, KadId, KadInstant, KadNodeEndpoint, KadRoutingTable,
+    KadSourceLookupRequest,
 };
 
 /// An outstanding hello probe: `endpoint` must answer as `expected` before
@@ -113,16 +116,6 @@ struct AwaitingAck {
     endpoint: KadNodeEndpoint,
     expected: KadId,
     deadline: KadInstant,
-}
-
-/// A registered publication: republished every
-/// [`KadNode::SOURCE_REPUBLISH_INTERVAL`], anchored at each publish start
-/// (the aMule cadence — its shared-file loop schedules the next source
-/// publish when one starts).
-#[derive(Clone, Copy, Debug)]
-struct ScheduledPublish {
-    request: KadPublishRequest,
-    next_at: KadInstant,
 }
 
 /// An in-flight keyword search's node-side state (the walk holds only the
@@ -230,7 +223,11 @@ pub struct KadNode {
     /// The **Kad Storer**'s bounded source index.
     source_store: SourceStore,
     /// Registered publications, in registration order.
-    scheduled_publishes: Vec<ScheduledPublish>,
+    publish_schedule: walk_start::PublishSchedule,
+    /// Source searches waiting for their start.
+    source_searches: VecDeque<KadSourceLookupRequest>,
+    /// The node's clock on bulk walk starts.
+    walk_starts: walk_start::WalkStarts,
     /// Outstanding `0x22` ack-requests recorded when this node's `HELLO_RES`
     /// set misc-options bit 2 (the verification tracked-out set,
     /// ADR-0064). At most one per endpoint (a re-request replaces it); an
@@ -320,6 +317,8 @@ pub struct KadNode {
     /// must match (aMule's `CHECK_TRACKED_PACKET(KADEMLIA_FINDBUDDY_REQ)`). Empty
     /// until [`recruit_buddy`](Self::recruit_buddy) emits; pruned as windows lapse.
     buddy_recruit: Vec<(Ipv4Addr, KadInstant)>,
+    /// The one gate paced sends leave through (ADR-0064).
+    send_gate: send_gate::SendGate,
     /// The **Kad Keyword Store** this node serves inbound `0x43`/`0x33` from
     /// (ADR-0062).
     keyword_store: KeywordStore,
@@ -349,6 +348,11 @@ pub struct KadNode {
     /// `start + 3 min`, then re-armed `+ 4 h` on each fire. Left `None` by
     /// routing-only nodes (the mesh sim), which run no join cadence.
     next_self_lookup: Option<KadInstant>,
+    /// The big timer's next look at the table; `None` on a node that runs none.
+    next_big_timer: Option<KadInstant>,
+    /// Where a refresh lookup's random ID comes from: the node holds no
+    /// randomness of its own.
+    refresh_target: Option<fn() -> KadId>,
     /// When the next **small-timer hello pass** fires, or `None`
     /// until a driver starts the node with [`KadNodeStart::small_timer`] —
     /// aMule's per-zone `OnSmallTimer` minute, which greets each bucket's oldest
@@ -385,7 +389,9 @@ impl KadNode {
             pending_probes: Vec::new(),
             walks: Vec::new(),
             source_store: SourceStore::new(Self::MAX_SOURCES_PER_KEY, Self::MAX_SOURCE_INDEX_TOTAL),
-            scheduled_publishes: Vec::new(),
+            publish_schedule: walk_start::PublishSchedule::default(),
+            source_searches: VecDeque::new(),
+            walk_starts: walk_start::WalkStarts::new(),
             awaiting_acks: Vec::new(),
             outbound_obfuscation: None,
             verify_keys: None,
@@ -400,6 +406,7 @@ impl KadNode {
             publish_posture: crate::KadPublishPosture::Reachable,
             publish_connect_options: None,
             buddy_recruit: Vec::new(),
+            send_gate: send_gate::SendGate::default(),
             keyword_store: KeywordStore::new(),
             keyword_publisher: KeywordPublisher::new(),
             keyword_searches: Vec::new(),
@@ -408,6 +415,8 @@ impl KadNode {
             bootstrap_dial_list: BootstrapDialList::new(),
             next_bootstrap_dial: None,
             next_self_lookup: None,
+            next_big_timer: None,
+            refresh_target: None,
             next_small_timer: None,
             last_bootstrap: None,
         }
@@ -425,7 +434,6 @@ impl KadNode {
         let bootstraps = self.outstanding_bootstraps.iter().map(|p| p.deadline);
         let probes = self.pending_probes.iter().map(|p| p.deadline);
         let walks = self.walks.iter().filter_map(KadLookupWalk::next_wake);
-        let republishes = self.scheduled_publishes.iter().map(|s| s.next_at);
         // The firewall self-check contributes a wake only while armed — a
         // routing-only node reports none, so the mesh sim still quiesces.
         let firewall = self.firewall.as_ref().map(FirewallSelfCheck::next_wake);
@@ -446,15 +454,17 @@ impl KadNode {
         bootstraps
             .chain(probes)
             .chain(walks)
-            .chain(republishes)
+            .chain(self.walk_starts.wake)
             .chain(self.source_store.next_wake())
             .chain(firewall)
             .chain(udp_firewall)
             .chain(buddy_recruits)
+            .chain(self.send_gate.next_wake())
             .chain(self.keyword_sweep_next_wake())
             .chain(self.keyword_publish_next_wake())
             .chain(self.next_bootstrap_dial)
             .chain(self.next_self_lookup)
+            .chain(self.next_big_timer)
             .chain(self.next_small_timer)
             .min()
     }
@@ -468,8 +478,14 @@ impl KadNode {
             }
             KadCommand::BootstrapFromPeer { endpoint } => self.handoff_from_peer(now, endpoint),
             KadCommand::MergeContacts { contacts } => {
+                // A merged contact is rmule's own: it passed the nodes.dat
+                // gate before the command was sent (ADR-0066).
                 for contact in contacts {
-                    self.store(now, contact.in_state(KadContactState::Responded));
+                    self.store(
+                        now,
+                        contact.in_state(KadContactState::Responded),
+                        rmule_primitives::Informant::Own,
+                    );
                 }
             }
             KadCommand::SearchSources { request } => self.start_source_search(now, request),
@@ -523,19 +539,21 @@ impl KadNode {
                 buddy_id,
                 file_hash,
                 tcp_port,
-            } => self.request_buddy_callback(buddy, buddy_id, file_hash, tcp_port),
+            } => self.request_buddy_callback(now, buddy, buddy_id, file_hash, tcp_port),
             KadCommand::CallbackWalk {
                 buddy_id,
                 file_hash,
                 tcp_port,
             } => self.start_callback_walk(now, buddy_id, file_hash, tcp_port),
         }
+        self.drive_walk_starts(now);
     }
 
     /// Expire due probes, walk deadlines, stored-source lifetimes, and
     /// unmatched bootstrap solicitations. Idempotent between deadlines; the
     /// driver calls it at (or after) [`next_wake`](Self::next_wake).
     pub fn tick(&mut self, now: KadInstant) {
+        self.release_held_sends(now);
         self.source_store.tick(now);
         let stored_before = self.keyword_store.len();
         self.keyword_store.tick(now);
@@ -596,17 +614,6 @@ impl KadNode {
             self.apply_walk_actions(now, purpose, actions);
         }
 
-        // Fire due republishes last, in registration order, so a walk that
-        // completed in this same tick is already gone.
-        for index in 0..self.scheduled_publishes.len() {
-            let scheduled = self.scheduled_publishes[index];
-            if scheduled.next_at > now {
-                continue;
-            }
-            self.scheduled_publishes[index].next_at = now + Self::SOURCE_REPUBLISH_INTERVAL;
-            self.start_publish_walk(now, scheduled.request);
-        }
-
         // Expired, unanswered buddy recruits leave the tracker (their `0x5A`
         // would fail the tracked-packet guard anyway); their deadlines drive
         // `next_wake`, so a long-lived recruiting node cannot accumulate them.
@@ -626,6 +633,9 @@ impl KadNode {
         self.tick_bootstrap_dials(now);
         self.tick_self_lookup(now);
         self.tick_small_timer(now);
+        self.tick_big_timer(now);
+        // Last, so a walk that ended in this tick has freed its slot.
+        self.drive_walk_starts(now);
     }
 
     fn emit_event(&mut self, event: KadEvent) {

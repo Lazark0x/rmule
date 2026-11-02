@@ -158,12 +158,12 @@ None. This packet predates the tag-bag pattern.
 | --- | --- | --- | --- | --- |
 | 0 | 4 | IPv4 address | little-endian u32 | dialable peer IP; LE u32 read identical to other eD2k IPv4 fields |
 | 4 | 2 | TCP port | little-endian u16 | dialable peer port |
-| 6 | 1 | (optional) `crypt_options` | u8 | present only when `size >= 23`; not modeled by the first decoder |
-| 7 | 16 | (optional) `user_hash` | byte-order opaque | present only when `size >= 23`; not modeled by the first decoder |
+| 6 | 1 | (optional) `crypt_options` | u8 | present only when `size >= 23`; decoded into `PeerCallbackCrypt`, the dial-back's crypt stance (ADR-0049) |
+| 7 | 16 | (optional) `user_hash` | byte-order opaque | present only when `size >= 23`; the key an obfuscated dial-back is keyed toward |
 
 ### Accept / reject conditions
 
-- Accept when `size >= 6` and the first 6 bytes form an IPv4 + TCP port pair; trailing bytes (the optional 17-byte crypt extension at `size >= 23`) are preserved at the `Packet` layer but not decoded by the first decoder.
+- Accept when `size >= 6` and the first 6 bytes form an IPv4 + TCP port pair; the optional 17-byte crypt extension at `size >= 23` is decoded, and bytes between 6 and 23 are ignored, as aMule reads exactly its fields.
 - Reject if `size < 6` — aMule's handler short-circuits the same way (`size >= 6` guard).
 
 ### Tag list expectations

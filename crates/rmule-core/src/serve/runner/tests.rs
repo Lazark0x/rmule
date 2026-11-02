@@ -91,7 +91,7 @@ fn peer_at(ip: [u8; 4], tcp_port: u16) -> PeerEndpoint {
 }
 
 async fn next_serve_event(
-    rx: &mut mpsc::Receiver<CoreEvent>,
+    rx: &mut crate::service::EventStream,
     want: impl Fn(&ServeEvent) -> bool,
 ) -> ServeEvent {
     timeout(Duration::from_secs(5), async {
@@ -204,6 +204,7 @@ async fn reask_loopback(crypt: Option<rmule_net::peer::ObfuscationPolicy>, shape
         crate::diagnostics::DiagnosticsState::default(),
         tokio::sync::mpsc::channel(4).0,
         crate::client_udp::SharedKadInlet::default(),
+        crate::ban_store::SharedBanStore::default(),
     );
     tokio::spawn(engine.run());
 
@@ -214,12 +215,13 @@ async fn reask_loopback(crypt: Option<rmule_net::peer::ObfuscationPolicy>, shape
     let diagnostics = crate::diagnostics::DiagnosticsState::new();
 
     let (accept_tx, accept_rx) = mpsc::channel::<ServeConnection>(4);
-    let (evt_tx, mut evt_rx) = mpsc::channel::<CoreEvent>(64);
+    let (evt_tx, mut evt_rx) = crate::service::outbox(Default::default());
     let (stop_tx, stop_rx) = watch::channel(false);
     let (_share_changed_tx, share_changed_rx) = mpsc::channel::<()>(1);
     let credit: SharedCreditStore = Arc::new(DurableCreditStore::new(store));
 
     let task = ServeTask {
+        bans: Default::default(),
         registry: Arc::new(registry),
         serve_runtime: FakeServeRuntime {
             bound: SocketAddrV4::new(Ipv4Addr::LOCALHOST, 4662),
@@ -232,6 +234,7 @@ async fn reask_loopback(crypt: Option<rmule_net::peer::ObfuscationPolicy>, shape
         share_changed_rx,
         dialed_serve_rx: None,
         credit,
+        held_places: crate::held_places::SharedHeldPlaces::default(),
         // Long enough that neither timer fires mid-test (no rerank/purge
         // racing the reask arm).
         rerank_interval: Duration::from_secs(3600),
@@ -243,6 +246,7 @@ async fn reask_loopback(crypt: Option<rmule_net::peer::ObfuscationPolicy>, shape
         peer_roster: crate::peer_roster::SharedPeerRoster::default(),
         withheld: crate::registry_check::WithheldRows::default(),
         read_failed_tx: None,
+        served: Default::default(),
     };
     let serve = tokio::spawn(task.run());
 
@@ -321,7 +325,7 @@ async fn reask_loopback(crypt: Option<rmule_net::peer::ObfuscationPolicy>, shape
     let plain_ping = match shape {
         WaiterPing::WithStatus => ReaskFilePing {
             file_hash: file,
-            part_status: Some(rmule_peer::PartBitmap::downloader_empty(4096)),
+            part_status: Some(rmule_peer::WireStatus::downloader_empty(4096)),
             complete_sources: Some(0),
         },
         WaiterPing::HashOnly => ReaskFilePing {
@@ -449,13 +453,14 @@ async fn a_dropped_stop_sender_ends_the_serve_task() {
     let store = rmule_testkit::memory_store();
     let registry = DurableSharedFileRegistry::new(store.clone());
     let (_accept_tx, accept_rx) = mpsc::channel::<ServeConnection>(1);
-    let (evt_tx, _evt_rx) = mpsc::channel::<CoreEvent>(16);
+    let (evt_tx, _evt_rx) = crate::service::outbox(Default::default());
     let (stop_tx, stop_rx) = watch::channel(false);
     let (share_changed_tx, share_changed_rx) = mpsc::channel::<()>(1);
     let credit: SharedCreditStore = Arc::new(DurableCreditStore::new(store));
 
     let serve = tokio::spawn(
         ServeTask {
+            bans: Default::default(),
             registry: Arc::new(registry),
             serve_runtime: FakeServeRuntime {
                 bound: SocketAddrV4::new(Ipv4Addr::LOCALHOST, 4662),
@@ -468,6 +473,7 @@ async fn a_dropped_stop_sender_ends_the_serve_task() {
             share_changed_rx,
             dialed_serve_rx: None,
             credit,
+            held_places: crate::held_places::SharedHeldPlaces::default(),
             rerank_interval: Duration::from_secs(3600),
             reask_rx: None,
             client_udp_tx: None,
@@ -477,6 +483,7 @@ async fn a_dropped_stop_sender_ends_the_serve_task() {
             peer_roster: crate::peer_roster::SharedPeerRoster::default(),
             withheld: crate::registry_check::WithheldRows::default(),
             read_failed_tx: None,
+            served: Default::default(),
         }
         .run(),
     );
@@ -524,7 +531,7 @@ async fn the_fifth_asker_from_one_address_is_served_silence_and_a_counter() {
         .unwrap();
 
     let (accept_tx, accept_rx) = mpsc::channel::<ServeConnection>(8);
-    let (evt_tx, mut evt_rx) = mpsc::channel::<CoreEvent>(64);
+    let (evt_tx, mut evt_rx) = crate::service::outbox(Default::default());
     let (stop_tx, stop_rx) = watch::channel(false);
     let (_share_changed_tx, share_changed_rx) = mpsc::channel::<()>(1);
     let credit: SharedCreditStore = Arc::new(DurableCreditStore::new(store));
@@ -532,6 +539,7 @@ async fn the_fifth_asker_from_one_address_is_served_silence_and_a_counter() {
 
     let serve = tokio::spawn(
         ServeTask {
+            bans: Default::default(),
             registry: Arc::new(registry),
             serve_runtime: FakeServeRuntime {
                 bound: SocketAddrV4::new(Ipv4Addr::LOCALHOST, 4662),
@@ -546,6 +554,7 @@ async fn the_fifth_asker_from_one_address_is_served_silence_and_a_counter() {
             share_changed_rx,
             dialed_serve_rx: None,
             credit,
+            held_places: crate::held_places::SharedHeldPlaces::default(),
             rerank_interval: Duration::from_secs(3600),
             reask_rx: None,
             client_udp_tx: None,
@@ -555,6 +564,7 @@ async fn the_fifth_asker_from_one_address_is_served_silence_and_a_counter() {
             peer_roster: crate::peer_roster::SharedPeerRoster::default(),
             withheld: crate::registry_check::WithheldRows::default(),
             read_failed_tx: None,
+            served: Default::default(),
         }
         .run(),
     );
@@ -658,7 +668,7 @@ async fn a_hash_only_name_ask_from_a_claimant_closes_the_connection_and_is_count
         .unwrap();
 
     let (accept_tx, accept_rx) = mpsc::channel::<ServeConnection>(4);
-    let (evt_tx, mut evt_rx) = mpsc::channel::<CoreEvent>(64);
+    let (evt_tx, mut evt_rx) = crate::service::outbox(Default::default());
     let (stop_tx, stop_rx) = watch::channel(false);
     let (_share_changed_tx, share_changed_rx) = mpsc::channel::<()>(1);
     let credit: SharedCreditStore = Arc::new(DurableCreditStore::new(store));
@@ -666,6 +676,7 @@ async fn a_hash_only_name_ask_from_a_claimant_closes_the_connection_and_is_count
 
     let serve = tokio::spawn(
         ServeTask {
+            bans: Default::default(),
             registry: Arc::new(registry),
             serve_runtime: FakeServeRuntime {
                 bound: SocketAddrV4::new(Ipv4Addr::LOCALHOST, 4662),
@@ -678,6 +689,7 @@ async fn a_hash_only_name_ask_from_a_claimant_closes_the_connection_and_is_count
             share_changed_rx,
             dialed_serve_rx: None,
             credit,
+            held_places: crate::held_places::SharedHeldPlaces::default(),
             rerank_interval: Duration::from_secs(3600),
             reask_rx: None,
             client_udp_tx: None,
@@ -687,6 +699,7 @@ async fn a_hash_only_name_ask_from_a_claimant_closes_the_connection_and_is_count
             peer_roster: crate::peer_roster::SharedPeerRoster::default(),
             withheld: crate::registry_check::WithheldRows::default(),
             read_failed_tx: None,
+            served: Default::default(),
         }
         .run(),
     );
@@ -768,10 +781,10 @@ fn self_position_follows_a_mid_session_reassignment() {
     assert_eq!(
         super::self_position(Some(&own)),
         ServeSelfPosition {
-            low_id: true,
+            low_id: false,
             server: None
         },
-        "no session yet: Low ID, no server"
+        "no session: both references guard only `IsConnected()`"
     );
 
     let server = Ipv4Endpoint::new(Ipv4Addr::new(10, 0, 0, 1), 4661);
@@ -799,4 +812,12 @@ fn self_position_follows_a_mid_session_reassignment() {
     );
 }
 
+mod aich;
+mod deflate;
+mod first_read;
+mod part_file;
+mod reciprocity;
+mod redial;
 mod roster;
+mod served;
+mod stuck;

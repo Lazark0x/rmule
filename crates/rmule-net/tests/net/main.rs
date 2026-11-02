@@ -12,6 +12,7 @@ mod fixture;
 // The driver: the loop that carries a sans-I/O session over a socket, and the
 // close contract it has to honour whichever side ends the link.
 mod driver_duplex;
+mod driver_stall;
 mod driver_write_error;
 mod harness;
 
@@ -34,6 +35,7 @@ mod buddy_relay_loopback;
 mod compressed_frame_loopback;
 mod connection_loopback;
 mod dial_back_loopback;
+mod ipv6_follow;
 mod multipacket_reverse_harness;
 mod obfuscated_accept;
 mod obfuscated_dial;

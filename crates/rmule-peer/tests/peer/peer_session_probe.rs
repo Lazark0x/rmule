@@ -3,12 +3,13 @@
 //! (ADR-0025), and the hash-set cache that keeps a second download from
 //! re-asking.
 
+use rmule_peer::WireStatus;
 use rmule_peer::{
-    FileProbeStatus, PartBitmap, PartRanges, PeerCommand, PeerEvent, RequesterCommand,
-    RequesterEvent,
+    ConnectionEvent, FileProbeStatus, PartBitmap, PartRanges, PeerCloseReason, PeerCommand,
+    PeerEvent, PeerOutput, PeerViolation, RequesterCommand, RequesterEvent,
 };
 use rmule_primitives::session::drain;
-use rmule_primitives::{FileHash, Packet, PartHash};
+use rmule_primitives::{ED2K_PART_SIZE, FileHash, Packet};
 use rmule_testkit::peer_session::*;
 
 #[test]
@@ -18,7 +19,7 @@ fn probe_happy_path_emits_writes_and_available_status() {
     session.handle_command(PeerCommand::Requester(RequesterCommand::ProbeFile {
         file_hash: h,
         file_size: 20_000_000,
-        own_status: PartBitmap::downloader_empty(20_000_000),
+        own_status: WireStatus::downloader_empty(20_000_000),
     }));
     let out1 = drain(|| session.poll_output());
     let probe_writes = writes(&out1);
@@ -27,7 +28,7 @@ fn probe_happy_path_emits_writes_and_available_status() {
     assert_eq!(probe_writes[1].opcode(), 0x4F); // OP_SETREQFILEID
 
     session.handle_bytes(&reqfilename_answer(h, "shared.bin"));
-    session.handle_bytes(&file_status(h, 10, &[0xFF, 0x03]));
+    session.handle_bytes(&file_status(h, 3, &[0x07]));
     let out2 = drain(|| session.poll_output());
     let probed = events(&out2)
         .into_iter()
@@ -47,8 +48,8 @@ fn probe_happy_path_emits_writes_and_available_status() {
             complete,
         } => {
             assert_eq!(file_name.as_bytes(), b"shared.bin");
-            assert_eq!(bitmap.part_count(), 10);
-            // Every one of the ten parts spelled out is a part file whose last
+            assert_eq!(bitmap.part_count(), 3);
+            // Every one of the three parts spelled out is a part file whose last
             // part arrived, not a complete source: aMule and eMule count only
             // the part-count-0 sentinel (ADR-0108).
             assert!(bitmap.is_complete());
@@ -65,7 +66,7 @@ fn probe_not_available_caches_and_replays_on_reprobe() {
     session.handle_command(PeerCommand::Requester(RequesterCommand::ProbeFile {
         file_hash: h,
         file_size: 20_000_000,
-        own_status: PartBitmap::downloader_empty(20_000_000),
+        own_status: WireStatus::downloader_empty(20_000_000),
     }));
     let _ = drain(|| session.poll_output());
     session.handle_bytes(&filereqansnofil(h));
@@ -83,7 +84,7 @@ fn probe_not_available_caches_and_replays_on_reprobe() {
     session.handle_command(PeerCommand::Requester(RequesterCommand::ProbeFile {
         file_hash: h,
         file_size: 20_000_000,
-        own_status: PartBitmap::downloader_empty(20_000_000),
+        own_status: WireStatus::downloader_empty(20_000_000),
     }));
     let second = drain(|| session.poll_output());
     assert!(
@@ -107,20 +108,20 @@ fn interleaved_probes_demux_by_file_hash() {
     session.handle_command(PeerCommand::Requester(RequesterCommand::ProbeFile {
         file_hash: a,
         file_size: 20_000_000,
-        own_status: PartBitmap::downloader_empty(20_000_000),
+        own_status: WireStatus::downloader_empty(20_000_000),
     }));
     session.handle_command(PeerCommand::Requester(RequesterCommand::ProbeFile {
         file_hash: b,
         file_size: 20_000_000,
-        own_status: PartBitmap::downloader_empty(20_000_000),
+        own_status: WireStatus::downloader_empty(20_000_000),
     }));
     let _ = drain(|| session.poll_output());
 
     // Responses arrive in B-then-A order.
     session.handle_bytes(&reqfilename_answer(b, "b.bin"));
-    session.handle_bytes(&file_status(b, 1, &[0x01]));
+    session.handle_bytes(&file_status(b, 3, &[0x01]));
     session.handle_bytes(&reqfilename_answer(a, "a.bin"));
-    session.handle_bytes(&file_status(a, 1, &[0x01]));
+    session.handle_bytes(&file_status(a, 3, &[0x01]));
 
     let out = drain(|| session.poll_output());
     let probed: Vec<FileHash> = events(&out)
@@ -139,7 +140,7 @@ fn hashset_caching_skips_rerequest_on_second_download() {
     // the same file_hash. No second HASHSETREQUEST should hit the wire.
     let d = file_hash(0xDD);
     let mut session = identified_session();
-    let ranges = PartRanges::new([(0, 4), (0, 0), (0, 0)]).unwrap();
+    let ranges = PartRanges::new([(0, 4), (0, 0), (0, 0)]);
     session.handle_command(PeerCommand::Requester(RequesterCommand::RequestParts {
         file_hash: d,
         file_size: 1_000_000,
@@ -155,7 +156,6 @@ fn hashset_caching_skips_rerequest_on_second_download() {
     // than reopen the probe and stall the slot.
     session.handle_bytes(&reqfilename_answer(d, "d"));
     session.handle_bytes(&file_status(d, 1, &[0x01]));
-    session.handle_bytes(&hashset_answer(d, &[PartHash::from_bytes([0; 16])]));
     session.handle_bytes(&acceptuploadreq());
     session.handle_bytes(&sendingpart(d, 0, &[1, 2, 3, 4]));
     let _ = drain(|| session.poll_output());
@@ -193,7 +193,7 @@ fn a_complete_source_sentinel_status_expands_to_a_full_bitmap_of_the_files_real_
     // 20,000,000 bytes is 3 ED2K parts.
     let h = file_hash(0xEE);
     let mut session = identified_session();
-    let ranges = PartRanges::new([(0, 4), (0, 0), (0, 0)]).unwrap();
+    let ranges = PartRanges::new([(0, 4), (0, 0), (0, 0)]);
     session.handle_command(PeerCommand::Requester(RequesterCommand::RequestParts {
         file_hash: h,
         file_size: 20_000_000,
@@ -237,7 +237,7 @@ fn a_complete_source_sentinel_status_expands_to_a_full_bitmap_on_a_bare_probe_to
     session.handle_command(PeerCommand::Requester(RequesterCommand::ProbeFile {
         file_hash: h,
         file_size: 20_000_000,
-        own_status: PartBitmap::downloader_empty(20_000_000),
+        own_status: WireStatus::downloader_empty(20_000_000),
     }));
     let _ = drain(|| session.poll_output());
 
@@ -263,5 +263,103 @@ fn a_complete_source_sentinel_status_expands_to_a_full_bitmap_on_a_bare_probe_to
             assert!(complete, "the sentinel is a complete source");
         }
         other => panic!("expected Available, got {other:?}"),
+    }
+}
+
+/// The Advertised Parts a probe of a `file_size`-byte file reads off one
+/// status frame, or the session's last two outputs when the frame closed it.
+fn probe_with_status(file_size: u64, status: &[u8]) -> Result<PartBitmap, Vec<PeerOutput>> {
+    let h = file_hash(0x5E);
+    let mut session = identified_session();
+    session.handle_command(PeerCommand::Requester(RequesterCommand::ProbeFile {
+        file_hash: h,
+        file_size,
+        own_status: WireStatus::downloader_empty(file_size),
+    }));
+    let _ = drain(|| session.poll_output());
+    session.handle_bytes(&reqfilename_answer(h, "exact.bin"));
+    session.handle_bytes(status);
+    let mut out = drain(|| session.poll_output());
+    let probed = events(&out).into_iter().find_map(|e| match e {
+        PeerEvent::Requester(RequesterEvent::FileProbed {
+            status: FileProbeStatus::Available { bitmap, .. },
+            ..
+        }) => Some(bitmap.clone()),
+        _ => None,
+    });
+    probed.ok_or_else(|| out.split_off(out.len().saturating_sub(2)))
+}
+
+/// aMule's reader (stock 2.3.3 `DownloadClient.cpp:404-449`) on a file of
+/// exactly two parts: the sentinel and the `size / PARTSIZE + 1` = 3 count
+/// both read as the two real parts — the phantom third bit is never read.
+#[test]
+fn an_exact_multiples_sentinel_and_counted_status_read_as_the_same_parts() {
+    let size = 2 * ED2K_PART_SIZE;
+    let h = file_hash(0x5E);
+    let sentinel = probe_with_status(size, &file_status(h, 0, &[])).unwrap();
+    let counted = probe_with_status(size, &file_status(h, 3, &[0b111])).unwrap();
+    assert_eq!(sentinel, counted);
+    assert_eq!(counted, PartBitmap::all_present(2));
+}
+
+/// Any count but `0` and `size / PARTSIZE + 1` is aMule's "wrong part number"
+/// throw, and the connection drops (`DownloadClient.cpp:417-425`): the real
+/// part count of an exact multiple, one too many, and a one-part claim.
+#[test]
+fn a_status_counting_other_parts_than_the_file_has_closes_the_session() {
+    let size = 2 * ED2K_PART_SIZE;
+    let h = file_hash(0x5E);
+    for (count, bitmap) in [(2, vec![0b11]), (4, vec![0b1111]), (1, vec![0b1])] {
+        let closed = probe_with_status(size, &file_status(h, count, &bitmap))
+            .expect_err("a wrong count is refused, never probed");
+        assert!(
+            matches!(
+                closed.as_slice(),
+                [
+                    PeerOutput::Event(PeerEvent::Connection(ConnectionEvent::Disconnected {
+                        reason: PeerCloseReason::ProtocolViolation(
+                            PeerViolation::PartCountMismatch
+                        ),
+                    })),
+                    PeerOutput::Close(PeerCloseReason::ProtocolViolation(
+                        PeerViolation::PartCountMismatch
+                    )),
+                ]
+            ),
+            "count {count}: {closed:?}"
+        );
+    }
+}
+
+/// The next worker of a download on a link that stayed up — at an Awaited
+/// Grant or a TCP full ask — asks the file again, and its probe settles as
+/// the first did: a one-part file's on the name answer alone (ADR-0107).
+#[test]
+fn a_one_part_file_asked_again_on_the_link_settles_on_its_name_answer() {
+    let h = file_hash(0xC1);
+    let size = 1_000_000;
+    let mut session = identified_session();
+    for round in ["first", "again"] {
+        session.handle_command(PeerCommand::Requester(RequesterCommand::RequestFile {
+            file_hash: h,
+            file_size: size,
+            want_sources: false,
+            want_aich_root: false,
+            own_status: WireStatus::downloader_empty(size),
+        }));
+        let _ = drain(|| session.poll_output());
+        session.handle_bytes(&reqfilename_answer(h, "one.bin"));
+        let out = drain(|| session.poll_output());
+        assert!(
+            events(&out).iter().any(|e| matches!(
+                e,
+                PeerEvent::Requester(RequesterEvent::FileProbed {
+                    file_hash,
+                    status: FileProbeStatus::Available { .. },
+                }) if *file_hash == h
+            )),
+            "{round}: the name answer settles the probe"
+        );
     }
 }

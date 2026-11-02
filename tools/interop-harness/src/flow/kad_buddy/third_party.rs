@@ -3,7 +3,8 @@
 //! ([`callback`](super::callback)) and the ID-only walk fold-in
 //! ([`callback_walk`](super::callback_walk)), or instead a stock aMule
 //! requester ([`amule_requester`](super::amule_requester)), whose
-//! row may be ID-only ([`id_only_row`]). Flow M
+//! row may be ID-only ([`id_only_row`]), or the buddy reask leg
+//! ([`buddy_reask`](super::buddy_reask)). Flow M
 //! hands this module its bench, taps and addresses and replaces its fixed tap
 //! window with [`drive`].
 
@@ -18,9 +19,11 @@ use crate::flow::bench::{KadMeshNames, KadResources};
 use crate::flow::gate::wait_for_host_file;
 use crate::flow::identity::{hex_lower, parse_ed2k_file_hash};
 use crate::flow::kad_buddy::amule_requester::{AmuleRequesterLeg, AmuleRequesterPlan};
+use crate::flow::kad_buddy::buddy_reask::{ReaskLeg, ReaskPlan};
 use crate::flow::kad_buddy::callback::{CallbackLeg, DownloaderPlan, Judged, await_indexed};
 use crate::flow::kad_buddy::callback_walk::{WalkLeg, WalkPlan, WalkTaps};
 use crate::flow::kad_buddy::id_only_row::{self, IdOnlyRowPlan};
+use crate::flow::kad_buddy::stock_buddy;
 use crate::flow::logs::collect_kad_logs;
 
 /// What flow M hands its third party.
@@ -43,6 +46,8 @@ pub(crate) struct ThirdParty<'a> {
     pub(crate) amule_kad: String,
     pub(crate) amule_ip: String,
     pub(crate) rmule_ip: String,
+    /// The buddy `rmule_ip` names is a stock aMule (`--stock-buddy`).
+    pub(crate) stock_buddy: bool,
     /// The walk's target, wire order: `~stimulusKadID`, aMule's own ID.
     pub(crate) walk_buddy_id: Option<[u8; 16]>,
     /// `Some` runs a stock aMule requester at `downloader_v4` in place of the
@@ -51,6 +56,8 @@ pub(crate) struct ThirdParty<'a> {
     /// `Some` publishes the requester's row ID-only from rmule;
     /// the publisher takes `walker_v4`.
     pub(crate) id_only_row: Option<IdOnlyRowPlan<'a>>,
+    /// `Some` runs the buddy reask leg in place of either asker.
+    pub(crate) buddy_reask: Option<ReaskPlan<'a>>,
 }
 
 /// Who asked for the relay.
@@ -60,6 +67,9 @@ enum Asker {
     /// The stock aMule requester (`kad-core-buddy --amule-requester`); `None`
     /// when no row was indexed.
     Amule(Option<AmuleRequesterLeg>),
+    /// The buddy reask leg (`kad-core-buddy --buddy-reask`); `None` when no
+    /// row was indexed.
+    Reask(Option<ReaskLeg>),
 }
 
 /// The legs that ran.
@@ -102,6 +112,15 @@ pub(crate) fn drive(party: &ThirdParty<'_>, resources: &mut KadResources<'_>) ->
     } else {
         await_indexed(&party.storer_events, party.window)?
     };
+    if let Some(plan) = &party.buddy_reask {
+        let leg = indexed
+            .then(|| ReaskLeg::run(party.docker, party.layout, party.names, resources, plan))
+            .transpose()?;
+        return Ok(Legs {
+            asker: Asker::Reask(leg),
+            walk: None,
+        });
+    }
     if let Some(plan) = &party.amule_requester {
         let leg = indexed
             .then(|| {
@@ -185,8 +204,10 @@ impl Legs {
             buddy_host_dir: buddy.2,
             amule_tap: amule.0,
             amule_pcap: amule.1,
+            amule_host_dir: amule.2,
             amule_ip: &party.amule_ip,
             rmule_ip: &party.rmule_ip,
+            stock_buddy: party.stock_buddy,
         };
         let callback = match &self.asker {
             Asker::Rmule(callback) => {
@@ -211,9 +232,24 @@ impl Legs {
                 }
                 requester.judge(&judged)
             }
+            Asker::Reask(Some(leg)) => leg.judge(&judged),
+            Asker::Reask(None) => Err(anyhow::anyhow!(
+                "kad-buddy-reask: the placed storer indexed no source, so no body ran"
+            )),
             Asker::Amule(None) => Err(anyhow::anyhow!(
                 "kad-amule-requester: the placed storer indexed no source, so no requester ran"
             )),
+        };
+        // The stock road's own claims, read off the same taps whatever the
+        // leg's verdict said.
+        let stock_road = match &self.asker {
+            Asker::Rmule(callback) if party.stock_buddy && callback.started() => {
+                stock_buddy::judge(&judged, callback.dir(), callback.address_v4())
+            }
+            Asker::Reask(Some(leg)) if party.stock_buddy => {
+                stock_buddy::judge(&judged, &leg.downloader_dir(), leg.downloader_v4())
+            }
+            _ => Ok(()),
         };
         let walked = self
             .walk
@@ -231,6 +267,7 @@ impl Legs {
             })
             .transpose();
         callback?;
+        stock_road?;
         walked.map(|_| ())
     }
 }

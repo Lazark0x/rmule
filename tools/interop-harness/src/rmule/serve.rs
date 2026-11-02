@@ -79,7 +79,10 @@ impl RmuleServeContainer {
             .arg("serve")
             .arg("start")
             .arg("--file")
-            .arg(format!("{CONTAINER_RUN_ROOT}/synthetic/shared.bin"))
+            .arg(format!(
+                "{CONTAINER_RUN_ROOT}/synthetic/{}",
+                knobs.shared_as.unwrap_or("shared.bin")
+            ))
             .arg("--server")
             .arg(server_endpoint)
             .arg("--listen")
@@ -153,6 +156,9 @@ impl RmuleServeContainer {
             .arg(kad.udp_port.to_string())
             .arg("--kad-bootstrap")
             .arg(kad.kad_bootstrap);
+        for file in kad.extra_files {
+            container = container.arg("--file").arg(file);
+        }
         if kad.assume_open {
             container = container.arg("--kad-assume-open");
         }
@@ -204,6 +210,8 @@ impl RmuleServeContainer {
 /// (the held buddy link, the listener it dials back on) mid-exchange.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct KadStimulusKnobs<'a> {
+    /// Further files the stimulus serves, as the container sees them.
+    pub extra_files: &'a [String],
     /// The static fake-public address the container binds (Config A).
     pub static_ip: &'a str,
     /// 32 hex digits pinning the Kad ID, so a counterparty's FindBuddy walk
@@ -258,6 +266,8 @@ pub struct KadStimulusKnobs<'a> {
 /// serve command.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ServeKnobs<'a> {
+    /// The name in `synthetic/` to share instead of `shared.bin`.
+    pub shared_as: Option<&'a str>,
     /// `--upload-slots`. `Some(1)` holds a second requester **queued** — the
     /// peer-UDP reask consume precondition.
     pub upload_slots: Option<usize>,

@@ -1,12 +1,12 @@
 //! The one form machine every editable surface in this crate runs on.
 //!
 //! An editable surface is a field list with one focus: `Tab`/`BackTab`
-//! between fields, `Backspace`/`Char` into the focused one, `Enter` to commit
-//! and `Esc` to leave, [`labeled_lines`] rendering with a caret on the focused
-//! row and the last rejection under the fields. The Networks add-server modal,
-//! the Searches options editor and the Settings tab all run on it. Only
-//! *validation* stays with each view, being the one part that is genuinely
-//! about what is being edited.
+//! between fields, the [`LineEdit`] keys into the focused one, `Enter` to
+//! commit and `Esc` to leave, [`labeled_lines`] rendering every field and the
+//! last rejection under them, with the caret's place on screen beside the
+//! lines. The Networks add-server modal, the Searches options editor and the
+//! Settings tab all run on it. Only *validation* stays with each view, being
+//! the one part that is genuinely about what is being edited.
 //!
 //! # What this module decides, and what it leaves alone
 //!
@@ -24,6 +24,9 @@
 //!   [`FormKey::Commit`]/[`FormKey::Cancel`] rather than acting: what a commit
 //!   means (a `CoreCommand`, a search, a config write) is exactly what does not
 //!   generalise.
+//! - **A one-field edit stays on its field.** [`Form::field_key`] is the
+//!   focused field's own keys and leaves focus alone: the Settings tab commits
+//!   one field at a time, so moving off it would drop what was typed.
 
 use std::ops::Range;
 
@@ -31,42 +34,36 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 
+use crate::line_edit::LineEdit;
+use crate::table_sort::RowMove;
 use crate::theme::Theme;
-use crate::wrap::{labeled_lines, wrapped_lines};
+use crate::words::Sentence;
+use crate::words::app as words;
+use crate::wrap::{clamp_u16, display_width, labeled_lines, wrapped_lines};
 
-/// Label column every form's fields align on — the unification of the two
-/// widths the views had drifted to (Networks 10, Searches 11). Sized to the
-/// widest label any of them carries (`Download dir`, `Nodes.dat URL`).
-pub(crate) const LABEL_W: usize = 12;
+mod path;
 
-/// A trailing block glyph marks the caret, so the insertion point is visible
-/// in glyph-only golden snapshots.
-pub(crate) const CURSOR: &str = "▮";
+pub(crate) use path::complete_directory;
 
-/// A selector wears its cycle arrows where a text field wears the caret:
-/// there is no insertion point to mark on something you step.
+/// A focused selector wears its cycle arrows: there is no insertion point to
+/// mark on something you step.
 const ARROWS: &str = "  ←→";
 
-/// Columns the value column gives up for whichever trailing marker the focused
-/// row wears. Reserved on *every* row, and whether or not the caret is drawn,
-/// so entering an editor cannot re-wrap the value under the cursor.
-const MARKER_W: usize = 4; // the wider of the two: `ARROWS`
-
-/// The narrowest a form renders without overrunning its pane: the label gutter
-/// (a space either side of [`LABEL_W`]), the marker reserve, and one column of
-/// value. Below this the *labels* are what would have to be cut, and a
-/// truncated label names nothing — so the floor is stated rather than silently
-/// crossed. It is far under the 80-column terminal this UI supports.
-pub(crate) const MIN_WIDTH: usize = LABEL_W + 2 + MARKER_W + 1;
+/// Columns the value column gives up for the selector's arrows and the caret
+/// past the end of a text. Reserved on *every* row, so entering an editor
+/// cannot re-wrap a value that fits.
+const MARKER_W: usize = 4; // `ARROWS`
 
 /// What a field holds.
 pub(crate) enum FieldKind {
     /// Free text, kept exactly as typed.
     Text {
-        value: String,
+        edit: LineEdit,
         /// What an empty field shows instead, so the accepted syntax is never
-        /// a guess. Dim, and never mistaken for a value.
+        /// a guess. Dim, with the caret before it, never mistaken for a value.
         placeholder: String,
+        /// A directory: `Tab` completes it from the disk.
+        path: bool,
     },
     /// A closed set stepped with `←`/`→` (and `Space`). The value is the
     /// chosen index, so a selector needs no parsing at all.
@@ -100,11 +97,21 @@ impl Field {
             section: None,
             label,
             kind: FieldKind::Text {
-                value: value.into(),
+                edit: LineEdit::new(value),
                 placeholder: String::new(),
+                path: false,
             },
             note: String::new(),
         }
+    }
+
+    /// A text field that names a directory.
+    pub fn directory(label: &'static str, value: impl Into<String>) -> Self {
+        let mut field = Self::text(label, value);
+        if let FieldKind::Text { path, .. } = &mut field.kind {
+            *path = true;
+        }
+        field
     }
 
     pub fn choice(label: &'static str, options: Vec<&'static str>, index: usize) -> Self {
@@ -158,21 +165,24 @@ impl Field {
         self
     }
 
+    /// The value a Row Filter reads: a selector's choice, a field's text.
+    pub fn searched_value(&self) -> &str {
+        self.value().0
+    }
+
     /// Can focus rest here? Display rows cannot.
     pub fn focusable(&self) -> bool {
         !matches!(self.kind, FieldKind::Display { .. })
-    }
-
-    fn is_choice(&self) -> bool {
-        matches!(self.kind, FieldKind::Choice { .. })
     }
 
     /// The rendered value and whether it is the placeholder rather than an
     /// entry (which reads dim).
     fn value(&self) -> (&str, bool) {
         match &self.kind {
-            FieldKind::Text { value, placeholder } if value.is_empty() => (placeholder, true),
-            FieldKind::Text { value, .. } => (value, false),
+            FieldKind::Text {
+                edit, placeholder, ..
+            } if edit.is_empty() => (placeholder, true),
+            FieldKind::Text { edit, .. } => (edit.text(), false),
             FieldKind::Choice { options, index } => {
                 (options.get(*index).copied().unwrap_or_default(), false)
             }
@@ -204,7 +214,15 @@ pub(crate) struct Form {
     pub focus: usize,
     /// The last commit's rejection, shown under the fields until the next one.
     /// The typing stays: a validation failure must never cost an entry.
-    pub error: Option<String>,
+    pub error: Option<Sentence>,
+    /// The fields a Row Filter left out, by index; empty leaves all of them.
+    pub hidden: Vec<bool>,
+    /// `error` asks a second `Enter` rather than refusing: it wears the
+    /// warning's mark, never the refusal's.
+    pub asking: bool,
+    /// A word about the focused field that refuses nothing, shown where a
+    /// rejection is until the next key.
+    pub note: Option<Sentence>,
 }
 
 impl Form {
@@ -214,6 +232,9 @@ impl Form {
             fields,
             focus,
             error: None,
+            note: None,
+            hidden: Vec::new(),
+            asking: false,
         }
     }
 
@@ -230,7 +251,7 @@ impl Form {
     /// The focused field's raw text (trimmed), or `""` for a selector.
     pub fn text(&self, index: usize) -> &str {
         match self.fields.get(index).map(|field| &field.kind) {
-            Some(FieldKind::Text { value, .. }) => value.trim(),
+            Some(FieldKind::Text { edit, .. }) => edit.text().trim(),
             _ => "",
         }
     }
@@ -257,6 +278,30 @@ impl Form {
         self.step_focus(false);
     }
 
+    /// Whether a Row Filter left field `index` out.
+    fn left_out(&self, index: usize) -> bool {
+        self.hidden.get(index).copied().unwrap_or(false)
+    }
+
+    /// Whether the focused field is one a Row Filter left out: nothing is
+    /// left to focus.
+    pub fn focus_left_out(&self) -> bool {
+        self.left_out(self.focus)
+    }
+
+    /// Whether the focus can rest on field `index`.
+    fn reachable(&self, index: usize) -> bool {
+        self.fields[index].focusable() && !self.left_out(index)
+    }
+
+    /// Hide the fields `keep` turns down and move the focus off a hidden one.
+    pub fn narrow(&mut self, keep: impl Fn(&Field) -> bool) {
+        self.hidden = self.fields.iter().map(|field| !keep(field)).collect();
+        if self.focus < self.fields.len() && !self.reachable(self.focus) {
+            self.step_focus(true);
+        }
+    }
+
     /// Move focus to the next/previous focusable field, wrapping.
     pub fn step_focus(&mut self, forward: bool) {
         let len = self.fields.len();
@@ -269,9 +314,34 @@ impl Form {
             } else {
                 (self.focus + len - step % len) % len
             };
-            if self.fields[index].focusable() {
+            if self.reachable(index) {
                 self.focus = index;
                 return;
+            }
+        }
+    }
+
+    /// Move the focus by a key's [`RowMove`]: a step wraps as [`Form::step_focus`]
+    /// does, a page walks `page` fields and stops at the end.
+    pub fn walk(&mut self, movement: RowMove, page: usize) {
+        match movement {
+            RowMove::Step(delta) => self.step_focus(delta > 0),
+            RowMove::First => self.focus_first(),
+            RowMove::Last => self.focus_last(),
+            RowMove::Page(pages) => {
+                let reachable: Vec<usize> = (0..self.fields.len())
+                    .filter(|index| self.reachable(*index))
+                    .collect();
+                let at = reachable
+                    .iter()
+                    .position(|index| *index == self.focus)
+                    .unwrap_or(0);
+                let target = at.saturating_add_signed(
+                    pages.saturating_mul(isize::try_from(page.max(1)).unwrap_or(isize::MAX)),
+                );
+                if let Some(index) = reachable.get(target.min(reachable.len().saturating_sub(1))) {
+                    self.focus = *index;
+                }
             }
         }
     }
@@ -305,10 +375,35 @@ impl Form {
         let widest = self
             .fields
             .iter()
-            .map(|field| field.value().0.chars().count())
+            .map(|field| display_width(field.value().0))
             .max()
             .unwrap_or(0);
-        LABEL_W + 2 + MARKER_W + widest
+        self.gutter() + MARKER_W + widest
+    }
+
+    /// The label column: its widest label, measured, so a word of any length
+    /// holds it.
+    fn label_w(&self) -> usize {
+        crate::table::widest(
+            &self
+                .fields
+                .iter()
+                .map(|field| field.label)
+                .collect::<Vec<_>>(),
+        )
+    }
+
+    /// The label column with a space either side of it.
+    fn gutter(&self) -> usize {
+        self.label_w() + 2
+    }
+
+    /// The narrowest this form renders without overrunning its pane: the label
+    /// gutter, the marker reserve, and one column of value. Below this the
+    /// *labels* are what would have to be cut, and a truncated label names
+    /// nothing, so the floor is stated rather than silently crossed.
+    pub fn min_width(&self) -> usize {
+        self.gutter() + MARKER_W + 1
     }
 
     /// Is the focused field a selector (nothing to type into)?
@@ -319,6 +414,14 @@ impl Form {
         )
     }
 
+    /// Is the focused field a directory, so `Tab` completes it?
+    pub fn focus_is_directory(&self) -> bool {
+        matches!(
+            self.fields.get(self.focus).map(|field| &field.kind),
+            Some(FieldKind::Text { path: true, .. })
+        )
+    }
+
     pub fn focus_is_choice(&self) -> bool {
         matches!(
             self.fields.get(self.focus).map(|field| &field.kind),
@@ -326,70 +429,161 @@ impl Form {
         )
     }
 
-    /// Route one key. `Enter`/`Esc` are reported, never acted on.
+    /// A paste into the focused text field, at its caret, on one line.
+    /// Whether there was a field to take it.
+    pub fn paste(&mut self, text: &str) -> bool {
+        let Some(FieldKind::Text { edit, .. }) = self.focused_kind() else {
+            return false;
+        };
+        edit.paste(text);
+        true
+    }
+
+    /// Replace the focused text field with `text`, kept as it stands.
+    pub fn set_focused_text(&mut self, text: &str) {
+        if let Some(FieldKind::Text { edit, .. }) = self.focused_kind() {
+            edit.set(text);
+        }
+    }
+
+    fn focused_kind(&mut self) -> Option<&mut FieldKind> {
+        self.fields.get_mut(self.focus).map(|field| &mut field.kind)
+    }
+
+    /// `Tab` on a directory field: as much of the path as the disk settles,
+    /// and what is left to choose from under the field.
+    fn complete_path(&mut self) {
+        let Some(FieldKind::Text { edit, .. }) = self.focused_kind() else {
+            return;
+        };
+        let completion = complete_directory(edit.text());
+        if let Some(text) = completion.text {
+            edit.set(&text);
+        }
+        self.note = completion.note;
+    }
+
+    /// Route one key: the focused field's, then the moves between fields.
+    /// `Enter`/`Esc` are reported, never acted on.
     pub fn handle_key(&mut self, key: KeyEvent) -> FormKey {
-        match key.code {
-            KeyCode::Esc => FormKey::Cancel,
-            KeyCode::Enter => FormKey::Commit,
-            KeyCode::Tab | KeyCode::Down => {
+        match (self.field_key(key), key.code) {
+            (FormKey::Ignored, KeyCode::Tab | KeyCode::Down) => {
                 self.step_focus(true);
                 FormKey::Consumed
             }
-            KeyCode::BackTab | KeyCode::Up => {
+            (FormKey::Ignored, KeyCode::BackTab | KeyCode::Up) => {
                 self.step_focus(false);
                 FormKey::Consumed
             }
-            KeyCode::Left if self.focus_is_choice() => {
-                self.step_choice(false);
+            (outcome, _) => outcome,
+        }
+    }
+
+    /// The focused field's own keys; focus stays where it is.
+    pub fn field_key(&mut self, key: KeyEvent) -> FormKey {
+        self.note = None;
+        match key.code {
+            KeyCode::Esc => return FormKey::Cancel,
+            KeyCode::Enter => return FormKey::Commit,
+            _ => {}
+        }
+        match self.focused_kind() {
+            Some(FieldKind::Text { path: true, .. }) if key.code == KeyCode::Tab => {
+                self.complete_path();
                 FormKey::Consumed
             }
-            KeyCode::Right | KeyCode::Char(' ') if self.focus_is_choice() => {
-                self.step_choice(true);
-                FormKey::Consumed
-            }
-            KeyCode::Backspace => {
-                match self.fields.get_mut(self.focus).map(|field| &mut field.kind) {
-                    Some(FieldKind::Text { value, .. }) => {
-                        value.pop();
-                    }
-                    // A selector's "clear": back to its first option, which is
-                    // every selector's "no constraint" entry.
-                    Some(FieldKind::Choice { index, .. }) => *index = 0,
-                    _ => {}
+            Some(FieldKind::Text { edit, .. }) => {
+                if edit.key(&key) {
+                    FormKey::Consumed
+                } else {
+                    FormKey::Ignored
                 }
+            }
+            Some(FieldKind::Choice { index, .. }) if key.code == KeyCode::Backspace => {
+                // A selector's "clear": back to its first option, which is
+                // every selector's "no constraint" entry.
+                *index = 0;
                 FormKey::Consumed
             }
-            KeyCode::Char(c) => {
-                if let Some(FieldKind::Text { value, .. }) =
-                    self.fields.get_mut(self.focus).map(|field| &mut field.kind)
-                {
-                    value.push(c);
+            Some(FieldKind::Choice { .. }) => match key.code {
+                KeyCode::Left => {
+                    self.step_choice(false);
+                    FormKey::Consumed
                 }
-                FormKey::Consumed
-            }
-            _ => FormKey::Ignored,
+                KeyCode::Right | KeyCode::Char(' ') => {
+                    self.step_choice(true);
+                    FormKey::Consumed
+                }
+                KeyCode::Char(_) => FormKey::Consumed,
+                _ => FormKey::Ignored,
+            },
+            Some(FieldKind::Display { .. } | FieldKind::Item { .. }) | None => match key.code {
+                KeyCode::Backspace | KeyCode::Char(_) => FormKey::Consumed,
+                _ => FormKey::Ignored,
+            },
+        }
+    }
+
+    /// The form as a modal lays it out: its fields, `footer` under them (the
+    /// key legend), and the lines a scrolling frame keeps on screen for the
+    /// focus. The first field answers for everything above it and the last
+    /// for everything under it, so the heading, the rejection and the legend
+    /// are in view when the focus is at an end.
+    pub fn render_modal(
+        &self,
+        width: usize,
+        theme: &Theme,
+        footer: Vec<Line<'static>>,
+    ) -> ModalLines {
+        let mut rendered = self.render(width, theme, true);
+        rendered.lines.push(Line::raw(""));
+        rendered.lines.extend(footer);
+        let mut focus = rendered.focus;
+        let mut focusable = self
+            .fields
+            .iter()
+            .enumerate()
+            .filter(|(_, field)| field.focusable())
+            .map(|(index, _)| index);
+        if focusable.next() == Some(self.focus) {
+            focus.start = 0;
+        }
+        if focusable.next_back().unwrap_or(self.focus) == self.focus {
+            focus.end = rendered.lines.len();
+        }
+        ModalLines {
+            lines: rendered.lines,
+            focus,
+            caret: rendered.caret,
         }
     }
 
     /// Render the whole form to `width` columns.
     ///
-    /// `caret` marks the focused field's insertion point; a browsing surface
-    /// (the Settings tab, whose fields are only editable once entered) passes
-    /// `false` and still shows which row the cursor is on.
+    /// `caret` opens the focused field for typing: a text field scrolls
+    /// sideways around its caret, and [`Rendered::caret`] says where that is.
+    /// A browsing surface (the Settings tab, whose fields are only editable
+    /// once entered) passes `false` and still shows which row the cursor is
+    /// on.
     ///
-    /// No line exceeds `width` at or above [`MIN_WIDTH`]; values, notes and
+    /// No line exceeds `width` at or above [`Form::min_width`]; values, notes and
     /// the error all wrap rather than clip.
     pub fn render(&self, width: usize, theme: &Theme, caret: bool) -> Rendered {
-        // The label span is `" {label:<LABEL_W$} "` — one column of padding on
-        // each side of the column itself.
-        let gutter = LABEL_W + 2;
+        // The label span is one column of padding on each side of the column
+        // itself.
+        let label_w = self.label_w();
+        let gutter = self.gutter();
         let value_w = width.saturating_sub(gutter + MARKER_W).max(1);
         let mut lines: Vec<Line<'static>> = Vec::new();
         let mut rows: Vec<Option<usize>> = Vec::new();
         let mut focus = 0..0;
+        let mut caret_at = None;
 
         for (index, field) in self.fields.iter().enumerate() {
-            if let Some(section) = field.section {
+            if self.left_out(index) {
+                continue;
+            }
+            if let Some(section) = field.section.filter(|_| self.hidden.is_empty()) {
                 if !lines.is_empty() {
                     lines.push(Line::raw(""));
                     rows.push(None);
@@ -402,7 +596,7 @@ impl Form {
             }
             let focused = index == self.focus;
             let label_style = if focused {
-                Style::new().fg(theme.accent)
+                theme.focused_label()
             } else {
                 theme.dim_text()
             };
@@ -413,23 +607,30 @@ impl Form {
                 Style::new().fg(theme.fg)
             };
             let start = lines.len();
-            let mut field_lines = labeled_lines(
-                Span::styled(format!(" {:<LABEL_W$} ", field.label), label_style),
-                value,
-                value_style,
-                value_w,
-            );
-            if focused
-                && caret
-                && let Some(last) = field_lines.last_mut()
-            {
-                // A selector shows its cycle arrows instead: there is no
-                // insertion point to mark.
-                last.spans.push(if field.is_choice() {
-                    Span::styled(ARROWS, Style::new().fg(theme.accent))
-                } else {
-                    Span::styled(CURSOR, Style::new().fg(theme.accent))
-                });
+            let label = Span::styled(format!(" {:<label_w$} ", field.label), label_style);
+            let mut field_lines = match &field.kind {
+                FieldKind::Text { edit, .. } if focused && caret && !edit.is_empty() => {
+                    let shown = edit.show(value_w + MARKER_W, value_style, theme.dim_text());
+                    caret_at = Some((start, clamp_u16(gutter) + shown.caret));
+                    let mut spans = vec![label];
+                    spans.extend(shown.spans);
+                    vec![Line::from(spans)]
+                }
+                _ => labeled_lines(label, value, value_style, value_w),
+            };
+            if focused && caret {
+                match &field.kind {
+                    FieldKind::Text { edit, .. } if edit.is_empty() => {
+                        caret_at = Some((start, clamp_u16(gutter)));
+                    }
+                    FieldKind::Choice { .. } => {
+                        if let Some(last) = field_lines.last_mut() {
+                            last.spans
+                                .push(Span::styled(ARROWS, Style::new().fg(theme.accent)));
+                        }
+                    }
+                    _ => {}
+                }
             }
             // The note rides the value's last line when there is room for it,
             // and drops to a hanging line under the value column when there is
@@ -438,7 +639,7 @@ impl Form {
             if !field.note.is_empty() {
                 let note = format!("  {}", field.note);
                 let used = field_lines.last().map_or(0, Line::width);
-                if used + note.chars().count() <= width {
+                if used + display_width(&note) <= width {
                     if let Some(last) = field_lines.last_mut() {
                         last.spans.push(Span::styled(note, theme.dim_text()));
                     }
@@ -468,11 +669,21 @@ impl Form {
             // Glyph-marked, not just red: no fact in this UI is carried by
             // colour alone (spec §5), and a rejection is the last one that
             // should be.
+            let (mark, colour) = if self.asking {
+                ("!", theme.warn)
+            } else {
+                ("✗", theme.bad)
+            };
             lines.extend(wrapped_lines(
-                &format!(" ✗ {error}"),
+                &format!(" {mark} {error}"),
                 width,
-                Style::new().fg(theme.bad),
+                Style::new().fg(colour),
             ));
+            rows.resize(lines.len(), None);
+        } else if let Some(note) = &self.note {
+            error_at = Some(lines.len());
+            lines.push(Line::raw(""));
+            lines.extend(wrapped_lines(&format!(" {note}"), width, theme.dim_text()));
             rows.resize(lines.len(), None);
         }
         Rendered {
@@ -480,41 +691,58 @@ impl Form {
             rows,
             focus,
             error_at,
+            caret: caret_at,
         }
     }
 }
 
+/// A form as a modal lays it out, for [`crate::views::modal::Modal::draw_form`].
+pub(crate) struct ModalLines {
+    pub lines: Vec<Line<'static>>,
+    /// The lines the frame keeps on screen for the focus.
+    pub focus: Range<usize>,
+    /// The caret's line and column, while a text field holds it.
+    pub caret: Option<(usize, u16)>,
+}
+
 /// A rendered form: its display lines, which field each line belongs to (a
 /// heading, a separator or the error carries `None`), where the focused field
-/// sits so a scrolling surface can keep it on screen, and where the error
-/// block begins so a scrolling surface can pin it instead of letting a
-/// rejection scroll out of sight.
+/// sits so a scrolling surface can keep it on screen, where the error block
+/// begins so a scrolling surface can pin it instead of letting a rejection
+/// scroll out of sight, and the caret's line and column while a text field
+/// holds it.
 pub(crate) struct Rendered {
     pub lines: Vec<Line<'static>>,
     pub rows: Vec<Option<usize>>,
     pub focus: Range<usize>,
     pub error_at: Option<usize>,
+    pub caret: Option<(usize, u16)>,
 }
 
 /// A port entry: `1`–`65535`. Shared by every form that takes one — the
 /// add-server modal and the two Settings port fields — so the three cannot
 /// disagree about what a port is.
-pub(crate) fn validate_port(port: &str) -> Result<u16, String> {
+pub(crate) fn validate_port(port: &str) -> Result<u16, Sentence> {
     if port.is_empty() {
-        return Err("port is required (1–65535)".to_string());
+        return Err(words::port_refusal(&words::PortRefusal::Required));
     }
     match port.parse::<u16>() {
-        Ok(0) | Err(_) => Err(format!("'{port}' is not a port number (1–65535)")),
+        Ok(0) | Err(_) => Err(words::port_refusal(&words::PortRefusal::NotAPort(
+            port.to_string(),
+        ))),
         Ok(port) => Ok(port),
     }
 }
 
 /// An `http`/`https` URL, the only two schemes anything here fetches over.
-pub(crate) fn validate_url(url: &str) -> Result<&str, String> {
-    if url.starts_with("http://") || url.starts_with("https://") {
+pub(crate) fn validate_url(url: &str) -> Result<&str, Sentence> {
+    if crate::words::forms::URL_SCHEMES
+        .iter()
+        .any(|scheme| url.starts_with(scheme))
+    {
         Ok(url)
     } else {
-        Err("URL must start with http:// or https://".to_string())
+        Err(words::URL_SCHEME)
     }
 }
 

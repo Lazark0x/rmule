@@ -1,6 +1,5 @@
-//! The Search tab with no core attached, at the view's seam: a UI-only run
-//! (the state a failed attach leaves) and a run whose core stopped. Keys in;
-//! what the entry says, what stays in the input, and that nothing was sent out.
+//! The Search tab with no core to send through, at the view's seam: a run
+//! whose core stopped. Keys in; what the entry says, what stays in the input, and that nothing was sent out.
 
 use std::time::Instant;
 
@@ -14,10 +13,10 @@ use crate::golden::{assert_golden, render_to_lines};
 use crate::state::{SearchStatus, UiState};
 use crate::view::ViewId;
 
-/// A UI-only run: no session, no core, and the reason the attach failed.
-fn ui_only() -> UiState {
+/// A run whose core has stopped.
+fn stopped() -> UiState {
     UiState {
-        ui_only: Some(crate::state::AttachFailure::OpenStore),
+        core_alive: false,
         ..UiState::default()
     }
 }
@@ -30,8 +29,8 @@ fn render(view: &mut SearchesView, state: &UiState) -> String {
 
 #[test]
 fn a_query_with_no_core_is_held_as_not_sent_and_stays_in_the_input() {
-    let state = ui_only();
-    let mut view = SearchesView::new();
+    let state = stopped();
+    let mut view = SearchesView::by_name();
     view.handle_key(press(KeyCode::Char('/')), &state);
     for c in "big buck bunny".chars() {
         view.handle_key(press(KeyCode::Char(c)), &state);
@@ -44,13 +43,11 @@ fn a_query_with_no_core_is_held_as_not_sent_and_stays_in_the_input() {
         "nothing is sent and nothing flashes a wrong cause"
     );
     assert_eq!(view.shown_query(), "big buck bunny");
-    assert!(!view.results_focused(), "the input keeps focus");
+    assert!(view.results_focused(), "focus goes where a search goes");
     assert_golden("searches_not_sent_no_core", 90, 12, |frame| {
-        view.draw(frame, frame.area(), &state, &theme(), Instant::now());
+        view.draw(frame, frame.area(), &state, &theme(), Instant::now())
     });
 
-    // Moving off and back finds the query where it was.
-    view.handle_key(press(KeyCode::Esc), &state);
     let closed = view.handle_key(press(KeyCode::Char('x')), &state);
     assert!(matches!(closed, ViewOutcome::Emit(Action::ForgetSearch(_))));
     assert!(render(&mut view, &state).contains("press / and type a query"));
@@ -61,7 +58,7 @@ fn a_related_search_with_no_core_opens_a_not_sent_entry_in_view() {
     // The level last read lit the item; the core has stopped since.
     let mut state = session_state();
     state.core_alive = false;
-    let mut view = SearchesView::new();
+    let mut view = SearchesView::by_name();
     let query = RelatedFilesQuery::new(
         FileHash::from_bytes([0x5A; FileHash::BYTE_LEN]),
         Ed2kText::from_utf8("a.avi"),
@@ -73,17 +70,13 @@ fn a_related_search_with_no_core_opens_a_not_sent_entry_in_view() {
     let screen = render(&mut view, &state);
     assert!(screen.contains("Results · Not sent"), "{screen}");
     assert!(
-        screen.contains("not sent — the core has stopped"),
+        screen.contains("not sent — the engine has stopped"),
         "{screen}"
     );
     assert_eq!(
         crate::views::related::unavailable(&state),
-        Some("the core has stopped"),
+        Some("the engine has stopped"),
         "and the row menus dim the item with the reason"
-    );
-    assert_eq!(
-        crate::views::related::unavailable(&ui_only()),
-        Some("no core attached")
     );
 }
 
@@ -94,7 +87,7 @@ fn golden_a_running_search_stops_with_the_core() {
         SearchStatus::Running,
     );
     state.core_alive = false;
-    let mut view = SearchesView::new().having_sent("linux");
+    let mut view = SearchesView::by_name().having_sent("linux");
     assert_golden("searches_stopped_with_the_core", 90, 12, |frame| {
         view.draw(frame, frame.area(), &state, &theme(), Instant::now());
     });

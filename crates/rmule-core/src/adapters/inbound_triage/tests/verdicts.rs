@@ -2,7 +2,7 @@
 //! the *production* serve adapter: a stream rmule raised toward a named
 //! target enters at
 //! [`SharedTunnelAdmit::admit_dialed_toward`](crate::adapters::SharedTunnelAdmit),
-//! meets the IP filter and the ban gate in `accept()`, and reaches the real
+//! meets the IP filter and the ban gate there, and reaches the real
 //! `triage_inbound_connection`, which asks the registry on the hello.
 //!
 //! The stream is an ordinary loopback `TcpStream` rather than a punched uTP
@@ -23,6 +23,7 @@ use crate::adapters::tests::{dialed_serve_ctx, loopback_blocking_ip_filter};
 use crate::adapters::{AdoptionBrief, AwaitedInboundHandle, SharedTunnelAdmit};
 use crate::ban_store::SharedBanStore;
 use crate::ip_filter::SharedIpFilter;
+use crate::natt::front::ReportedToFront;
 
 use super::*;
 
@@ -31,21 +32,18 @@ fn hash(byte: u8) -> UserHash {
 }
 
 fn file() -> Ed2kFileLink {
-    Ed2kFileLink {
-        name: Ed2kText::from_utf8("claimed"),
-        size: 4096,
-        file_hash: FileHash::from_bytes([0xCD; FileHash::BYTE_LEN]),
-        part_hash_set: None,
-        aich_root: None,
-        ipv6_sources: Vec::new(),
-        sources: Default::default(),
-    }
+    Ed2kFileLink::new(
+        Ed2kText::from_utf8("claimed"),
+        4096,
+        FileHash::from_bytes([0xCD; FileHash::BYTE_LEN]),
+    )
+    .expect("a size eD2k addresses")
 }
 
 /// The callback a claim runs beside — what the adopted worker is reported
 /// back under.
 fn callback_key() -> CallbackKey {
-    CallbackKey {
+    CallbackKey::Server {
         server: None,
         low_id: ClientId::from_u32(7),
     }
@@ -65,7 +63,7 @@ fn claim(
     registration.claim_tunnel(
         target,
         AdoptionBrief {
-            own_status: rmule_peer::PartBitmap::downloader_empty(0),
+            own_status: rmule_peer::WireStatus::downloader_empty(0),
             want_sources: true,
             file: file(),
         },
@@ -308,6 +306,60 @@ async fn an_unclaimed_connection_takes_the_serve_road() {
     );
 }
 
+/// A Tunnel may have no claim to land on, so without its own report the front
+/// would never hear whom it named: the hello is reported with the endpoint it
+/// read on, whichever direction raised it (ADR-0091, security rule 12).
+#[tokio::test]
+async fn a_tunnels_hello_reports_its_endpoint_to_the_front() {
+    let awaited = AwaitedInbound::default();
+    let (risen, mut reported) = crate::natt::front::NattRisenSender::test_pair();
+    awaited.install_risen(risen);
+    let serving = async || {
+        serving_node(
+            &awaited,
+            SharedBanStore::default(),
+            SharedIpFilter::default(),
+        )
+        .await
+    };
+
+    let (mut serve, admit) = serving().await;
+    let _dialed = punched_path_toward(&admit, hash(0xCD), hash(0xEF)).await;
+    assert!(first_serve_event(&mut serve).await.is_some());
+    assert!(
+        matches!(
+            reported.try_recv(),
+            Ok(ReportedToFront::TunnelIdentified(_, named)) if named == hash(0xEF)
+        ),
+        "a dialed Tunnel is named by its hello, not by what it was aimed at"
+    );
+
+    let (mut serve, admit) = serving().await;
+    let peer = FakePeer::bind().await;
+    let addr = peer.addr();
+    let _serving = peer.spawn(PeerScript {
+        hello_user_hash: hash(0xAB),
+        ..PeerScript::serving(file().file_hash, vec![0u8; 4096])
+    });
+    let stream = TcpStream::connect(SocketAddr::V4(addr))
+        .await
+        .expect("the counterparty is listening");
+    let endpoint = PeerEndpoint::V4(Ipv4Endpoint::new(*addr.ip(), addr.port()));
+    admit
+        .admit_accepted_tunnel(stream, endpoint, PeerStreamRole::Dialer)
+        .await
+        .expect("a serving node admits the path");
+    assert!(first_serve_event(&mut serve).await.is_some());
+
+    assert_eq!(
+        timeout(Duration::from_secs(5), reported.recv()).await,
+        Ok(Some(ReportedToFront::TunnelIdentified(
+            endpoint,
+            hash(0xAB)
+        )))
+    );
+}
+
 /// The gates come before the question: a banned or IP-filtered peer is
 /// refused before the registry is asked, so a punched path can never be the
 /// way back in for an address this node has shut out.
@@ -317,7 +369,7 @@ async fn a_banned_or_filtered_peers_path_is_refused_before_the_registry_is_asked
         (banned_loopback().await, SharedIpFilter::default()),
         (
             SharedBanStore::default(),
-            Arc::new(std::sync::RwLock::new(loopback_blocking_ip_filter())),
+            Arc::new(parking_lot::RwLock::new(loopback_blocking_ip_filter())),
         ),
     ] {
         let target = hash(0xAB);

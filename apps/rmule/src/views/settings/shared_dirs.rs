@@ -5,27 +5,26 @@
 //! directory would offer and asks, and the question is asked here. `x` on a
 //! listed directory asks, naming the count, before it stops sharing it.
 
+use std::cell::Cell;
 use std::path::PathBuf;
 
 use ratatui::Frame;
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use ratatui::layout::Rect;
-use ratatui::style::{Modifier, Style};
-use ratatui::text::{Line, Span};
 use rmule_core::{CoreCommand, DirectoryRefusal, DirectoryRole, ScanCommand};
 
 use super::{Row, SettingsView};
 use crate::action::Action;
 use crate::form::Field;
+use crate::row_selection::viewport::Viewport;
 use crate::state::UiState;
 use crate::theme::Theme;
 use crate::views::ViewOutcome;
-use crate::views::modal::Modal;
-use crate::words::scan::{refusal, remove_confirm, role_words, state_words, under_words};
-use crate::wrap::{clamp_u16, wrapped_lines};
-
-/// The section's heading.
-const SECTION: &str = "Shared directories";
+use crate::views::modal::{Question, confirm_key, draw_question, scroll_key};
+use crate::words::Sentence;
+use crate::words::app::{self as words, AddDirectoryRefusal};
+use crate::words::scan::{remove_confirm, role_words, state_words, under_words};
+use crate::words::settings;
 
 /// What a form row stands for.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -59,7 +58,7 @@ pub(super) fn fields(state: &UiState) -> Vec<(Field, Slot)> {
             note.push_str(" · ");
             note.push_str(&under_words(state.shared_under(&entry.dir)));
             (
-                Field::item("Shared", entry.dir.display().to_string()).with_note(note),
+                Field::item(settings::SHARED, entry.dir.display().to_string()).with_note(note),
                 Slot::Dir {
                     dir: entry.dir.clone(),
                     role: entry.role,
@@ -68,12 +67,12 @@ pub(super) fn fields(state: &UiState) -> Vec<(Field, Slot)> {
         })
         .collect();
     rows.push((
-        Field::text("Share a dir", String::new())
-            .with_placeholder("Enter, type an absolute path, Enter"),
+        Field::directory(settings::SHARE_A_DIR, String::new())
+            .with_placeholder(settings::SHARE_A_DIR_HINT),
         Slot::AddDir,
     ));
     if let Some((field, _)) = rows.first_mut() {
-        field.section = Some(SECTION);
+        field.section = Some(settings::SHARED_DIRECTORIES);
     }
     rows
 }
@@ -86,11 +85,12 @@ impl SettingsView {
 
     /// The add row's commit: the typed path, sent for core to guard, count
     /// and ask about.
-    pub(super) fn send_add(&mut self) -> ViewOutcome {
+    pub(super) fn send_add(&mut self, state: &UiState) -> ViewOutcome {
         match directory_to_add(self.form.text(self.form.focus)) {
             Ok(path) => {
                 self.editing = false;
                 self.form.error = None;
+                self.sent_dir = Some((path.clone(), state.directory_refusal.0));
                 ViewOutcome::Emit(Action::Command(CoreCommand::Scan(
                     ScanCommand::AddSharedDirectory { path },
                 )))
@@ -102,6 +102,28 @@ impl SettingsView {
         }
     }
 
+    /// Core refused the directory sent: the add row opens again with the
+    /// path in it and the reason under it, wherever the cursor went.
+    pub(super) fn reopen_refused_add(&mut self, state: &UiState) {
+        let Some((sent, before)) = &self.sent_dir else {
+            return;
+        };
+        let (count, Some((dir, reason))) = &state.directory_refusal else {
+            return;
+        };
+        if count == before || dir != sent {
+            return;
+        }
+        let text = sent.display().to_string();
+        self.sent_dir = None;
+        if let Some(row) = self.slots.iter().position(|slot| *slot == Slot::AddDir) {
+            self.form.focus = row;
+            self.form.set_focused_text(&text);
+            self.form.error = Some(words::shared_directory_refusal(reason));
+            self.editing = true;
+        }
+    }
+
     /// `x` on a listed directory: the remove confirm, or why it cannot be
     /// removed.
     pub(super) fn ask_remove(&mut self) -> ViewOutcome {
@@ -110,7 +132,9 @@ impl SettingsView {
                 role: DirectoryRole::DownloadDirectory,
                 ..
             }) => {
-                self.form.error = Some(refusal(&DirectoryRefusal::DownloadDirectory));
+                self.form.error = Some(words::shared_directory_refusal(
+                    &DirectoryRefusal::DownloadDirectory,
+                ));
                 ViewOutcome::Redraw
             }
             Some(Slot::Dir {
@@ -118,6 +142,7 @@ impl SettingsView {
                 role: DirectoryRole::Added,
             }) => {
                 self.removing = Some(dir.clone());
+                self.modal_viewport.take();
                 ViewOutcome::Redraw
             }
             _ => ViewOutcome::Ignored,
@@ -127,8 +152,8 @@ impl SettingsView {
     /// The remove confirm takes every key: `y` stops sharing, `n` or `Esc`
     /// keeps it.
     pub(super) fn remove_key(&mut self, key: KeyEvent) -> ViewOutcome {
-        match key.code {
-            KeyCode::Char('y') => {
+        match (confirm_key(key.code), key.code) {
+            (Some(true), _) => {
                 let Some(path) = self.removing.take() else {
                     return ViewOutcome::Redraw;
                 };
@@ -136,25 +161,32 @@ impl SettingsView {
                     ScanCommand::RemoveSharedDirectory { path },
                 )))
             }
-            KeyCode::Char('n') | KeyCode::Esc => {
+            (Some(false), _) => {
                 self.removing = None;
                 ViewOutcome::Redraw
             }
-            KeyCode::Char('q') | KeyCode::Char('j' | 'k' | 'g' | 'G' | 'x') => ViewOutcome::Redraw,
-            _ => ViewOutcome::Ignored,
+            (None, code @ (KeyCode::Char('j' | 'k' | 'g' | 'G') | KeyCode::Up | KeyCode::Down)) => {
+                scroll_key(&mut self.modal_viewport, code);
+                ViewOutcome::Redraw
+            }
+            (None, KeyCode::Char('x')) => ViewOutcome::Redraw,
+            (None, _) => ViewOutcome::Ignored,
         }
     }
 }
 
 /// The typed path, if it can be sent: core does every other check.
-fn directory_to_add(text: &str) -> Result<PathBuf, String> {
+fn directory_to_add(text: &str) -> Result<PathBuf, Sentence> {
     let text = text.trim();
     if text.is_empty() {
-        return Err(crate::words::scan::ADD_EMPTY.to_string());
+        return Err(words::add_directory_refusal(AddDirectoryRefusal::Empty));
     }
-    let path = PathBuf::from(text);
+    let path = crate::config::expand_home(text);
     if !path.is_absolute() {
-        return Err(crate::words::scan::ADD_RELATIVE.to_string());
+        return Err(words::add_directory_refusal(AddDirectoryRefusal::Relative));
+    }
+    if !path.is_dir() {
+        return Err(words::add_directory_refusal(AddDirectoryRefusal::Missing));
     }
     Ok(path)
 }
@@ -163,27 +195,17 @@ fn directory_to_add(text: &str) -> Result<PathBuf, String> {
 pub(super) fn draw_remove(
     frame: &mut Frame,
     area: Rect,
-    dir: &std::path::Path,
+    (dir, viewport): (&std::path::Path, &Cell<Viewport>),
     state: &UiState,
     theme: &Theme,
 ) {
-    let (question, consequence) = remove_confirm(dir, state.shared_under(dir));
-    let width = clamp_u16(64).min(area.width);
-    let text_w = usize::from(width).saturating_sub(4).max(1);
-    let mut lines = wrapped_lines(&question, text_w, Style::new().fg(theme.fg));
-    lines.push(Line::from(""));
-    lines.extend(wrapped_lines(&consequence, text_w, theme.dim_text()));
-    lines.push(Line::from(""));
-    lines.push(Line::from(vec![
-        Span::styled("y", Style::new().fg(theme.bad).add_modifier(Modifier::BOLD)),
-        Span::styled(" stop sharing    ", Style::new().fg(theme.fg)),
-        Span::styled("n", Style::new().fg(theme.accent)),
-        Span::styled(" keep it", Style::new().fg(theme.fg)),
-    ]));
-    Modal::new(crate::words::scan::REMOVE_TITLE, theme)
-        .danger(theme)
-        .padded()
-        .draw(frame, area, width, theme, lines);
+    let (asks, does) = remove_confirm(dir, state.shared_under(dir));
+    let question = Question {
+        title: crate::words::scan::REMOVE_TITLE,
+        asks: &asks,
+        does: &does,
+    };
+    draw_question(frame, area, &question, theme, viewport);
 }
 
 #[cfg(test)]

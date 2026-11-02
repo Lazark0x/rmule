@@ -7,11 +7,9 @@
 //! hybrid-id rule are pinned from aMule `CKnownFile::CreateSrcInfoPacket` /
 //! `CPartFile::AddClientSources` @ `4e8f2b3c`.
 
-use std::net::Ipv4Addr;
-
 use rmule_primitives::{
-    ClientId, Ipv4Endpoint, Ipv6Endpoint, PeerEndpoint, PeerSource, SourceCryptOptions,
-    SourceSighting, UserHash, WireReader, WireTruncated,
+    ClientId, Ed2kIp, HybridId, Ipv4Endpoint, Ipv6Endpoint, PeerEndpoint, PeerSource, SourceClaim,
+    SourceCryptOptions, UserHash, WireReader, WireTruncated,
 };
 
 /// Per-source strides by source-exchange version, pinned from aMule
@@ -119,18 +117,17 @@ impl SourceExchangeVersion {
 /// crypt support — rather than fabricating data the source never carried.
 pub(super) fn encode_source_entry(
     out: &mut Vec<u8>,
-    source: SourceSighting,
+    source: SourceClaim,
     version: SourceExchangeVersion,
 ) {
-    // A hybrid-id version writes a High ID big-endian; a Low ID rides as-is.
-    // (So would an IPv6 source's sentinel id — the classic exchange has no
+    // A hybrid-id version writes the record's id in hybrid form. (So would an IPv6 source's sentinel id — the classic exchange has no
     // address block for it, which is why the serve path never hands one over.)
     // A Kad callback row has no record at all, and the serve path never hands
     // one over either: it is written as the unassigned id `0`, which names
     // nobody, so every reader drops it.
     let wire_id = match source.peer_source() {
-        Some(record) if version.uses_hybrid_id() && record.is_high_id() => {
-            record.wire_id().swap_bytes()
+        Some(record) if version.uses_hybrid_id() => {
+            HybridId::from_client_id(ClientId::from_u32(record.wire_id())).wire()
         }
         Some(record) => record.wire_id(),
         None => 0,
@@ -153,7 +150,7 @@ pub(super) fn encode_source_entry(
     }
 }
 
-/// One decoded source-answer entry, pairing the [`SourceSighting`]
+/// One decoded source-answer entry, pairing the [`SourceClaim`]
 /// provenance (ADR-0046) with the server it declares itself registered on
 /// (ADR-0055). Every version's wire entry carries `[srvIP4][srvPort2]` right
 /// after `[id][port]`, and both [`AnswerSources`](super::AnswerSources)
@@ -162,17 +159,17 @@ pub(super) fn encode_source_entry(
 /// (`sanitize_and_route`) reads it without a second, divergent parse.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SourceExchangeEntry {
-    source: SourceSighting,
+    source: SourceClaim,
     server: Option<Ipv4Endpoint>,
 }
 
 impl SourceExchangeEntry {
     /// Pair a source with the server it declared itself registered on. An
     /// ExtSX record's IPv6 half rides inside the source
-    /// ([`SourceSighting::with_ipv6_half`]); a classic entry has no address
+    /// ([`SourceClaim::with_ipv6_half`]); a classic entry has no address
     /// block, so its source never carries one.
     #[must_use]
-    pub const fn new(source: SourceSighting, server: Option<Ipv4Endpoint>) -> Self {
+    pub const fn new(source: SourceClaim, server: Option<Ipv4Endpoint>) -> Self {
         Self { source, server }
     }
 
@@ -183,7 +180,7 @@ impl SourceExchangeEntry {
     /// Present alongside a High ID for a dual-stack source, alongside a Low ID
     /// for a firewalled one that is nevertheless dialable over IPv6, and
     /// *inside* [`PeerSource::Ipv6`] when the record named no usable IPv4 at
-    /// all — see [`SourceSighting::ipv6`].
+    /// all — see [`SourceClaim::ipv6`].
     #[must_use]
     pub const fn ipv6(self) -> Option<Ipv6Endpoint> {
         self.source.ipv6()
@@ -192,13 +189,15 @@ impl SourceExchangeEntry {
     /// An entry with no declared server — the shape every served entry takes,
     /// since the serve path writes the server fields as zero.
     #[must_use]
-    pub const fn plain(source: SourceSighting) -> Self {
+    pub const fn plain(source: SourceClaim) -> Self {
         Self::new(source, None)
     }
 
     /// The provenance half alone, for a caller with no use for the server.
+    /// It names nobody: the session that read the entry knows the peer that
+    /// sent it, and states it as that peer's word (ADR-0085).
     #[must_use]
-    pub const fn source(self) -> SourceSighting {
+    pub const fn source(self) -> SourceClaim {
         self.source
     }
 
@@ -211,8 +210,8 @@ impl SourceExchangeEntry {
         self.server
     }
 
-    // Delegators so an entry reads like the `SourceSighting` it wraps
-    // (mirroring `SourceSighting`'s own delegation onto `PeerSource`).
+    // Delegators so an entry reads like the `SourceClaim` it wraps
+    // (mirroring `SourceClaim`'s own delegation onto `PeerSource`).
     /// The source's own id on the IPv4 network, or `None` for an IPv6 source.
     #[must_use]
     pub const fn client_id(self) -> Option<ClientId> {
@@ -264,9 +263,8 @@ fn decode_source_server(
     if ip_raw == 0 && port == 0 {
         return Ok(None);
     }
-    let octets = ip_raw.to_le_bytes();
     Ok(Some(Ipv4Endpoint::new(
-        Ipv4Addr::new(octets[0], octets[1], octets[2], octets[3]),
+        Ed2kIp::from_wire(ip_raw).ip(),
         port,
     )))
 }
@@ -278,16 +276,8 @@ fn decode_source_entry(
     version: SourceExchangeVersion,
 ) -> Result<SourceExchangeEntry, WireTruncated> {
     let raw = reader.read_u32_le("entry client id")?;
-    // LowID-vs-HighID is decided on the as-received bytes, before any swap: a
-    // LowID's magnitude is scheme-invariant, and a HighID's raw wire value
-    // stays >= the threshold under either byte order (barring a leftmost
-    // dotted octet of 0, which never occurs for a routable address — the
-    // exact asymmetry the hybrid encoding exploits). aMule's own
-    // `IsLowID(dwID)` checks the same raw, pre-swap value
-    // (`PartFile.cpp::AddClientSources` @4e8f2b3c).
-    let is_high_id = ClientId::from_u32(raw).is_high_id();
-    let id = if version.uses_hybrid_id() && is_high_id {
-        ClientId::from_u32(raw.swap_bytes())
+    let id = if version.uses_hybrid_id() {
+        HybridId::from_wire(raw).client_id()
     } else {
         ClientId::from_u32(raw)
     };
@@ -307,7 +297,7 @@ fn decode_source_entry(
         None
     };
     Ok(SourceExchangeEntry::new(
-        SourceSighting::new(source, user_hash, crypt_options),
+        SourceClaim::new(source, user_hash, crypt_options),
         server,
     ))
 }

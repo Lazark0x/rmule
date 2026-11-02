@@ -4,7 +4,7 @@
 
 use rmule_core::CoreEvent;
 
-use super::{Sentence, download, kad, login, peer, reach, scan, search, serve, server};
+use super::{Sentence, download, kad, login, peer, portmap, reach, scan, search, serve, server};
 
 /// A core event as one line of the Networks log.
 #[must_use]
@@ -29,10 +29,12 @@ pub fn log_line(event: &CoreEvent) -> Sentence {
         }
         CoreEvent::SocketBoundWithoutFamily { half_bound } => reach::half_bound(half_bound),
         CoreEvent::PeerHelloRefused { refusal } => peer::hello_refused(refusal),
+        CoreEvent::PeerLinkBroken { violation } => peer::link_broken(*violation),
         CoreEvent::DiagnosticsSnapshot { .. } => DIAGNOSTICS,
         CoreEvent::FileHistory { .. } => FILE_HISTORY,
         CoreEvent::KadStopped { reason } => kad::stopped(*reason),
         CoreEvent::Quitting { step } => super::app::quit_step(*step),
+        CoreEvent::TaskDied { task } => super::app::task_died(*task),
         CoreEvent::ServerLogin { server, step } => login::step_line(server, step),
         CoreEvent::BuddyDialFailed { buddy, cause } => kad::buddy_dial_failed(*buddy, *cause),
         CoreEvent::KadHelperTestLate {
@@ -40,6 +42,13 @@ pub fn log_line(event: &CoreEvent) -> Sentence {
         } => login::kad_helper_test_late(*late_by, *admission),
         CoreEvent::ObfuscationPolicyAtStart { policy } => reach::obfuscation_at_start(*policy),
         CoreEvent::ObfuscationPolicyChanged { policy } => reach::obfuscation_changed(*policy),
+        CoreEvent::MappingReleaseKept {
+            mapping,
+            protocol,
+            external_port,
+            kept,
+        } => portmap::release_kept(mapping, *protocol, *external_port, kept),
+        CoreEvent::EventsShed { count } => super::app::events_shed(*count),
     }
 }
 

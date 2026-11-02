@@ -22,10 +22,17 @@ pub(crate) const RESOLVE_BOUND: Duration = Duration::from_secs(5);
 /// the bound.
 pub(crate) type Resolution = Pin<Box<dyn Future<Output = Option<Ipv4Addr>> + Send>>;
 
+/// A name's whole answer: every IPv4 address it has within the bound.
+pub(crate) type EveryResolution = Pin<Box<dyn Future<Output = Vec<Ipv4Addr>> + Send>>;
+
 /// The resolver seam.
 pub(crate) trait NameResolver: Send + Sync + 'static {
     /// Resolve `host` to one IPv4 address, bounded.
     fn resolve_ipv4(&self, host: String) -> Resolution;
+
+    /// Resolve `host` to every IPv4 address it has, bounded; none when it
+    /// has none within the bound.
+    fn resolve_every_ipv4(&self, host: String) -> EveryResolution;
 }
 
 /// The resolver every holder shares.
@@ -37,18 +44,22 @@ pub(crate) struct SystemNameResolver;
 
 impl NameResolver for SystemNameResolver {
     fn resolve_ipv4(&self, host: String) -> Resolution {
+        let every = self.resolve_every_ipv4(host);
+        Box::pin(async move { every.await.first().copied() })
+    }
+
+    fn resolve_every_ipv4(&self, host: String) -> EveryResolution {
         Box::pin(async move {
             let lookup = tokio::net::lookup_host((host.as_str(), 0));
-            let addresses = tokio::time::timeout(RESOLVE_BOUND, lookup)
-                .await
-                .ok()?
-                .ok()?;
+            let Ok(Ok(addresses)) = tokio::time::timeout(RESOLVE_BOUND, lookup).await else {
+                return Vec::new();
+            };
             addresses
-                .into_iter()
-                .find_map(|address| match address.ip() {
+                .filter_map(|address| match address.ip() {
                     IpAddr::V4(ip) => Some(ip),
                     IpAddr::V6(_) => None,
                 })
+                .collect()
         })
     }
 }
@@ -62,8 +73,8 @@ pub(crate) fn system_resolver() -> SharedNameResolver {
 #[cfg(test)]
 #[derive(Default)]
 pub(crate) struct FakeNameResolver {
-    answers: std::sync::Mutex<std::collections::HashMap<String, Ipv4Addr>>,
-    asked: std::sync::Mutex<Vec<String>>,
+    answers: parking_lot::Mutex<std::collections::HashMap<String, Ipv4Addr>>,
+    asked: parking_lot::Mutex<Vec<String>>,
 }
 
 #[cfg(test)]
@@ -74,14 +85,13 @@ impl FakeNameResolver {
         resolver
             .answers
             .lock()
-            .unwrap()
             .extend(answers.iter().map(|(name, ip)| ((*name).to_owned(), *ip)));
         Arc::new(resolver)
     }
 
     /// From now on `name` answers `ip`, or nothing for `None`.
     pub(crate) fn answer(&self, name: &str, ip: Option<Ipv4Addr>) {
-        let mut answers = self.answers.lock().unwrap();
+        let mut answers = self.answers.lock();
         match ip {
             Some(ip) => answers.insert(name.to_owned(), ip),
             None => answers.remove(name),
@@ -90,15 +100,20 @@ impl FakeNameResolver {
 
     /// Every name asked so far, in order.
     pub(crate) fn asked(&self) -> Vec<String> {
-        self.asked.lock().unwrap().clone()
+        self.asked.lock().clone()
     }
 }
 
 #[cfg(test)]
 impl NameResolver for FakeNameResolver {
     fn resolve_ipv4(&self, host: String) -> Resolution {
-        let answer = self.answers.lock().unwrap().get(&host).copied();
-        self.asked.lock().unwrap().push(host);
+        let answer = self.answers.lock().get(&host).copied();
+        self.asked.lock().push(host);
         Box::pin(async move { answer })
+    }
+
+    fn resolve_every_ipv4(&self, host: String) -> EveryResolution {
+        let answer = self.resolve_ipv4(host);
+        Box::pin(async move { answer.await.into_iter().collect() })
     }
 }

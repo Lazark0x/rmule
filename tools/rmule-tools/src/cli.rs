@@ -9,7 +9,8 @@ use rmule_primitives::{Ed2kFileClass, UserHash};
 
 use crate::bootstrap_fetch::BootstrapFetchArgs;
 use crate::download::{
-    DownloadPauseArgs, DownloadResumeArgs, DownloadStartArgs, DownloadStatusArgs,
+    DownloadPauseArgs, DownloadReopenArgs, DownloadResumeArgs, DownloadStartArgs,
+    DownloadStatusArgs,
 };
 use crate::ed2k::{
     LiveCaptureArgs, SearchWireArgs, SentinelStimulusArgs, ServerProbeArgs, SliceCaptureArgs,
@@ -277,14 +278,20 @@ pub(crate) enum PeerTransferCommand {
 
 #[derive(Debug, Subcommand)]
 pub(crate) enum DownloadCommand {
-    /// Start a diagnostic durable download.
-    Start(DownloadStartArgs),
+    /// Start a diagnostic durable download. Boxed: its arguments dwarf the
+    /// other variants' (past `clippy::large_enum_variant` where paths are
+    /// wide, as on Windows).
+    Start(Box<DownloadStartArgs>),
     /// Resume a diagnostic durable download.
     Resume(DownloadResumeArgs),
     /// Mark a diagnostic durable download paused.
     Pause(DownloadPauseArgs),
     /// List resumable diagnostic durable downloads.
     Status(DownloadStatusArgs),
+    /// Open a past run's Durable Store as a restarted node does and serve
+    /// what it holds, resuming nothing: each queued or paused download is
+    /// offered once its Offer Check has read its parts again (ADR-0113).
+    Reopen(DownloadReopenArgs),
 }
 
 #[derive(Debug, Subcommand)]
@@ -306,10 +313,25 @@ pub(crate) enum ServerCommand {
     /// server and capture the raw counterparty replies (`0x97`, `0xA3` desc,
     /// `0x99` search) as fixture files (operator-run captures).
     UdpCapture(ServerUdpCaptureArgs),
+    /// Learn a live server's UDP key from its plain `0x97`, seal a `0x96` under
+    /// it to the obfuscation port it named, and write both answers.
+    CryptPong(ServerCryptPongArgs),
     /// Send bursts of back-to-back searches, tokenisation probes, Related-Files
     /// Searches and a `0x98` burst to a live server, and report what it did
     /// with each.
     SearchWire(SearchWireArgs),
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct ServerCryptPongArgs {
+    /// Server endpoint as `host:port` (the eD2k TCP port).
+    pub(crate) endpoint: String,
+    /// Directory to write the two raw replies into.
+    #[arg(long)]
+    pub(crate) out: std::path::PathBuf,
+    /// Per-step UDP reply timeout, seconds.
+    #[arg(long, default_value_t = 15)]
+    pub(crate) timeout: u64,
 }
 
 #[derive(Debug, Args)]

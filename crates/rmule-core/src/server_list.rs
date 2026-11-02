@@ -39,10 +39,11 @@ use rmule_primitives::{Ed2kText, Ipv4Endpoint, ServerEndpoint};
 
 use crate::CoreError;
 
-pub(crate) use acquisition::{ErasedFetcher, acquire_server_met, install_server_met_plan};
+pub(crate) use acquisition::acquire_server_met_walk;
 pub use acquisition::{
-    ServerListFetcher, ServerListUpdate, ServerListUpdateError, ServerListUpdateFailure,
+    AutoUpdateFetch, ServerListUpdate, ServerListUpdateError, ServerListUpdateFailure,
 };
+pub(crate) use acquisition::{acquire_server_met, install_seed_servers, install_server_met_plan};
 pub use aux_ports::ServerAuxPorts;
 pub(crate) use facts::{ServerFacts, mutate_and_publish};
 #[cfg(test)]
@@ -132,6 +133,17 @@ impl ManagedServer {
         }
     }
 
+    /// A row for a seed the binary carries (ADR-0120): `High`, which a
+    /// downloaded list never changes, and otherwise an ordinary row the
+    /// operator can remove.
+    #[must_use]
+    pub fn seed(endpoint: ServerEndpoint) -> Self {
+        Self {
+            priority: ServerPriority::High,
+            ..Self::listed(endpoint)
+        }
+    }
+
     /// Project a decoded server.met row onto a list row, its figures dated by
     /// the row's own last-ping time as of `now`. `None` when the row
     /// names no dialable address at all — a zero port, or the zero header IP
@@ -184,6 +196,17 @@ impl ManagedServer {
             aux_ports,
             listed_udp_flags: udp_flags,
         })
+    }
+
+    /// Whether `informant`'s word cannot make this row a server: it is listed
+    /// by an address in a Reserved Range that informant cannot vouch for
+    /// (ADR-0085). A row listed by name is judged when it is dialed, not here.
+    #[must_use]
+    pub fn is_reserved_for(&self, informant: rmule_primitives::Informant) -> bool {
+        self.endpoint
+            .host()
+            .parse()
+            .is_ok_and(|ip| !informant.admits(ip))
     }
 
     /// The server's UDP flags: its last status answer's word, else the one a
@@ -267,10 +290,10 @@ impl ManagedServer {
         if !fresh.description.as_bytes().is_empty() {
             self.description = fresh.description;
         }
-        // The later answer's figures win: an import dated after the
-        // last answer rmule heard replaces them, an older one does not.
-        let answered = |figures: &Option<ServerFigures>| figures.as_ref().map(|f| f.answered_at);
-        if answered(&fresh.figures) > answered(&self.figures) {
+        // The later-dated figures win, by the later of each side's two
+        // dates: an import dated after what rmule last heard replaces them,
+        // an older one does not.
+        if dated(fresh.figures.as_ref()) > dated(self.figures.as_ref()) {
             self.figures = fresh.figures;
         }
         // The obfuscation TCP port a downloaded row states is the server's
@@ -315,13 +338,18 @@ impl ManagedServer {
             self.priority = listed.priority;
         }
         self.is_static |= listed.is_static;
-        let answered = |figures: &Option<ServerFigures>| figures.as_ref().map(|f| f.answered_at);
-        if answered(&listed.figures) > answered(&self.figures) {
+        if dated(listed.figures.as_ref()) > dated(self.figures.as_ref()) {
             self.figures = listed.figures;
         }
         self.grants = self.grants.or(listed.grants);
         self.udp_crypt = self.udp_crypt.or(listed.udp_crypt);
     }
+}
+
+/// When `figures` were last dated, by the later of their two dates; `None`
+/// for a row with none — older than any dated figures.
+fn dated(figures: Option<&ServerFigures>) -> Option<u64> {
+    figures.and_then(ServerFigures::dated)
 }
 
 /// What [`ServerListStore::merge_server`] did with the row it was handed.
@@ -351,6 +379,14 @@ pub trait ServerListStore: Send + Sync {
     /// Add `server`, or fold it into the row already holding its endpoint
     /// (see `ManagedServer::fold` for exactly what a fold keeps).
     fn merge_server(&self, server: ManagedServer) -> Result<ServerMerge, CoreError>;
+
+    /// [`merge_server`](Self::merge_server) for every row of a list, in one
+    /// transaction: one commit and one read of the table, whatever the list's
+    /// length.
+    ///
+    /// # Errors
+    /// [`CoreError::Repository`], and no row of the list lands.
+    fn merge_servers(&self, servers: Vec<ManagedServer>) -> Result<(), CoreError>;
 
     /// Drop the row for `endpoint`.
     fn remove_server(&self, endpoint: &ServerEndpoint) -> Result<bool, CoreError>;
@@ -396,8 +432,7 @@ pub trait ServerListStore: Send + Sync {
         edit: &mut dyn FnMut(&mut Option<ServerFigures>),
     ) -> Result<bool, CoreError>;
 
-    /// Record what `endpoint` granted at its login (ADR-0080, "What a server
-    /// grants is durable"), replacing the last report.
+    /// Record what `endpoint` granted at its login (ADR-0080), replacing the last report.
     fn set_server_grants(
         &self,
         endpoint: &ServerEndpoint,

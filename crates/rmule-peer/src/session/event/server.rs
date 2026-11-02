@@ -7,6 +7,7 @@ use rmule_primitives::{AichRootHash, FileHash};
 use crate::file_request::PartStatusTail;
 use crate::multipacket::{BundleCut, BundledAsk};
 use crate::parts::PartRanges;
+use crate::source_exchange::ServedSourcesVersion;
 
 /// What the peer asked of us. Core answers with
 /// [`ServerCommand`](crate::ServerCommand)s, or with nothing.
@@ -60,6 +61,11 @@ pub enum ServerEvent {
         /// The file the peer wants to download.
         file_hash: FileHash,
     },
+    /// `OP_STARTUPLOADREQ` of the wrong size: it asks for nothing, and aMule
+    /// lets it pass, but scores it as an ask first (stock 2.3.3
+    /// `ClientTCPSocket.cpp:601-618`), so a peer that keeps sending it reaches
+    /// the same ban a fast asker does.
+    MalformedSlotAsk,
     /// The remote peer requested part ranges on its
     /// granted slot (`OP_REQUESTPARTS`). Core reads the bytes
     /// (`read_range`) and pushes them with `SendBlock`.
@@ -89,12 +95,16 @@ pub enum ServerEvent {
     /// The remote peer asked us for more sources of `file_hash`
     /// (`OP_REQUESTSOURCES` / `OP_REQUESTSOURCES2`, ADR-0055). The session has
     /// already picked the wire form the answer goes out in from the asker's
-    /// advertised source-exchange capability and keeps it; core applies its
-    /// pools, filters and per-peer throttle and answers with `AnswerSources`,
+    /// advertised source-exchange capability and keeps nothing: `form` rides
+    /// the ask, so a file nobody answers leaves no state on the link, as in
+    /// aMule (`ClientTCPSocket.cpp:1433-1494`). Core applies its pools, filters
+    /// and per-peer throttle and answers with `AnswerSources`, echoing `form`,
     /// or with nothing when throttled or the pool is empty.
     SourcesRequested {
         /// The file sources were asked for.
         file_hash: FileHash,
+        /// The wire form an answer goes out in, echoed on `AnswerSources`.
+        form: ServedSourcesVersion,
     },
     /// Our answer to a source-exchange ask went out carrying `count` sources.
     /// The session reports it because only the session knows how many the
@@ -106,6 +116,17 @@ pub enum ServerEvent {
         file_hash: FileHash,
         /// How many sources the framed answer carries.
         count: usize,
+    },
+    /// The last byte of the block `start..end` is in the kernel, so core may
+    /// count it and read on (ADR-0031). Reported by the session because only
+    /// its driver sees the socket take it.
+    BlockLeft {
+        /// The file the block is of.
+        file_hash: FileHash,
+        /// Where the block starts.
+        start: u64,
+        /// Where the block ends.
+        end: u64,
     },
     /// The remote peer asked for `file_hash` part `part`'s
     /// AICH recovery data (`OP_AICHREQUEST`), quoting the `root` it trusts. Core

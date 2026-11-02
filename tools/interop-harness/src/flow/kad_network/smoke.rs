@@ -17,6 +17,7 @@ use crate::flow::gate::wait_for_kad_log;
 use crate::flow::identity::parse_ipv4_octets;
 use crate::flow::logs::{collect_kad_node_logs, dump_kad_diagnostics};
 use crate::flow::mesh::{KadCaptureOptions, KadNode, KadNodeSpec, start_kad_node};
+use crate::verdict::Verdict;
 
 /// Poll cadence for the amulecmd Kad-status probe: bounded retries, not a blind
 /// sleep. The cold-boot → connected window is ~3–6 min, so a
@@ -267,22 +268,25 @@ pub(crate) fn wait_for_kad_connected(
 fn write_kad_smoke_verdict(layout: &RunLayout, verdict: &KadSmokeVerdict) -> Result<()> {
     let text = format!(
         "scenario = \"kad-smoke\"\n\
+         verdict = \"{}\"\n\
          stock_amule = true\n\
          subnet = \"{}\"\n\
          kad_connected = {}\n\
          connected_node = \"{}\"\n\
          status_line = \"{}\"\n\
          elapsed_secs = {}\n",
+        if verdict.connected {
+            Verdict::Pass
+        } else {
+            Verdict::Fail
+        },
         verdict.subnet,
         verdict.connected,
         verdict.node_role,
         verdict.status_line,
         verdict.elapsed_secs,
     );
-    let path = layout.kad_dir().join("kad-smoke-verdict.txt");
-    fs::create_dir_all(layout.kad_dir())
-        .with_context(|| format!("create {}", layout.kad_dir().display()))?;
-    fs::write(&path, &text).with_context(|| format!("write {}", path.display()))?;
+    crate::verdict::write(&layout.kad_dir().join("kad-smoke-verdict.toml"), &text)?;
     println!(
         "kad-smoke: kad_connected={} node={} ({}) after {}s on {}",
         verdict.connected,

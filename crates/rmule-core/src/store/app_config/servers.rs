@@ -8,11 +8,14 @@
 //! unique index instead, which is what makes a merge, a removal and the three
 //! operator mutators one index probe each rather than a scan.
 
+use std::collections::HashMap;
 use std::net::Ipv4Addr;
 
 use rmule_ed2k::ServerPriority;
 use rmule_primitives::{Ed2kText, ServerEndpoint, ServerTcpFlags, ServerUdpFlags};
-use rmule_store::{Indexed, Readable, Record, Schema, Sequence, StoreError, UniqueIndex};
+use rmule_store::{
+    Indexed, Readable, Record, Schema, Sequence, StoreError, UniqueIndex, WriteTransaction,
+};
 use serde::{Deserialize, Serialize};
 
 use crate::CoreError;
@@ -26,8 +29,8 @@ use super::DurableAppConfig;
 mod rung;
 
 #[cfg(test)]
-pub(super) use rung::{add_v1, schema_v1, schema_v13};
-pub(crate) use rung::{grow_from_v8, grow_from_v9, grow_from_v11, grow_from_v13};
+pub(super) use rung::{add_v13, schema_v13};
+pub(crate) use rung::{grow_from_v13, grow_from_v14};
 
 /// One managed-server row. The priority is stored as aMule's raw
 /// `ST_PREFERENCE` word — the same mapping the wire uses, which
@@ -42,7 +45,7 @@ pub(super) struct ServerRecord {
     is_static: bool,
     fail_count: u32,
     /// What the server last reported and when: kept since store
-    /// version 9.
+    /// version 9, with its two dates since version 15.
     figures: Option<FiguresRecord>,
     /// What the server granted at its last login and when: kept since store
     /// version 10.
@@ -60,7 +63,7 @@ pub(super) struct ServerRecord {
 
 impl Record for ServerRecord {
     const NAME: &'static str = "app_config.server";
-    const VERSION: u32 = 5;
+    const VERSION: u32 = 6;
 }
 
 /// A server's aux-ports relation as the row keeps it.
@@ -126,10 +129,12 @@ struct GrantsRecord {
     reported_at: u64,
 }
 
-/// A server's figures as the row keeps them: the ping in whole milliseconds.
+/// A server's figures as the row keeps them: the ping in whole milliseconds,
+/// the status-answer date apart from the counts' date (store version 15).
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct FiguresRecord {
-    answered_at: u64,
+    answered_at: Option<u64>,
+    counted_at: Option<u64>,
     ping_ms: Option<u64>,
     users: Option<u32>,
     files: Option<u32>,
@@ -144,6 +149,7 @@ impl From<ServerFigures> for FiguresRecord {
     fn from(figures: ServerFigures) -> Self {
         Self {
             answered_at: figures.answered_at,
+            counted_at: figures.counted_at,
             ping_ms: figures
                 .ping
                 .map(|ping| u64::try_from(ping.as_millis()).unwrap_or(u64::MAX)),
@@ -161,6 +167,7 @@ impl From<FiguresRecord> for ServerFigures {
     fn from(record: FiguresRecord) -> Self {
         Self {
             answered_at: record.answered_at,
+            counted_at: record.counted_at,
             ping: record.ping_ms.map(std::time::Duration::from_millis),
             users: record.users,
             files: record.files,
@@ -253,10 +260,37 @@ fn row_by_standard(
     txn: &impl Readable,
     standard: &ServerEndpoint,
 ) -> Result<Option<(u64, ServerRecord)>, StoreError> {
-    Ok(SERVERS.iter(txn)?.into_iter().find(|(_, record)| {
-        let listed = ManagedServer::from(record.clone());
-        &listed.standard_endpoint() == standard
-    }))
+    Ok(crate::store::readable(&SERVERS, txn)?
+        .into_iter()
+        .find(|(_, record)| {
+            let listed = ManagedServer::from(record.clone());
+            &listed.standard_endpoint() == standard
+        }))
+}
+
+/// Fold `server` into the row `found`, or add it as a new one: its key, and
+/// which it was. The fold (ADR-0080) is the model's own rather than this
+/// seam's, so what a downloaded row may touch is decided in one place: the
+/// name always, the description when non-empty, and never the priority, the
+/// static pin or the failure tally.
+fn fold_or_add(
+    txn: &WriteTransaction,
+    found: Option<(u64, ServerRecord)>,
+    server: ManagedServer,
+) -> Result<(u64, ServerMerge), StoreError> {
+    match found {
+        Some((key, installed)) => {
+            let mut folded = ManagedServer::from(installed);
+            folded.fold(server);
+            SERVERS.put(txn, &key, &ServerRecord::from(folded))?;
+            Ok((key, ServerMerge::Updated))
+        }
+        None => {
+            let key = SERVER_IDS.next(txn)?;
+            SERVERS.insert(txn, &key, &ServerRecord::from(server))?;
+            Ok((key, ServerMerge::Added))
+        }
+    }
 }
 
 impl DurableAppConfig {
@@ -283,7 +317,7 @@ impl ServerListStore for DurableAppConfig {
     fn servers(&self) -> Result<Vec<ManagedServer>, CoreError> {
         let rows = self
             .store
-            .read::<_, CoreError>(|txn| Ok(SERVERS.iter(txn)?))?;
+            .read::<_, CoreError>(|txn| Ok(crate::store::readable(&SERVERS, txn)?))?;
         Ok(rows
             .into_iter()
             .map(|(_, record)| ManagedServer::from(record))
@@ -301,23 +335,31 @@ impl ServerListStore for DurableAppConfig {
                 Some(found) => Some(found),
                 None => row_by_standard(txn, &server.standard_endpoint())?,
             };
-            match found {
-                // The fold (ADR-0080) is the model's own rather than this seam's,
-                // so what a downloaded row may touch is decided in one place: the
-                // name always, the description when non-empty, and never the
-                // priority, the static pin or the failure tally.
-                Some((key, installed)) => {
-                    let mut folded = ManagedServer::from(installed);
-                    folded.fold(server);
-                    SERVERS.put(txn, &key, &ServerRecord::from(folded))?;
-                    Ok(ServerMerge::Updated)
-                }
-                None => {
-                    let key = SERVER_IDS.next(txn)?;
-                    SERVERS.insert(txn, &key, &ServerRecord::from(server))?;
-                    Ok(ServerMerge::Added)
-                }
+            Ok(fold_or_add(txn, found, server)?.1)
+        })
+    }
+
+    fn merge_servers(&self, servers: Vec<ManagedServer>) -> Result<(), CoreError> {
+        self.store.write(|txn| {
+            // The scan behind `row_by_standard`, once for the whole list.
+            let mut by_standard = HashMap::new();
+            for (key, record) in crate::store::readable(&SERVERS, txn)? {
+                let standard = ManagedServer::from(record).standard_endpoint();
+                by_standard.entry(standard).or_insert(key);
             }
+            for server in servers {
+                let standard = server.standard_endpoint();
+                let found = match row_at(txn, &server.endpoint)? {
+                    Some(found) => Some(found),
+                    None => match by_standard.get(&standard) {
+                        Some(&key) => SERVERS.get(txn, &key)?.map(|record| (key, record)),
+                        None => None,
+                    },
+                };
+                let (key, _) = fold_or_add(txn, found, server)?;
+                by_standard.entry(standard).or_insert(key);
+            }
+            Ok(())
         })
     }
 
@@ -445,5 +487,28 @@ impl ServerListStore for DurableAppConfig {
             edit(&mut figures);
             record.figures = figures.map(FiguresRecord::from);
         })
+    }
+}
+
+#[cfg(test)]
+mod pinned {
+    use super::*;
+
+    #[test]
+    fn a_server_record_keeps_its_bytes() {
+        let row = ServerRecord {
+            endpoint: ServerEndpoint::new("127.0.0.1", 4661).unwrap(),
+            name: Ed2kText::from_bytes(b"s".to_vec()),
+            description: Ed2kText::from_bytes(Vec::new()),
+            priority: 1,
+            is_static: true,
+            fail_count: 300,
+            figures: None,
+            grants: None,
+            udp_crypt: None,
+            aux_ports: None,
+            listed_udp_flags: Some(7),
+        };
+        crate::store::assert_pinned(&row, "093132372e302e302e31b5240173000101ac02000000000107");
     }
 }

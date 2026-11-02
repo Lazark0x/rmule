@@ -3,7 +3,7 @@
 //! discovered sources — server-UDP global (ADR-0051) and Kad (ADR-0043) —
 //! that backfill the candidate pool while the download runs.
 
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use rmule_peer::natt::CALLBACK_SILENCE_FALLBACK;
 use rmule_primitives::PeerEndpoint;
@@ -35,19 +35,19 @@ pub(crate) struct CallbackLanding {
 
 impl DownloadState {
     /// Resolve the key an adopted connection was handed over under to the
-    /// pending callback it satisfies (ADR-0039 / ADR-0051). A per-server
-    /// *global* callback keyed by the reported server is preferred over the
-    /// *connected-server* form (keyed `None`), because the wire cannot say which
-    /// relayed the peer — it reports the server it is logged into either way.
+    /// pending callback it satisfies (ADR-0039 / ADR-0051). A callback
+    /// keyed by the reported server is preferred over one minted with no server
+    /// known (keyed `None`), because the wire cannot say which it answers: the
+    /// peer reports the server it is logged into either way.
     /// The runner reads this in its accept-router arm, then drives
     /// [`Self::on_callback_connected`] with the key.
     pub(crate) fn match_inbound_callback(&self, reported: CallbackKey) -> Option<CallbackKey> {
         if self.callback_slots.contains_key(&reported) {
             return Some(reported);
         }
-        let connected = CallbackKey {
+        let connected = CallbackKey::Server {
             server: None,
-            low_id: reported.low_id,
+            low_id: reported.low_id()?,
         };
         self.callback_slots
             .contains_key(&connected)
@@ -94,8 +94,7 @@ impl DownloadState {
         out
     }
     /// Adopt a called-back Low-ID peer that has dialed in and identified (ADR-0039 /
-    /// ADR-0051), matched by [`Self::match_inbound_callback`] to `key` — connected-server
-    /// (`server: None`) or per-server global (`Some`), one path now. Its
+    /// ADR-0051), matched by [`Self::match_inbound_callback`] to `key`. Its
     /// record keeps its candidate and key beside the worker. **Bind without
     /// assign**: register the peer on the slot its callback held, still
     /// short of its handshake, and do *not* assign a part. The peer dialed in and emits
@@ -153,9 +152,9 @@ impl DownloadState {
     /// id, so it cannot be attributed here — the deadline is the only release path.
     ///
     /// One exception keeps the slot: a buddy callback whose `0x52` went to a
-    /// known buddy endpoint under the primary (aMule, captured) spelling of
-    /// its `TAG_BUDDYHASH`, and whose other spelling names a different ID,
-    /// gets one more `0x52` under that spelling and the same wait again
+    /// known buddy endpoint under the held reading of its `TAG_BUDDYHASH`, and
+    /// whose other reading names a different ID, gets one more `0x52` under
+    /// that reading and the same wait again
     /// ([`Self::fallback_spelling_callback`]).
     fn on_callback_timeout(&mut self, now: Instant, key: CallbackKey) -> Vec<Decision> {
         if let Some(retry) = self.fallback_spelling_callback(now, key) {
@@ -172,13 +171,24 @@ impl DownloadState {
         }
         self.release_callback_slot(now, key)
     }
-    /// The buddy callback's second spelling (ADR-0061): aMule
-    /// writes `TAG_BUDDYHASH` big-endian (captured), eMule 0.70b and eMuleAI
-    /// word-ordered (source-derived), and the row cannot say which family
-    /// wrote it. The primary went first; only its silence through the whole
-    /// wait earns this one extra `0x52`, never both at once — an rmule buddy
-    /// would relay both, and an aMule one would hand its firewalled node a
-    /// callback it drops.
+    /// The **Callback Pace** holds `key`'s `0x52` for `leaves_in` (ADR-0061):
+    /// nothing has been asked yet, so the road's callback wait, and the 12 s
+    /// silence beside it, start when it leaves. A road that ended meanwhile
+    /// has nothing to move.
+    pub(crate) fn on_callback_held(&mut self, now: Instant, key: CallbackKey, leaves_in: Duration) {
+        let callback_timeout = self.callback_timeout;
+        if let Some(road) = self.sources.road_mut(key) {
+            road.wait_from(now + leaves_in, callback_timeout);
+        }
+    }
+
+    /// The buddy callback's second spelling (ADR-0061): aMule through 3.1.0
+    /// writes `TAG_BUDDYHASH` big-endian (captured), every current family
+    /// word-ordered, and the row cannot say which family wrote it. The held
+    /// reading went first, the primary until another answered; only its
+    /// silence through the whole wait earns this one extra `0x52`, never both
+    /// at once — an rmule buddy would relay both, and an aMule one would hand
+    /// its firewalled node a callback it drops.
     ///
     /// Only for a buddy with a known endpoint: one datagram to the same buddy.
     /// A buddy named by ID alone was reached by a Callback Walk toward the
@@ -247,14 +257,13 @@ impl DownloadState {
             return Vec::new();
         }
         // The selector reads `taken` only to refuse falling back from
-        // something that was never a callback. On the server road both forms
-        // are a server relaying an invitation — the connected server (`0x1C`,
-        // ADR-0039) or the source's own (`OP_GLOBCALLBACKREQUEST`, ADR-0051);
+        // something that was never a callback. On the server road it is the
+        // connected server relaying an invitation (`0x1C`, ADR-0039);
         // on the buddy road it is the `0x52` the buddy relays; on
         // the direct-UDP road it is the `0x95` the candidate itself answers.
         let taken = match pending.road {
             LowIdRoad::DirectUdp => candidate
-                .kad_udp
+                .kad_udp()
                 .map(|target_kad_udp| PeerReachRoute::DirectUdp { target_kad_udp }),
             LowIdRoad::BuddyCallback => candidate.buddy.map(|buddy| match buddy.buddy_udp {
                 Some(buddy_udp) => PeerReachRoute::Buddy {
@@ -267,7 +276,12 @@ impl DownloadState {
             }),
             LowIdRoad::Callback | LowIdRoad::Punch => None,
         }
-        .unwrap_or(PeerReachRoute::Server { low_id: key.low_id });
+        .or_else(|| key.low_id().map(|low_id| PeerReachRoute::Server { low_id }));
+        // Every road but the server's names its route above, and a key with no
+        // Low ID has no server road.
+        let Some(taken) = taken else {
+            return Vec::new();
+        };
         pending.traversal_begun = true;
         vec![self.fall_to_nat_traversal(
             now,
@@ -363,7 +377,8 @@ impl DownloadState {
     }
     /// `key`'s **buddy-callback road** is over before any dial-back could
     /// answer it: its Callback Walk met nobody near the buddy ID,
-    /// or could not start. aMule's own `FINDSOURCE` source just waits out its
+    /// or could not start — or its invitation, the server's relay included,
+    /// never left. aMule's own `FINDSOURCE` source just waits out its
     /// reask in `DS_WAITCALLBACKKAD` (`PartFile.cpp:1826`); rmule instead
     /// hands the candidate to its next road now, as the punch road's own end
     /// does, because a slot held for an invitation that never left buys the
@@ -387,11 +402,12 @@ impl DownloadState {
         let Some(pending) = self.sources.road_mut(key) else {
             return Vec::new();
         };
-        // A direct-UDP `0x95` that never left ends its road the same way
-        // The invitation is over before anything could answer.
+        // A direct-UDP `0x95`, or a server's relay, that never left ends its
+        // road the same way: the invitation is over before anything could
+        // answer.
         if !matches!(
             pending.road,
-            LowIdRoad::BuddyCallback | LowIdRoad::DirectUdp
+            LowIdRoad::BuddyCallback | LowIdRoad::DirectUdp | LowIdRoad::Callback
         ) {
             return Vec::new();
         }

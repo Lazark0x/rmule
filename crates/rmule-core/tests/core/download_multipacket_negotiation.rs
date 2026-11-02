@@ -7,7 +7,7 @@
 use rmule_testkit::HANG_GUARD;
 
 use rmule_core::{Core, CoreCommand, CoreConfig, CoreEvent, DownloadCommand, DownloadEvent};
-use rmule_peer::PartBitmap;
+use rmule_peer::WireStatus;
 use rmule_primitives::ED2K_PART_SIZE;
 use rmule_testkit::{
     FakeEd2kServer, FakePeer, HashSetPolicy, MultiPacketPolicy, PeerScript, SeenMultiPacketRequest,
@@ -27,7 +27,7 @@ async fn the_live_download_folds_its_file_request_into_an_0xa4_bundle_for_an_ext
     let bytes = vec![0x5C_u8; (ED2K_PART_SIZE + 4096) as usize];
     let file = file_link("loopback.bin", &bytes);
     let file_hash = file.file_hash;
-    let file_size = file.size;
+    let file_size = file.size();
     let part_hashes = file
         .part_hash_set
         .clone()
@@ -57,6 +57,7 @@ async fn the_live_download_folds_its_file_request_into_an_0xa4_bundle_for_an_ext
         source_hint: Some(server.endpoint()),
         name: rmule_testkit::file_name("bundled-negotiation.bin"),
         if_taken: rmule_core::NameTaken::Refuse,
+        kad_aich_root: None,
     }))
     .await
     .unwrap();
@@ -91,7 +92,7 @@ async fn the_live_download_folds_its_file_request_into_an_0xa4_bundle_for_an_ext
             opcode: 0xA4,
             size8: Some(file_size),
             sub_opcodes: vec![0x58, 0x4F, 0x83],
-            name_status: Some(PartBitmap::downloader_empty(file_size)),
+            name_status: Some(WireStatus::downloader_empty(file_size)),
         }),
         "the live runner's connect negotiation is one 0xA4 bundle: name (carrying \
          what the download holds) + status + SX2 ask"
@@ -139,6 +140,7 @@ async fn a_multi_part_download_against_a_pre_multipacket_peer_keeps_the_standalo
         source_hint: Some(server.endpoint()),
         name: rmule_testkit::file_name("standalone-negotiation.bin"),
         if_taken: rmule_core::NameTaken::Refuse,
+        kad_aich_root: None,
     }))
     .await
     .unwrap();

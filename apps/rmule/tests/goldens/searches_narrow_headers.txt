@@ -1,21 +1,21 @@
-┌ Search ─────── / focus ┐
+┌ Search ─────── i focus ┐
 │❯ ubuntu                │
-│Method: eD2k server ▾   │
-│Kad ▾ (always on — every│
-│search also walks Kad)  │
+│Asks: nobody yet; a     │
+│search waits for a      │
+│server or Kad           │
 │Filters: none   o edit  │
 └────────────────────────┘
 [ubuntu · 3]
-┌ Results · Completed ───┐
-│  Name ▲   Size Sources │
-│▸ clip_low 700.       5 │
-│  .avi     0 MB         │
-│  distro_h  3.0    1234 │
-│  ot.iso     GB   (900) │
-│  song_mid  4.0  42 (7) │
-│  .mp3       MB         │
+┌ Results ─── Enter menu ┐
+│  Name ▲                │
+│▸ clip_low.avi          │
+│  distro_hot.iso        │
+│  song_mid.mp3          │
 │                        │
 │                        │
 │                        │
-│Off-screen: Type Videos │
-└ 1 column not shown ────┘
+│                        │
+│Off-screen: Size 700.0  │
+│MB · Sources 5 · Type   │
+│Videos                  │
+└ 3 hidden ─────── 1 / 3 ┘

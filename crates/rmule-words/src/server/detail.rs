@@ -1,16 +1,17 @@
 //! What a server grants and what it was told (ADR-0080, ADR-0099): the
-//! selected server's detail words under the Networks tab's server table, and
-//! the Networks log's line when the connected server's shares are news.
+//! selected server's health line, its details modal, and the Networks log's
+//! line when the connected server's shares are news.
 
 use std::time::Duration;
 
-use rmule_core::diagnostics::{ServerDiagnostics, SharesToServer};
+use rmule_core::diagnostics::{PingState, ServerDiagnostics, SharesToServer};
 use rmule_core::{DeadSince, ServerHealth, ServerPolicy};
 use rmule_primitives::{
     ServerEndpoint, ServerTcpFlag, ServerTcpFlags, ServerUdpFlag, ServerUdpFlags,
 };
 
 use super::super::Sentence;
+use super::super::plural::Plural;
 use super::server_label;
 
 /// A named `SRV_TCPFLG_*` grant as the operator reads it.
@@ -23,7 +24,11 @@ fn tcp_grant_word(flag: ServerTcpFlag) -> &'static str {
         ServerTcpFlag::TypeTagInteger => "integer type tags",
         ServerTcpFlag::LargeFiles => "large files",
         ServerTcpFlag::TcpObfuscation => "obfuscation",
+        ServerTcpFlag::NatCallback => "NAT callback",
         ServerTcpFlag::Ipv6 => "IPv6",
+        ServerTcpFlag::Ipv6Update => "IPv6 updates",
+        ServerTcpFlag::LowIdHolepunch => "Low-ID hole punch",
+        ServerTcpFlag::HolepunchExtension => "hole-punch extension",
     }
 }
 
@@ -78,18 +83,6 @@ fn flag_words<'a>(named: impl Iterator<Item = &'a str>, rest: u32) -> String {
     }
 }
 
-/// The selected server's collapsed detail line: what it granted at its last
-/// login and what its last status answer named, each with how long ago —
-/// `age` words a duration the way the table's Age column does.
-#[must_use]
-pub fn grants_line(row: &ServerDiagnostics, age: impl Fn(Duration) -> String) -> String {
-    format!(
-        "{} · {}",
-        grants_sentence(row, &age),
-        udp_sentence(row, &age)
-    )
-}
-
 /// What the server granted at its last login, with how long ago.
 fn grants_sentence(row: &ServerDiagnostics, age: &impl Fn(Duration) -> String) -> String {
     match (row.server.grants, row.grants_age) {
@@ -102,17 +95,32 @@ fn grants_sentence(row: &ServerDiagnostics, age: &impl Fn(Duration) -> String) -
     }
 }
 
-/// What the server's last status answer named, with how long ago.
+/// What the server's last status answer named, with how long ago; without
+/// one, why — counts a login reported are no status answer.
 fn udp_sentence(row: &ServerDiagnostics, age: &impl Fn(Duration) -> String) -> String {
-    match (
-        row.server.figures.as_ref().map(|figures| figures.udp_flags),
-        row.age,
-    ) {
-        (Some(Some(flags)), Some(ago)) => {
+    let flags = row
+        .server
+        .figures
+        .as_ref()
+        .and_then(|figures| figures.udp_flags);
+    match (row.status_age, flags) {
+        (Some(ago), Some(flags)) => {
             format!("UDP ({} ago): {}", age(ago), udp_flag_words(flags))
         }
-        (Some(None), _) => "UDP: its status answers named no flags".to_string(),
-        _ => "UDP: no status answer yet".to_string(),
+        (Some(_), None) => "UDP: its status answers named no flags".to_string(),
+        (None, _) => match row.ping {
+            PingState::NotAskedYet => {
+                "UDP: no status answer yet — the status ping has not asked it this run".to_string()
+            }
+            PingState::Awaiting => {
+                "UDP: no status answer yet — a status ping is out, awaiting its answer".to_string()
+            }
+            PingState::Unanswered { since } => format!(
+                "UDP: no status answer yet — its status pings went unanswered for {}",
+                age(since)
+            ),
+            PingState::Measured(_) => "UDP: no status answer yet".to_string(),
+        },
     }
 }
 
@@ -130,9 +138,18 @@ pub struct DetailContext {
     pub policy: ServerPolicy,
 }
 
-/// The selected server's detail pane (ADR-0080, "The detail pane"): its
-/// grants, its UDP flags, its health and its shares, one sentence each, in
-/// that order.
+/// The selected server's health, the one line under the server table.
+#[must_use]
+pub fn health_line(
+    row: &ServerDiagnostics,
+    context: DetailContext,
+    age: impl Fn(Duration) -> String,
+) -> String {
+    health_sentence(row, context.policy.dead_after, &age)
+}
+
+/// The selected server's details modal (ADR-0080): its grants, its UDP flags,
+/// its health and its shares, one sentence each, in that order.
 #[must_use]
 pub fn detail_pane(
     row: &ServerDiagnostics,
@@ -149,16 +166,12 @@ pub fn detail_pane(
 
 /// `n try` or `n tries`.
 fn tries(count: u32) -> String {
-    if count == 1 {
-        "1 try".to_string()
-    } else {
-        format!("{count} tries")
-    }
+    Plural::new("{n} try", "{n} tries").of(count)
 }
 
 /// The server's **Server Health** (ADR-0052) in words, and for a row listed
 /// by name what that name resolved to. A dead one is dated by the moment it
-/// died (ADR-0052, "Dead since when").
+/// died (ADR-0080, "Dead since when").
 fn health_sentence(
     row: &ServerDiagnostics,
     limit: u32,
@@ -207,6 +220,9 @@ fn health_words(row: &ServerDiagnostics, limit: u32, age: &impl Fn(Duration) -> 
 /// Whether the server has the shares: for the connected one, what its
 /// session was told; for any other, what its next login would do.
 fn shares_sentence(row: &ServerDiagnostics, context: DetailContext) -> String {
+    if let Some(SharesToServer::Announcing { told, of }) = context.told {
+        return format!("Shares: this server has been told {told} of {of} files");
+    }
     if let Some(told) = context.told {
         return shares_line(told)
             .unwrap_or(super::SHARES_ANNOUNCED)
@@ -239,7 +255,7 @@ fn shares_sentence(row: &ServerDiagnostics, context: DetailContext) -> String {
 pub fn shares_line(shares: SharesToServer) -> Option<&'static str> {
     use SharesToServer as S;
     match shares {
-        S::Announced => None,
+        S::Announced | S::Announcing { .. } => None,
         S::Withheld => Some(
             "Shares withheld from this server: it answers related searches, which would tell \
              anyone which files you share together. Kad and other servers still have them",
@@ -306,16 +322,16 @@ mod tests {
     #[test]
     fn unnamed_bits_are_said_by_position() {
         assert_eq!(
-            tcp_grant_words(ServerTcpFlags::from_bits(0x0000_A011)),
-            "compression, unicode, and bits 13 and 15, which no client names"
+            tcp_grant_words(ServerTcpFlags::from_bits(0x0000_2811)),
+            "compression, unicode, and bits 11 and 13, which no client names"
         );
         assert_eq!(
             udp_flag_words(ServerUdpFlags::from_bits(0x0000_0004)),
             "bit 2, which no client names"
         );
         assert_eq!(
-            tcp_grant_words(ServerTcpFlags::from_bits(0x8000_1804)),
-            "bits 2, 11, 12 and 31, which no client names"
+            tcp_grant_words(ServerTcpFlags::from_bits(0x8000_0804)),
+            "bits 2, 11 and 31, which no client names"
         );
     }
 
@@ -387,5 +403,42 @@ mod tests {
         );
         assert!(named(None).ends_with("; its name has not been looked up yet"));
         assert!(!pane(&row(None, ServerHealth::Failing, 1), false)[2].contains("name"));
+    }
+
+    /// Counts a login reported are no status answer: such a row reads "no
+    /// status answer yet" with the ping's reason, never "named no flags",
+    /// and a row whose pings went unanswered says for how long.
+    #[test]
+    fn a_login_only_row_reads_no_status_answer_with_the_pings_reason() {
+        let mut row = row(Some(0x0000_0019), ServerHealth::Answered, 0);
+        row.server.figures = Some(rmule_core::ServerFigures {
+            users: Some(120_000),
+            files: Some(5_000_000),
+            ..rmule_core::ServerFigures::reported(1_700_000_000)
+        });
+        row.age = Some(Duration::from_secs(30));
+        assert_eq!(
+            pane(&row, false)[1],
+            "UDP: no status answer yet — the status ping has not asked it this run"
+        );
+        row.ping = PingState::Awaiting;
+        assert_eq!(
+            pane(&row, false)[1],
+            "UDP: no status answer yet — a status ping is out, awaiting its answer"
+        );
+        row.ping = PingState::Unanswered {
+            since: Duration::from_secs(90),
+        };
+        assert_eq!(
+            pane(&row, false)[1],
+            "UDP: no status answer yet — its status pings went unanswered for 90s"
+        );
+
+        row.server.figures = Some(rmule_core::ServerFigures::answered(1_700_000_000));
+        row.status_age = Some(Duration::from_secs(30));
+        assert_eq!(
+            pane(&row, false)[1],
+            "UDP: its status answers named no flags"
+        );
     }
 }

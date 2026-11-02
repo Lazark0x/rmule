@@ -5,15 +5,10 @@
 use rmule_core::{CoreCommand, SearchCommand, SearchFailure};
 use rmule_primitives::{RelatedFilesQuery, SearchQuery};
 
-use super::method::SearchMethod;
 use super::{SearchesView, ViewOutcome};
 use crate::action::Action;
 use crate::state::{SearchPane, SearchStatus, UiState, refusal_text};
-
-/// An empty answer. A server that grants the search and does not implement it
-/// reads the same, and rmule keeps no per-server verdict (ADR-0037).
-pub(super) const NO_RELATED_FILES: &str =
-    "no related files — the server found none, or the file has too few sources for it to answer";
+use crate::words::search as search_words;
 
 impl SearchesView {
     /// Open a Held Search for `query` and send it, focus on the results. The
@@ -32,13 +27,15 @@ impl SearchesView {
             self.readd = None;
             self.filters_open = false;
             self.input_focused = false;
+            let kept = self.keep_draft();
             self.held.open_unsent(
                 &query.file_name().to_display_string(),
                 Some(query.file_hash()),
-                SearchMethod::default(),
                 reason,
             );
-            self.show_current_query();
+            if kept || self.query.is_empty() {
+                self.show_current_query();
+            }
             return ViewOutcome::Emit(Action::SwitchView(crate::view::ViewId::Searches));
         }
         if let Some(reason) = crate::views::related::unavailable(state) {
@@ -46,17 +43,17 @@ impl SearchesView {
                 reason,
             )));
         }
-        if state.session.is_none() {
-            return ViewOutcome::Emit(Action::Flash(crate::words::app::CORE_NOT_ATTACHED));
-        }
         let query = SearchQuery::from(query);
         self.menu = None;
         self.readd = None;
         self.filters_open = false;
         self.input_focused = false;
         let search_id = rmule_core::SearchId::mint();
-        self.held.open(&query, SearchMethod::default(), search_id);
-        self.show_current_query();
+        let kept = self.keep_draft();
+        self.held.open(&query, search_id);
+        if kept || self.query.is_empty() {
+            self.show_current_query();
+        }
         ViewOutcome::Emit(Action::Command(CoreCommand::Search(
             SearchCommand::StartSearch { search_id, query },
         )))
@@ -68,12 +65,9 @@ impl SearchesView {
         let entry = self.held.current()?;
         let hash = entry.kind.related_file()?;
         Some(if entry.query.trim().is_empty() {
-            format!(
-                "related to: the file with hash {} — its name is not known yet",
-                crate::words::units::short_hex(hash.as_bytes())
-            )
+            search_words::related_to_hash(&crate::words::units::short_hex(hash.as_bytes()))
         } else {
-            format!("related to: {}", entry.query)
+            search_words::related_to(&entry.query)
         })
     }
 
@@ -84,16 +78,15 @@ impl SearchesView {
         let entry = self.held.current()?;
         entry.kind.related_file()?;
         if let Some(reason) = entry.kind.refused() {
-            return Some(format!("refused: {}", refusal_text(reason)));
+            return Some(search_words::refused_for(refusal_text(reason)));
         }
         match pane?.status {
-            SearchStatus::Completed { .. } => Some(NO_RELATED_FILES.to_string()),
+            SearchStatus::Completed { .. } => Some(search_words::NO_RELATED_FILES.to_string()),
             SearchStatus::Failed {
                 reason: SearchFailure::RelatedSearchNotOffered,
-            } => Some(format!(
-                "refused: {}",
-                refusal_text(rmule_core::RelatedSearchRefusal::NotOffered)
-            )),
+            } => Some(search_words::refused_for(refusal_text(
+                rmule_core::RelatedSearchRefusal::NotOffered,
+            ))),
             _ => None,
         }
     }

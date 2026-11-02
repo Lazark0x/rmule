@@ -20,7 +20,8 @@ use std::time::Duration;
 use anyhow::{Context, Result, anyhow, bail};
 
 use crate::artifacts::RunLayout;
-use crate::docker::{Docker, DockerCommand, RunContainer, is_retriable_build_export_failure};
+use crate::bench_doctor::{BenchDoctor, DoctorReport};
+use crate::docker::{Docker, DockerCommand, RunContainer};
 use crate::flow::gate::{
     start_rmule_serve_with_login_retry, wait_for_amule_ready, wait_for_container_log,
 };
@@ -397,6 +398,13 @@ impl BenchNames {
 /// The line the eserver image's entrypoint prints just before it starts the
 /// server.
 pub(crate) const ESERVER_ENTRYPOINT_LOG: &str = "starting Lugdunum eserver on tcp/";
+/// The line ed2k-server logs once it accepts.
+const ED2KSRV_READY_LOG: &str = "TCP listener ready";
+/// The fake-public subnet a flow with no address plan stands ed2k-server on.
+const ED2KSRV_BENCH_SUBNET: &str = "203.0.113.0/24";
+/// The fake-public subnet a second ed2k-server bench stands on beside a first,
+/// named by `RMULE_BENCH_ED2KSRV_SECOND_SUBNET`.
+const ED2KSRV_SECOND_SUBNET: &str = "198.51.100.0/24";
 
 /// The eserver as the bench stands it up: its image, the host port its
 /// container port is published on (the readiness probe target), its extra
@@ -424,6 +432,8 @@ pub(crate) struct Bench {
     /// Networks beyond the bench's own, in creation order — a NAT topology
     /// needs a fake-public WAN and a masquerade-free LAN at once.
     extra_networks: Vec<String>,
+    /// The subnet the bench's own network was made with.
+    subnet: Option<String>,
 }
 
 impl Bench {
@@ -442,7 +452,55 @@ impl Bench {
             rmule_started: false,
             extra: Vec::new(),
             extra_networks: Vec::new(),
+            subnet: None,
         })
+    }
+
+    /// The subnet a flow with no address plan of its own stands `image` on.
+    /// ed2k-server treats a private peer as local, so it only behaves as a
+    /// public server does on a fake-public network; Lugdunum takes the
+    /// runtime's bridge. The subnet is fixed, so a second ed2k-server bench at
+    /// once takes the second one.
+    pub(crate) fn subnet_for(&self, image: &str) -> Option<&'static str> {
+        let subnet = if std::env::var_os("RMULE_BENCH_ED2KSRV_SECOND_SUBNET").is_some() {
+            ED2KSRV_SECOND_SUBNET
+        } else {
+            ED2KSRV_BENCH_SUBNET
+        };
+        crate::flow::ed2ksrv::ED2KSRV
+            .built(&self.docker, image)
+            .then_some(subnet)
+    }
+
+    /// The server role container when `image` is ed2k-server: on the bench's
+    /// fake-public subnet at `.200`, its bench config rendered for that address
+    /// and mounted, under the role's one name so a flow addresses it as it
+    /// addresses Lugdunum. `None` for any other image. It reads no `--server-env`.
+    fn ed2ksrv_role_container(
+        &self,
+        layout: &RunLayout,
+        image: &str,
+    ) -> Result<Option<RunContainer>> {
+        let ed2ksrv = &crate::flow::ed2ksrv::ED2KSRV;
+        if !ed2ksrv.built(&self.docker, image) {
+            return Ok(None);
+        }
+        let subnet = self
+            .subnet
+            .as_deref()
+            .context("ed2k-server needs a fake-public subnet: the flow must pass one")?;
+        let (prefix, _) = subnet
+            .rsplit_once('.')
+            .with_context(|| format!("subnet {subnet} has no host octet"))?;
+        let ip = format!("{prefix}.200");
+        let pinned = ed2ksrv.check(&self.docker, image)?;
+        Ok(Some(
+            crate::flow::ed2ksrv::configured(&pinned, layout.root(), &ip)?
+                .detach()
+                .name(self.names.server_container_name.clone())
+                .network(self.names.network_name.clone())
+                .ip(ip),
+        ))
     }
 
     /// This bench as one rmule container's staging: its runtime, the run dir
@@ -470,6 +528,7 @@ impl Bench {
                 layout.docker_dir().display()
             )
         })?;
+        self.subnet = subnet.map(ToOwned::to_owned);
         let name = self.names.network_name.clone();
         let command = match subnet {
             Some(subnet) => self.docker.create_network_with_subnet(name, subnet),
@@ -494,7 +553,9 @@ impl Bench {
         server: RunContainer,
     ) -> Result<()> {
         self.server_started = true;
+        let image = server.image().to_string_lossy().into_owned();
         let id = run_checked(self.docker.run_container(server), "run server container")?;
+        crate::run_record::note_image(&self.docker, &image, false);
         write_id(
             &layout.server_container_id_file(),
             fallback_id(&id, &self.names.server_container_name),
@@ -510,15 +571,22 @@ impl Bench {
         layout: &RunLayout,
         eserver: &Eserver<'_>,
     ) -> Result<()> {
-        let server = RunContainer::new(eserver.image.to_owned())
-            .detach()
-            .name(self.names.server_container_name.clone())
-            .network(self.names.network_name.clone())
-            .publish(
+        let publish = |container: RunContainer| {
+            container.publish(
                 eserver.host_port.to_string(),
                 format!("{ED2K_SERVER_PORT}/tcp"),
             )
-            .env_assignments(eserver.env);
+        };
+        let server = match self.ed2ksrv_role_container(layout, eserver.image)? {
+            Some(ed2ksrv) => publish(ed2ksrv),
+            None => publish(
+                RunContainer::new(eserver.image.to_owned())
+                    .detach()
+                    .name(self.names.server_container_name.clone())
+                    .network(self.names.network_name.clone()),
+            )
+            .env_assignments(eserver.env),
+        };
         self.start_server_container(layout, server)?;
 
         let server_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), eserver.host_port);
@@ -547,16 +615,22 @@ impl Bench {
         env: &[String],
         timeout: Duration,
     ) -> Result<()> {
-        let server = RunContainer::new(image.to_owned())
-            .detach()
-            .name(self.names.server_container_name.clone())
-            .network(self.names.network_name.clone())
-            .env_assignments(env);
+        let (server, ready) = match self.ed2ksrv_role_container(layout, image)? {
+            Some(ed2ksrv) => (ed2ksrv, ED2KSRV_READY_LOG),
+            None => (
+                RunContainer::new(image.to_owned())
+                    .detach()
+                    .name(self.names.server_container_name.clone())
+                    .network(self.names.network_name.clone())
+                    .env_assignments(env),
+                ESERVER_ENTRYPOINT_LOG,
+            ),
+        };
         self.start_server_container(layout, server)?;
         wait_for_container_log(
             &self.docker,
             &self.names.server_container_name,
-            ESERVER_ENTRYPOINT_LOG,
+            ready,
             timeout,
         )?;
         collect_server_logs(&self.docker, layout, &self.names.server_container_name)
@@ -594,7 +668,9 @@ impl Bench {
         timeout: Duration,
     ) -> Result<()> {
         self.amule_started = true;
+        let image = amule.image().to_string_lossy().into_owned();
         let id = run_checked(self.docker.run_container(amule), "run aMule container")?;
+        crate::run_record::note_image(&self.docker, &image, false);
         write_id(
             &layout.amule_container_id_file(),
             fallback_id(&id, &self.names.amule_container_name),
@@ -686,12 +762,18 @@ impl Bench {
         phase: &str,
     ) -> Result<()> {
         self.track(name);
+        let image = container.image().to_string_lossy().into_owned();
         run_checked(self.docker.run_container(container), phase)?;
+        crate::run_record::note_image(&self.docker, &image, false);
         Ok(())
     }
 
     /// Build `tag` from `context`; `role` names the image in the failure.
     pub(crate) fn build_image(&self, role: &str, tag: &str, context: &Path) -> Result<()> {
+        // ed2k-server builds from a clone at its pin, never from its recipe dir.
+        if context.ends_with("images/ed2ksrv") {
+            return crate::flow::ed2ksrv::build(tag, context, &std::env::temp_dir());
+        }
         run_checked(
             self.docker.build_image(tag, context),
             &format!("build {role} image"),
@@ -699,55 +781,55 @@ impl Bench {
         .map(|_| ())
     }
 
-    /// Build kno's aMule runtime image from `context` (`images/amule-kno`).
-    /// The build context is the parent `images/` directory, so the Dockerfile
-    /// can lift the stock `amule` recipe's scenario entrypoint beside its own
-    /// instead of carrying a copy of it.
-    pub(crate) fn build_amule_kno_image(&self, tag: &str, context: &Path) -> Result<()> {
-        run_checked(
-            self.docker.build_image_with_dockerfile(
-                tag,
-                context.join("Dockerfile").as_os_str(),
-                context.join("..").as_os_str(),
-            ),
-            "build amule-kno image",
-        )
-        .map(|_| ())
+    /// The Bench Doctor, run first: build the one image it probes with (`role`
+    /// names it in a failure; a 30 s Debian layer that caches) and examine the
+    /// kernel with it. A flow builds nothing else until its `require` has
+    /// passed, so a run the host cannot carry is written down as skipped in
+    /// seconds instead of after every image has been built.
+    ///
+    /// # Errors
+    /// If the doctor image fails to build or the probes cannot run.
+    pub(crate) fn examine_doctor(
+        &self,
+        role: &str,
+        image: &str,
+        context: &Path,
+        suffix: &str,
+    ) -> Result<DoctorReport> {
+        self.build_image(role, image, context)?;
+        BenchDoctor::new(&self.docker, image, suffix)
+            .examine()
+            .context("run the bench doctor")
     }
 
-    /// Build the `rmule-tools` driver image, retrying the build exactly once
-    /// when it fails with [`is_retriable_build_export_failure`]: the legacy
-    /// (non-BuildKit) builder's image export flaked twice in one bench
-    /// session, each failure unrelated to the
-    /// Dockerfile or the compile — a second attempt against the same,
-    /// now-warm context cleared it both times. Any other failure (a real
-    /// compile error, a missing file) is returned as-is, not retried.
-    ///
-    /// This does not remove the "Created" container a flaked attempt may
-    /// leave behind: the legacy builder gives a build no name, label, or id
-    /// for that container to reclaim it by, and a host-wide `docker ps`
-    /// filter could just as easily catch another build's leftover — see
-    /// `CONTEXT.md`. [`Docker::prune_bench_stage_images`] still sweeps the
-    /// labeled dangling *images* every subcommand leaves; only the failed
-    /// *container* is left for `docker system prune` to reap.
+    /// Build the `rmule-tools` driver image from the warm host-cached
+    /// prebuild (see [`crate::flow::driver_image`]). `context` is the
+    /// workspace root the prebuild compiles; `dockerfile` is the runtime
+    /// recipe.
     pub(crate) fn build_rmule_tools_image(
         &self,
         tag: &str,
         dockerfile: &Path,
         context: &Path,
     ) -> Result<()> {
-        let phase = "build rmule-tools driver image";
-        let command = self
-            .docker
-            .build_image_with_dockerfile(tag, dockerfile, context);
-        match run_checked(command.clone(), phase) {
-            Ok(_) => Ok(()),
-            Err(err) if is_retriable_build_export_failure(&err.to_string()) => {
-                println!("{phase}: retrying once after a legacy-builder export flake: {err}");
-                run_checked(command, phase).map(|_| ())
-            }
-            Err(err) => Err(err),
+        crate::flow::driver_image::build(&self.docker, tag, dockerfile, context)
+    }
+
+    /// [`Self::build_rmule_tools_image`], or with `reuse` (`--skip-build`)
+    /// the image `tag` as it stands, whose id the run record then names as
+    /// the rmule under test.
+    pub(crate) fn rmule_tools_image(
+        &self,
+        tag: &str,
+        dockerfile: &Path,
+        context: &Path,
+        reuse: bool,
+    ) -> Result<()> {
+        if reuse {
+            crate::run_record::note_image(&self.docker, tag, true);
+            return Ok(());
         }
+        self.build_rmule_tools_image(tag, dockerfile, context)
     }
 
     /// Own an extra detached container (a helper aMule, a sidecar, a

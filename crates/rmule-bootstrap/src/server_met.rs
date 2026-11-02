@@ -17,6 +17,8 @@ use rmule_primitives::ServerEndpoint;
 use thiserror::Error;
 
 use crate::fetcher::{FetchError, Fetcher};
+use crate::list_host::ListHost;
+use crate::odd_list::{self, ListOddity};
 
 /// Why a server.met acquisition produced no install plan.
 ///
@@ -35,6 +37,11 @@ pub enum ServerMetPipelineError {
     /// list is untouched").
     #[error("server.met parse rejected the payload; the existing list is untouched: {0}")]
     Decode(#[from] ServerMetError),
+
+    /// The payload parsed but has a shape no mirror serves (ADR-0120); it is
+    /// refused whole and the existing list stands.
+    #[error("server.met refused: {0}")]
+    Odd(#[from] ListOddity),
 }
 
 /// The reconciled outcome of one server.met acquisition — a *plan* the caller
@@ -138,18 +145,38 @@ impl ServerMetInstall {
 /// returns its first failure as-is. On success the returned plan reconciles
 /// `installed` with the freshly parsed rows and is the caller's cue to persist
 /// and reconnect if idle.
-pub async fn fetch_server_met<F>(
-    fetcher: &F,
+///
+/// The fresh rows are the word of `url`'s host: a row whose address no server
+/// can be at as that host's word is dropped before the merge (ADR-0085), and
+/// a list that leaves an odd shape behind is refused whole (ADR-0120).
+pub async fn fetch_server_met(
+    fetcher: &dyn Fetcher,
     url: &str,
     max_bytes: usize,
     installed: Vec<ServerMetEntry>,
-) -> Result<ServerMetInstall, ServerMetPipelineError>
-where
-    F: Fetcher + Sync,
-{
+) -> Result<ServerMetInstall, ServerMetPipelineError> {
     let bytes = fetcher.get(url, max_bytes).await?;
     let fresh = ServerMet::decode(&bytes)?;
-    let install = merge_installed(installed, fresh.into_entries());
+    let host = ListHost::of(url);
+    let rows = fresh.into_entries();
+    let total = rows.len();
+    let mut usable = Vec::with_capacity(total);
+    let fresh: Vec<_> = rows
+        .into_iter()
+        .filter(|entry| match entry.dialable_address() {
+            // A row that names no address at all is the projection's to drop.
+            None => true,
+            Some(ip) => {
+                let admitted = host.admits(ip);
+                if admitted {
+                    usable.push(ip);
+                }
+                admitted
+            }
+        })
+        .collect();
+    odd_list::judge(total, &usable)?;
+    let install = merge_installed(installed, fresh);
     tracing::debug!(
         added = install.added,
         updated = install.updated,
@@ -349,17 +376,135 @@ mod tests {
         );
     }
 
+    /// Valid header, zero declared rows: nothing to install, and nothing that
+    /// reads as a success on a cold start.
     #[tokio::test]
-    async fn empty_but_valid_server_met_installs_nothing() {
-        // Valid header, zero declared rows — a mirror with an empty list.
+    async fn an_empty_server_met_is_odd() {
         let fetcher = FakeFetcher::serving(met_bytes(&[]));
 
-        let install = fetch_server_met(&fetcher, "http://mirror/server.met", CAP, Vec::new())
-            .await
-            .expect("valid empty list");
+        let outcome = fetch_server_met(&fetcher, "http://mirror/server.met", CAP, Vec::new()).await;
 
-        assert_eq!(install.added(), 0);
-        assert!(install.servers().is_empty());
+        assert_eq!(
+            outcome,
+            Err(ServerMetPipelineError::Odd(ListOddity::NoUsableRow))
+        );
+    }
+
+    /// One party listing itself many times is refused whole: the installed
+    /// list is what the caller keeps, and none of the rows reach it.
+    #[tokio::test]
+    async fn a_forged_list_in_one_network_is_refused_whole() {
+        let rows: Vec<_> = (1..=9)
+            .map(|host| RowSpec::new(Ipv4Addr::new(203, 0, 113, host), 4661))
+            .collect();
+        let fetcher = FakeFetcher::serving(met_bytes(&rows));
+        let seed = installed_from(&[RowSpec::new(Ipv4Addr::new(192, 0, 2, 1), 4661).name("Seed")]);
+
+        let outcome =
+            fetch_server_met(&fetcher, "http://mirror/server.met", CAP, seed.clone()).await;
+
+        assert_eq!(
+            outcome,
+            Err(ServerMetPipelineError::Odd(ListOddity::OneNetwork {
+                in_network: 9,
+                usable: 9
+            }))
+        );
+        assert_eq!(name_of(&seed[0]), "Seed");
+    }
+
+    /// A list the host check leaves mostly empty is refused, not installed
+    /// short.
+    #[tokio::test]
+    async fn a_list_mostly_of_reserved_rows_is_refused_from_a_remote_host() {
+        let rows = [
+            RowSpec::new(Ipv4Addr::LOCALHOST, 4661),
+            RowSpec::new(Ipv4Addr::BROADCAST, 4661),
+            RowSpec::new(Ipv4Addr::new(45, 55, 200, 1), 4661),
+        ];
+        let fetcher = FakeFetcher::serving(met_bytes(&rows));
+
+        let outcome = fetch_server_met(&fetcher, "http://mirror.example/x", CAP, Vec::new()).await;
+
+        assert_eq!(
+            outcome,
+            Err(ServerMetPipelineError::Odd(ListOddity::MostlyUnusable {
+                dropped: 2,
+                rows: 3
+            }))
+        );
+    }
+
+    /// A fetched list's rows are its URL host's word (ADR-0085): from a
+    /// remote mirror every Reserved Range row is dropped and a LAN row stays;
+    /// loopback stands only from a mirror on this host.
+    #[tokio::test]
+    async fn a_row_no_server_can_be_at_is_dropped_by_the_lists_host() {
+        let rows = [
+            RowSpec::new(Ipv4Addr::LOCALHOST, 4661).name("Loopback"),
+            RowSpec::new(Ipv4Addr::BROADCAST, 4661).name("Broadcast"),
+            RowSpec::new(Ipv4Addr::new(224, 0, 0, 1), 4661).name("Multicast"),
+            RowSpec::new(Ipv4Addr::new(0, 0, 0, 5), 4661).name("This network"),
+            RowSpec::new(Ipv4Addr::new(192, 168, 1, 10), 4661).name("Lan"),
+            RowSpec::new(Ipv4Addr::new(45, 55, 200, 1), 4661).name("Public"),
+            RowSpec::new(Ipv4Addr::new(45, 55, 201, 1), 4661).name("Second"),
+            RowSpec::new(Ipv4Addr::new(45, 55, 202, 1), 4661).name("Third"),
+        ];
+        let remote = vec!["Lan", "Public", "Second", "Third"];
+        let on_this_host = vec!["Loopback", "Lan", "Public", "Second", "Third"];
+        for (url, expected) in [
+            ("http://mirror.example/server.met", &remote),
+            ("http://198.51.100.7:8080/server.met", &remote),
+            ("http://127.0.0.1:8080/server.met", &on_this_host),
+            ("http://localhost/server.met", &on_this_host),
+            ("http://lab.localhost./server.met", &on_this_host),
+            ("http://[::1]:8080/server.met", &on_this_host),
+            // A name is a remote party whatever it resolves to: a hosts-file
+            // alias for loopback outside `localhost` vouches for nothing.
+            ("http://ip6-localhost/server.met", &remote),
+        ] {
+            let fetcher = FakeFetcher::serving(met_bytes(&rows));
+
+            let install = fetch_server_met(&fetcher, url, CAP, Vec::new())
+                .await
+                .expect(url);
+
+            let names: Vec<_> = install.servers().iter().map(name_of).collect();
+            assert_eq!(&names, expected, "{url}");
+            assert_eq!(install.added(), expected.len(), "{url}");
+        }
+    }
+
+    /// A row is judged on the address it would be dialed at (ADR-0085): a
+    /// dual-stack row's IPv4, never the `ST_IPV6` the list does not dial —
+    /// a reserved IPv4 drops the row whatever its IPv6, and a reserved IPv6
+    /// beside a good IPv4 drops nothing.
+    #[tokio::test]
+    async fn a_dual_stack_row_is_judged_on_the_ipv4_it_would_dial() {
+        let routable: std::net::Ipv6Addr = "2a01:4f8::1".parse().unwrap();
+        let fetcher = FakeFetcher::serving(met_bytes(&[
+            RowSpec::new(Ipv4Addr::new(224, 0, 0, 1), 4661)
+                .name("Multicast v4")
+                .ipv6(routable),
+            RowSpec::new(Ipv4Addr::new(45, 55, 200, 1), 4661)
+                .name("Loopback v6")
+                .ipv6(std::net::Ipv6Addr::LOCALHOST),
+            RowSpec::new(Ipv4Addr::UNSPECIFIED, 4661)
+                .name("Only v6")
+                .ipv6(routable),
+        ]));
+
+        let install = fetch_server_met(
+            &fetcher,
+            "http://mirror.example/server.met",
+            CAP,
+            Vec::new(),
+        )
+        .await
+        .expect("acquisition");
+
+        let names: Vec<_> = install.servers().iter().map(name_of).collect();
+        assert_eq!(names, vec!["Loopback v6", "Only v6"]);
     }
 
     #[tokio::test]

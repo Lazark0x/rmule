@@ -197,6 +197,49 @@ fn large_offer_with_capability_writes_split_size() {
     assert_eq!(offer.entries()[0].tags().len(), 3);
 }
 
+/// A file one byte past `OLD_MAX_FILE_SIZE` is large though a `u32` holds
+/// it (aMule `IsLargeFile`): offered only to a large-file server
+/// (`SharedFileList.cpp:732`) and with the split size, its high word zero
+/// (`KnownFile.cpp:1144-1146`).
+#[test]
+fn a_file_one_byte_past_old_max_file_size_is_offered_as_large() {
+    let large = rmule_primitives::OLD_MAX_FILE_SIZE + 1;
+    let mut plain = crate::fixture::started_session(0x42);
+    crate::fixture::login_with_flags(&mut plain, None);
+    plain.handle_command(Ed2kCommand::OfferFiles {
+        presented_id: None,
+        files: vec![offered(large)],
+    });
+    assert!(matches!(
+        plain.poll_output(),
+        Some(Output::Event(Ed2kEvent::CommandRejected {
+            command: Ed2kCommandKind::OfferFiles,
+            reason: CommandRejectReason::UnsupportedServerCapability {
+                capability: ServerCapability::LargeFiles,
+            },
+        }))
+    ));
+
+    let mut session = crate::fixture::started_session(0x42);
+    crate::fixture::login_with_flags(
+        &mut session,
+        Some(ServerTcpFlags::from_bits(ServerTcpFlags::LARGE_FILES)),
+    );
+    session.handle_command(Ed2kCommand::OfferFiles {
+        presented_id: None,
+        files: vec![offered(large)],
+    });
+    let Some(Output::Write(bytes)) = session.poll_output() else {
+        panic!("expected an OP_OFFERFILES write");
+    };
+    let offer = OfferFiles::decode_packet(&Packet::decode_exact(&bytes).unwrap()).unwrap();
+    assert_eq!(
+        offer.entries()[0].tags().len(),
+        3,
+        "FT_FILESIZE_HI rides at zero"
+    );
+}
+
 #[test]
 fn offer_files_without_compression_flag_emits_plain() {
     let mut session = crate::fixture::started_session(0x42);

@@ -1,8 +1,8 @@
 //! Transfers view (spec §3.2): the third tab, as in aMule.
 //!
-//! A 62/38 vertical split — a downloads table over a sources pane for the
-//! selected download — plus the row-action menu, the cancel confirm, and the
-//! file-details modal. Rendering is pure (`UiState` + view state + injected
+//! A downloads table and a sources pane for the selected download, shared out
+//! by `crate::views::panes`, plus the row-action menu, the cancel confirm,
+//! and the file-details modal. Rendering is pure (`UiState` + view state + injected
 //! `now` → widgets) so every screen goldens under `TestBackend`; key handling
 //! is a pure state machine over the same view state.
 //!
@@ -39,8 +39,7 @@
 //! ## Wiring degrades (documented, real commands where they exist)
 //!
 //! - `Pause`, `Resume` and `Cancel…` emit real
-//!   [`rmule_core::DownloadCommand`]s; `Resume` needs a core, so on a
-//!   UI-only run it flashes instead.
+//!   [`rmule_core::DownloadCommand`]s.
 //! - `L` opens the Add-link form: a pasted file link becomes a download
 //!   through the same reader and command `rmule-cli add` and the Search
 //!   tab's Download use.
@@ -50,20 +49,26 @@
 use std::time::Instant;
 
 use ratatui::Frame;
-use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind};
-use ratatui::layout::{Constraint, Layout, Rect};
-use ratatui::style::{Modifier, Style};
+use ratatui::crossterm::event::{KeyCode, KeyEvent};
+use ratatui::layout::{Position, Rect};
+use ratatui::style::Style;
 use ratatui::text::Text;
-use ratatui::widgets::{Block, Paragraph, TableState};
+use ratatui::widgets::{Block, Paragraph};
 use rmule_core::DownloadId;
 use rmule_core::diagnostics::DownloadDiagnostics;
 
+use self::menu::{MenuAction, pause_toggle_action};
+use crate::action::Action;
+use crate::row_filter::RowFilter;
+use crate::row_selection::tags::Tags;
+use crate::row_selection::viewport::Viewport;
 use crate::state::{DownloadStatus, UiState};
-use crate::table_sort::{RowCursor, RowMove, TableSort};
+use crate::table::Drawn;
+use crate::table_sort::{Memo, RowCursor, RowMove, TableSort};
 use crate::theme::Theme;
-use crate::views::{DrawnRows, ViewOutcome};
-use crate::wrap::{TableColumns, clamp_u16, greedy_widths, wrapped_lines};
-use menu::{MenuAction, pause_toggle_action};
+use crate::views::panes::{self, Zoomed};
+use crate::views::{View, ViewOutcome};
+use crate::wrap::{clamp_u16, wrap_text, wrapped_lines};
 use sort::DownloadsTable;
 use sources::sort::{SourceKey, SourcesTable};
 
@@ -78,13 +83,11 @@ mod menu;
 mod sort;
 mod sources;
 
-/// Inter-column spacing shared by both tables, and the width of the selection
-/// symbol they render in the gutter.
-const COL_SPACING: u16 = 1;
-const SYMBOL_W: u16 = 2;
+/// The downloads table's share of the tab.
+const SHARE: u16 = 62;
 
-/// Which pane holds selection focus; the focused pane wears the accent border
-/// (every pane's focus cue). Row actions always target the selected *download*, whichever
+/// Which pane holds selection focus; the focused pane wears the focus border
+/// ([`Theme::pane`], every pane's focus cue). Row actions always target the selected *download*, whichever
 /// pane has focus.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 enum Pane {
@@ -115,8 +118,9 @@ enum Overlay {
     /// never landed on).
     Menu { cursor: MenuAction },
     /// The one destructive confirm in this view: cancel deletes the
-    /// part file.
-    ConfirmCancel,
+    /// part file. It holds the downloads it asks about, so a row that moves
+    /// under it stays the one the answer acts on.
+    ConfirmCancel { targets: Vec<DownloadId> },
     /// File-details modal (spec §3.2).
     Details,
     /// "Clear all completed": asks first, since it takes every completed row
@@ -130,47 +134,57 @@ enum Overlay {
 pub struct TransfersView {
     /// The downloads table's order.
     sort: TableSort<DownloadsTable>,
-    /// The selected download, by id; `table_state`'s index is its position
-    /// in the current order, re-placed before every key and draw.
+    /// `/`: the downloads it keeps.
+    filter: RowFilter,
+    /// `/` over the sources pane.
+    source_filter: RowFilter,
+    /// The rows `Space` tagged.
+    tags: Tags<DownloadId>,
+    /// The table's lines under that sort and filter.
+    lines_memo: Memo<sort::LinesKey, sort::DownloadLine>,
+    /// The selected download, by id.
     cursor: RowCursor<DownloadId>,
-    /// Download-row selection + scroll (the downloads table).
-    table_state: TableState,
+    /// That download's position in the current order, re-placed before every
+    /// key and draw.
+    selected: Option<usize>,
+    /// What part of the downloads table is on screen.
+    viewport: Viewport,
     /// The sources pane's order, one for every download's sources.
     source_sort: TableSort<SourcesTable>,
-    /// The selected source, by its peer; `sources_state`'s index is its
-    /// position in the current order, re-placed before every key and draw.
+    /// The selected source, by its peer.
     source_cursor: RowCursor<SourceKey>,
-    /// Source-row selection + scroll (the sources pane).
-    sources_state: TableState,
+    /// That source's position in the current order, re-placed before every
+    /// key and draw.
+    source_selected: Option<usize>,
+    /// What part of the sources pane is on screen.
+    source_viewport: Viewport,
+    /// Where the row menu is, and what part of it is on screen.
+    menu_place: crate::views::menu::Place,
+    /// What part of the details modal is on screen, in a frame too short for
+    /// it; back to its first line each time it opens.
+    details_viewport: std::cell::Cell<Viewport>,
+    /// What part of a confirm is on screen, in a frame too short for it;
+    /// back to its first line each time one opens.
+    confirm_viewport: std::cell::Cell<Viewport>,
     focus: Pane,
+    /// `z`: the focused pane has the whole tab.
+    zoomed: bool,
     overlay: Overlay,
     /// The Add-link form (`L`), modal over everything while it is up.
     add_link: Option<add_link::AddLink>,
+    /// A form left while its links wait for a download dir; `L` brings it
+    /// back.
+    parked_link: Option<add_link::AddLink>,
     /// Pane areas cached at draw time for click hit-testing.
     table_area: Rect,
     sources_area: Rect,
-    /// The downloads header as last drawn, and its column widths: a click
-    /// there sorts.
-    header_area: Rect,
-    header_cols: Vec<usize>,
-    /// The sources header as last drawn, and its column widths.
-    source_header_area: Rect,
-    source_header_cols: Vec<usize>,
-    /// Both tables' rows as last drawn, for row clicks.
-    rows: DrawnRows,
-    source_rows: DrawnRows,
+    /// Both tables as last drawn, for clicks.
+    drawn: Drawn,
+    source_drawn: Drawn,
 }
 
-fn selected_id(ids: &[DownloadId], table_state: &TableState) -> Option<DownloadId> {
-    ids.get(table_state.selected()?).copied()
-}
-
-/// Column widths for a bordered table drawn at `area`: the flex column takes
-/// what the fixed ones leave over, after the border pair, the selection
-/// symbol, and the inter-column spacing.
-fn table_widths(area: Rect, table: &TableColumns<'_>) -> Vec<usize> {
-    let total = usize::from(area.width.saturating_sub(2).saturating_sub(SYMBOL_W));
-    greedy_widths(total, table, usize::from(COL_SPACING))
+fn selected_id(ids: &[DownloadId], selected: Option<usize>) -> Option<DownloadId> {
+    ids.get(selected?).copied()
 }
 
 fn pane_block(
@@ -179,20 +193,10 @@ fn pane_block(
     focused: bool,
     theme: &Theme,
 ) -> Block<'static> {
-    let border = if focused {
-        Style::new().fg(theme.accent)
-    } else {
-        theme.chrome()
-    };
-    let title_style = if focused {
-        Style::new().fg(theme.accent).add_modifier(Modifier::BOLD)
-    } else {
-        theme.dim_text()
-    };
     crate::views::title::titled(
-        Block::bordered().border_style(border),
+        theme.pane(focused),
         width,
-        (title, title_style),
+        (title, theme.pane_title(focused)),
         (hint, theme.dim_text()),
     )
 }
@@ -219,37 +223,30 @@ impl TransfersView {
         Self::default()
     }
 
-    /// Handle one key the globals did not claim. Returns [`ViewOutcome`]:
-    /// `Emit` to hand the app a command/flash, `Redraw` when view state
-    /// changed (or an open modal swallowed the key), `Ignored` to bubble on.
-    pub fn handle_key(&mut self, key: KeyEvent, state: &UiState) -> ViewOutcome {
-        // Kitty keyboard may report releases/repeats; only presses act.
-        if key.kind == KeyEventKind::Release {
-            return ViewOutcome::Ignored;
-        }
-        if self.add_link.is_some() {
-            return self.handle_add_link_key(key, state);
-        }
-        let ids = self.download_ids(state);
-        self.clamp(&ids, state);
-
-        match self.overlay.clone() {
-            Overlay::None => self.handle_base(key, state, &ids),
-            Overlay::Menu { cursor } => self.handle_menu(key, state, &ids, cursor),
-            Overlay::ConfirmCancel => self.handle_confirm(key, &ids),
-            Overlay::Details => self.handle_details(key),
-            Overlay::ConfirmClearCompleted { counted } => self.handle_confirm_clear(key, &counted),
-        }
-    }
-
     fn handle_base(&mut self, key: KeyEvent, state: &UiState, ids: &[DownloadId]) -> ViewOutcome {
-        let sources = self.source_keys(state, selected_id(ids, &self.table_state));
+        let sources = self.source_keys(state, selected_id(ids, self.selected));
+        let filtered = match self.focus {
+            Pane::Table => self.filter.key(&key, !state.downloads.is_empty()),
+            Pane::Sources => self.source_filter.key(&key, !sources.is_empty()),
+        };
+        if let Some(outcome) = filtered {
+            return outcome;
+        }
         if let Some(movement) = RowMove::of(key.code) {
             return self.move_selection(movement, ids, &sources);
+        }
+        if self.focus == Pane::Table
+            && let Some(outcome) = self.tags.key(key.code, ids, &mut self.cursor)
+        {
+            return outcome;
         }
         match key.code {
             KeyCode::Tab | KeyCode::BackTab => {
                 self.focus = self.focus.toggled();
+                ViewOutcome::Redraw
+            }
+            KeyCode::Char('z') => {
+                self.zoomed = !self.zoomed;
                 ViewOutcome::Redraw
             }
             KeyCode::Char('s') if self.focus == Pane::Table && !ids.is_empty() => {
@@ -269,6 +266,7 @@ impl TransfersView {
                 // the one it acts on.
                 match self.selected_row_status(state, ids) {
                     Some((_, status)) if self.cursor.pin(ids).is_some() => {
+                        self.menu_place.reset();
                         self.overlay = Overlay::Menu {
                             cursor: menu::first_action(status),
                         };
@@ -277,12 +275,53 @@ impl TransfersView {
                     _ => ViewOutcome::Ignored,
                 }
             }
-            KeyCode::Char('C') => self.clear_completed_key(state),
-            KeyCode::Char('L') => self.open_add_link(),
-            KeyCode::Char('p') => match self.selected_row_status(state, ids) {
-                Some((id, status)) => ViewOutcome::Emit(pause_toggle_action(status, id, state)),
+            // `x` is the row's way out everywhere: here, its cancel. Greyed
+            // in the menu, so a completed row asks nothing.
+            KeyCode::Char('x') => {
+                self.cursor.pin(ids);
+                let targets = menu::cancellable(self.targets(state, ids), state);
+                if targets.is_empty() {
+                    return match self.selected {
+                        Some(_) => ViewOutcome::Emit(Action::Flash(
+                            crate::words::download::NOTHING_TO_CANCEL,
+                        )),
+                        None => ViewOutcome::Ignored,
+                    };
+                }
+                self.ask_cancel(targets);
+                ViewOutcome::Redraw
+            }
+            KeyCode::Char('d') => match self.selected_row_status(state, ids) {
+                Some(_) => {
+                    self.cursor.pin(ids);
+                    self.overlay = Overlay::Details;
+                    self.details_viewport.take();
+                    ViewOutcome::Redraw
+                }
                 None => ViewOutcome::Ignored,
             },
+            KeyCode::Char('C') => self.clear_completed_key(state),
+            KeyCode::Char('L') => self.open_add_link(state),
+            KeyCode::Char('p') if !self.tags.is_empty() => {
+                let targets = self.targets(state, ids);
+                ViewOutcome::Emit(menu::pause_or_resume(&targets, state))
+            }
+            KeyCode::Char('p') => match self.selected_row_status(state, ids) {
+                Some((id, status)) => ViewOutcome::Emit(pause_toggle_action(status, id)),
+                None => ViewOutcome::Ignored,
+            },
+            KeyCode::Char('P') if !ids.is_empty() => {
+                ViewOutcome::Emit(menu::pause_or_resume(ids, state))
+            }
+            // The menu's Preview (ADR-0114): the app reads the row as the
+            // menu does, and flashes the reason the menu greys a blocked
+            // row with.
+            KeyCode::Char('v') if self.focus == Pane::Table => {
+                match self.selected_row_status(state, ids) {
+                    Some((id, _)) => ViewOutcome::Emit(Action::Preview(id)),
+                    None => ViewOutcome::Ignored,
+                }
+            }
             _ => ViewOutcome::Ignored,
         }
     }
@@ -296,12 +335,13 @@ impl TransfersView {
         match self.focus {
             Pane::Table => {
                 let before = self.cursor.place(ids);
-                self.cursor.apply(ids, movement);
+                self.cursor.apply(ids, movement, self.viewport.page());
                 self.table_selected(before, ids);
             }
             Pane::Sources => {
-                self.source_cursor.apply(sources, movement);
-                self.sources_state.select(self.source_cursor.place(sources));
+                let page = self.source_viewport.page();
+                self.source_cursor.apply(sources, movement, page);
+                self.source_selected = self.source_cursor.place(sources);
             }
         }
         ViewOutcome::Redraw
@@ -311,10 +351,10 @@ impl TransfersView {
     /// start a newly selected download's sources list at its top.
     fn table_selected(&mut self, before: Option<usize>, ids: &[DownloadId]) {
         let after = self.cursor.place(ids);
-        self.table_state.select(after);
+        self.selected = after;
         if after != before {
             self.source_cursor.reset();
-            self.sources_state.select(Some(0));
+            self.source_selected = Some(0);
         }
     }
 
@@ -322,10 +362,16 @@ impl TransfersView {
     /// the table's on its download and the sources pane's on its source,
     /// wherever the orders put them.
     fn clamp(&mut self, ids: &[DownloadId], state: &UiState) {
-        self.table_state.select(self.cursor.place(ids));
-        let sources = self.source_keys(state, selected_id(ids, &self.table_state));
-        self.sources_state
-            .select(self.source_cursor.place(&sources));
+        self.selected = self.cursor.place(ids);
+        let sources = self.source_keys(state, selected_id(ids, self.selected));
+        self.source_selected = self.source_cursor.place(&sources);
+    }
+
+    /// What an action takes: the tagged downloads still listed, else the one
+    /// under the cursor.
+    pub(super) fn targets(&mut self, state: &UiState, ids: &[DownloadId]) -> Vec<DownloadId> {
+        self.tags.keep(|id| state.downloads.contains_key(id));
+        self.tags.targets(selected_id(ids, self.selected))
     }
 
     fn selected_diag<'a>(
@@ -333,7 +379,7 @@ impl TransfersView {
         state: &'a UiState,
         ids: &[DownloadId],
     ) -> Option<&'a DownloadDiagnostics> {
-        let id = selected_id(ids, &self.table_state)?;
+        let id = selected_id(ids, self.selected)?;
         state.diagnostics.downloads.get(&id)
     }
 
@@ -342,17 +388,102 @@ impl TransfersView {
         state: &UiState,
         ids: &[DownloadId],
     ) -> Option<(DownloadId, DownloadStatus)> {
-        let id = selected_id(ids, &self.table_state)?;
+        let id = selected_id(ids, self.selected)?;
         Some((id, state.downloads.get(&id)?.status))
     }
 
+    fn focused_filter(&self) -> &RowFilter {
+        match self.focus {
+            Pane::Table => &self.filter,
+            Pane::Sources => &self.source_filter,
+        }
+    }
+}
+
+#[cfg(test)]
+impl TransfersView {
+    /// The selected row's place, as the last key left it.
+    pub(crate) const fn selected_row(&self) -> Option<usize> {
+        self.selected
+    }
+
+    /// A view sorted by name, the order most tests state their rows in.
+    pub(crate) fn by_name() -> Self {
+        let mut view = Self::new();
+        view.sort.click(sort::DownloadColumn::File);
+        view
+    }
+
+    /// Put the cursor on display row `index`, as the operator would.
+    fn select_row(&mut self, state: &UiState, index: usize) {
+        let ids = self.download_ids(state);
+        self.cursor.select(&ids, index);
+        self.selected = self.cursor.place(&ids);
+    }
+}
+
+impl View for TransfersView {
+    fn handle_paste(&mut self, text: &str, state: &UiState) -> ViewOutcome {
+        self.paste(text, state)
+    }
+
+    /// Handle one key the globals did not claim. Returns [`ViewOutcome`]:
+    /// `Emit` to hand the app a command/flash, `Redraw` when view state
+    /// changed (or an open modal swallowed the key), `Ignored` to bubble on.
+    fn handle_key(&mut self, key: KeyEvent, state: &UiState) -> ViewOutcome {
+        if self.add_link.is_some() {
+            return self.handle_add_link_key(key, state);
+        }
+        let ids = self.download_ids(state);
+        self.clamp(&ids, state);
+
+        match self.overlay.clone() {
+            Overlay::None => self.handle_base(key, state, &ids),
+            Overlay::Menu { cursor } => self.handle_menu(key, state, &ids, cursor),
+            Overlay::ConfirmCancel { targets } => self.handle_confirm(key, &targets),
+            Overlay::Details => self.handle_details(key),
+            Overlay::ConfirmClearCompleted { counted } => self.handle_confirm_clear(key, &counted),
+        }
+    }
+
+    /// A wheel notch at (`column`, `row`), read as `key` on the pane under the
+    /// pointer; the focus stays where it is. A modal or a field takes it as a
+    /// key.
+    fn handle_wheel(
+        &mut self,
+        (column, row): (u16, u16),
+        key: KeyEvent,
+        state: &UiState,
+    ) -> ViewOutcome {
+        let under = if !matches!(self.overlay, Overlay::None) || self.add_link.is_some() {
+            None
+        } else if crate::views::pane_hit(self.table_area, column, row) {
+            Some(Pane::Table)
+        } else if crate::views::pane_hit(self.sources_area, column, row) {
+            Some(Pane::Sources)
+        } else {
+            None
+        };
+        let Some(under) = under else {
+            return self.handle_key(key, state);
+        };
+        let focus = std::mem::replace(&mut self.focus, under);
+        let outcome = self.handle_key(key, state);
+        self.focus = focus;
+        outcome
+    }
+
     /// Row-click select (ADR-0072, Row Selection), against the pane areas cached
-    /// by the last draw. Modals stay keyboard-only in v1.
-    pub fn handle_click(&mut self, column: u16, row: u16, state: &UiState) -> ViewOutcome {
+    /// by the last draw. The row menu takes its clicks; other modals keep to
+    /// the keyboard.
+    fn handle_click(&mut self, column: u16, row: u16, state: &UiState) -> ViewOutcome {
+        let ids = self.download_ids(state);
+        if self.add_link.is_none() && matches!(self.overlay, Overlay::Menu { .. }) {
+            return self.click_menu((column, row), state, &ids);
+        }
         if !matches!(self.overlay, Overlay::None) || self.add_link.is_some() {
             return ViewOutcome::Ignored;
         }
-        let ids = self.download_ids(state);
         if let Some(outcome) = self.header_click(column, row) {
             self.focus = Pane::Table;
             return outcome;
@@ -361,20 +492,19 @@ impl TransfersView {
             self.focus = Pane::Sources;
             return outcome;
         }
-        if let Some(index) = self.rows.hit(column, row) {
+        if let Some(index) = self.drawn.hit(column, row) {
             self.focus = Pane::Table;
             let before = self.cursor.place(&ids);
             self.cursor.select(&ids, index);
             self.table_selected(before, &ids);
             return ViewOutcome::Redraw;
         }
-        if let Some(index) = self.source_rows.hit(column, row) {
+        if let Some(index) = self.source_drawn.hit(column, row) {
             self.focus = Pane::Sources;
-            let sources = self.source_keys(state, selected_id(&ids, &self.table_state));
+            let sources = self.source_keys(state, selected_id(&ids, self.selected));
             if index < sources.len() {
                 self.source_cursor.select(&sources, index);
-                self.sources_state
-                    .select(self.source_cursor.place(&sources));
+                self.source_selected = self.source_cursor.place(&sources);
             }
             return ViewOutcome::Redraw;
         }
@@ -390,45 +520,62 @@ impl TransfersView {
     }
 
     /// Render one frame of the view into `area` (spec §3.2).
-    pub fn draw(
+    fn draw(
         &mut self,
         frame: &mut Frame,
         area: Rect,
         state: &UiState,
         theme: &Theme,
         now: Instant,
-    ) {
+    ) -> Option<Position> {
         let lines = self.sorted_lines(state);
         let ids: Vec<DownloadId> = lines.iter().map(|line| line.id).collect();
         self.clamp(&ids, state);
 
-        let [table_area, sources_area] =
-            Layout::vertical([Constraint::Percentage(62), Constraint::Percentage(38)]).areas(area);
+        // A pane with nothing to list says so in the lines that takes, and
+        // the downloads keep the rest.
+        let idle = self.idle_sources_text(state, &ids, now).map(|text| {
+            let width = usize::from(area.width.saturating_sub(2)).max(1);
+            clamp_u16(wrap_text(&text, width).len()).saturating_add(2)
+        });
+        let zoomed = self.zoomed.then_some(match self.focus {
+            Pane::Table => Zoomed::First,
+            Pane::Sources => Zoomed::Second,
+        });
+        let (table_area, sources_area) = panes::split(area, SHARE, idle, zoomed);
         self.table_area = table_area;
         self.sources_area = sources_area;
-        self.draw_downloads(frame, table_area, state, theme, &lines);
-        self.draw_sources(frame, sources_area, state, theme, &ids, now);
+        self.drawn = Drawn::default();
+        self.source_drawn = Drawn::default();
+        if !table_area.is_empty() {
+            self.draw_downloads(frame, table_area, state, theme, &lines);
+        }
+        if !sources_area.is_empty() {
+            self.draw_sources(frame, sources_area, state, theme, &ids, now);
+        }
+        let filter_caret = match self.focus {
+            Pane::Table => self.drawn.caret,
+            Pane::Sources => self.source_drawn.caret,
+        };
 
         match &self.overlay {
             Overlay::None => {}
             Overlay::Menu { cursor } => self.draw_menu(frame, area, state, theme, &ids, *cursor),
-            Overlay::ConfirmCancel => self.draw_confirm(frame, area, state, theme, &ids),
+            Overlay::ConfirmCancel { targets } => {
+                self.draw_confirm(frame, area, state, theme, targets);
+            }
             Overlay::Details => self.draw_details(frame, area, state, theme, &ids),
             Overlay::ConfirmClearCompleted { counted } => {
                 self.draw_confirm_clear(frame, area, counted, theme)
             }
         }
-        self.draw_add_link(frame, area, theme);
+        self.draw_add_link(frame, area, theme).or(filter_caret)
     }
-}
 
-#[cfg(test)]
-impl TransfersView {
-    /// Put the cursor on display row `index`, as the operator would.
-    fn select_row(&mut self, state: &UiState, index: usize) {
-        let ids = self.download_ids(state);
-        self.cursor.select(&ids, index);
-        self.table_state.select(self.cursor.place(&ids));
+    /// Whether the Add-link form or a Row Filter holds the keyboard.
+    fn text_open(&self, _state: &UiState) -> bool {
+        self.add_link.is_some()
+            || (matches!(self.overlay, Overlay::None) && self.focused_filter().typing())
     }
 }
 

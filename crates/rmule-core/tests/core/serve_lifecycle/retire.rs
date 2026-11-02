@@ -1,5 +1,6 @@
 //! How a serve activity ends: a requested stop and a dead listener each close every open upload row.
 use crate::fixture::sized_file;
+use parking_lot::Mutex;
 use rmule_core::DurableSharedFileRegistry;
 use rmule_core::{
     Core, CoreCommand, CoreConfig, ServeCommand, ServeEvent, ServeInput, ServeOutput,
@@ -7,7 +8,7 @@ use rmule_core::{
 };
 use rmule_primitives::FileHash;
 use rmule_testkit::HANG_GUARD;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio::time::timeout;
 
@@ -91,6 +92,7 @@ async fn stopping_serve_closes_every_open_upload_row() {
             peer: peer(41),
             file_hash,
             software: None,
+            road: rmule_core::GrantRoad::Linked,
         }
     );
 
@@ -108,6 +110,7 @@ async fn stopping_serve_closes_every_open_upload_row() {
             peer: peer(42),
             file_hash,
             software: None,
+            road: rmule_core::GrantRoad::Linked,
         }
     );
 
@@ -300,6 +303,7 @@ async fn a_dead_listener_closes_every_open_upload_row_too() {
             peer: peer(21),
             file_hash,
             software: None,
+            road: rmule_core::GrantRoad::Linked,
         }
     );
     assert_eq!(

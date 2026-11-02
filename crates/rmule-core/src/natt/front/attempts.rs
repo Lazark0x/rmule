@@ -38,7 +38,7 @@ use rmule_ed2k::HolepunchFailReason;
 use rmule_net::natt::NattDatagramSink;
 use rmule_peer::BUDDY_ID_LEN;
 use rmule_peer::natt::{RENDEZVOUS_TIMEOUT, RetireReason};
-use rmule_primitives::{ClientId, Ipv4Endpoint, UserHash};
+use rmule_primitives::{ClientId, CryptStance, Ipv4Endpoint, UserHash};
 
 use crate::address_learning::SocketRole;
 use crate::callback::{NattCoordinator, NattFacts, RoutePosition, next_natt_coordinator};
@@ -57,6 +57,8 @@ pub(crate) struct AttemptOwner {
     /// The candidate's own half of rung 1's condition, for picking the next
     /// coordinator when this one fails.
     pub(crate) facts: NattFacts,
+    /// The stance the reach holds for the target, when it holds one.
+    pub(crate) crypt: Option<CryptStance>,
     /// What rmule says about itself in a rendezvous.
     pub(crate) offer: RendezvousOffer,
 }
@@ -161,15 +163,18 @@ pub enum AttemptRetirement {
     /// left is then owned by nobody, and no retirement would ever follow it.
     NotEnactable,
     /// The candidate's invitation never left: the buddy's `0x52`
-    /// had no buddy or no listener port to name, or the direct `0x95` had no
-    /// bound client-UDP send half, listener, user hash or Kad UDP endpoint.
-    /// Ends the invitation road as [`Self::KadNotRunning`] does.
+    /// had no buddy or no listener port to name, the direct `0x95` had no
+    /// bound client-UDP send half, listener, user hash or Kad UDP endpoint, or
+    /// the server's relay (`OP_CALLBACKREQUEST`) had no live session or a send
+    /// nothing took. Ends the invitation road as
+    /// [`Self::KadNotRunning`] does.
     CallbackNotSent,
 }
 
 impl AttemptRetirement {
     /// Whether this ends the candidate's **buddy-callback road** (or, for
-    /// [`Self::CallbackNotSent`], its direct-UDP road) rather than a punch.
+    /// [`Self::CallbackNotSent`], its direct-UDP or server road) rather than
+    /// a punch.
     pub(crate) const fn ends_buddy_callback(self) -> bool {
         matches!(
             self,
@@ -461,8 +466,12 @@ impl<S: NattDatagramSink> NattFront<S> {
         let AttemptOwner {
             target,
             facts,
+            crypt,
             offer,
         } = owner;
+        if let Some(stance) = crypt {
+            self.crypt_targets.state(target, stance);
+        }
         if self.attempts.contains(&target) {
             // One attempt per peer at a time: a second download
             // falling to the same target joins the traversal already running.

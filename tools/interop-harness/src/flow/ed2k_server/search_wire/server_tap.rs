@@ -133,6 +133,84 @@ pub(crate) fn offered_origins(pcap: &Path, sharer: Ipv4Addr) -> Result<Vec<(f64,
         .collect())
 }
 
+/// What `client`'s session drew at its opening.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct Opening {
+    /// Its login carried `offerfiles_v`.
+    pub(crate) asked_pace: bool,
+    /// Its `OP_GETSERVERLIST` frames.
+    pub(crate) list_asks: usize,
+    /// `OP_SERVERIDENT` frames the server sent it.
+    pub(crate) idents: usize,
+    /// Of those, frames carrying `offerfiles_batch_max`.
+    pub(crate) adverts: usize,
+}
+
+/// Read `client`'s [`Opening`] off the tap.
+///
+/// # Errors
+/// If the pcap cannot be read.
+pub(crate) fn opening(pcap: &Path, client: Ipv4Addr) -> Result<Opening> {
+    const OP_LOGINREQUEST: u8 = 0x01;
+    const OP_GETSERVERLIST: u8 = 0x14;
+    const OP_SERVERIDENT: u8 = 0x41;
+    let holds = |payload: &[u8], word: &[u8]| payload.windows(word.len()).any(|at| at == word);
+    let records = pcap::records(pcap)?;
+    let mut seen = Opening::default();
+    for frame in frames(&records)? {
+        let Body::Tcp { opcode, payload } = &frame.body else {
+            continue;
+        };
+        if *frame.source.ip() == client {
+            seen.asked_pace |= *opcode == OP_LOGINREQUEST && holds(payload, b"offerfiles_v");
+            seen.list_asks += usize::from(*opcode == OP_GETSERVERLIST);
+        } else if *frame.destination.ip() == client && *opcode == OP_SERVERIDENT {
+            seen.idents += 1;
+            seen.adverts += usize::from(holds(payload, b"offerfiles_batch_max"));
+        }
+    }
+    Ok(seen)
+}
+
+/// One file of an `OP_OFFERFILES`: its hash, and the ID and port it carried.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct OfferedRow {
+    pub(crate) hash: [u8; 16],
+    pub(crate) client_id: u32,
+    pub(crate) port: u16,
+}
+
+/// Every `OP_OFFERFILES` `sharer` sent the server, each file with its hash:
+/// [`offered_origins`] for a reader that must tell one file's marker from
+/// another's.
+///
+/// # Errors
+/// If the pcap cannot be read.
+pub(crate) fn offered_rows(pcap: &Path, sharer: Ipv4Addr) -> Result<Vec<(f64, Vec<OfferedRow>)>> {
+    let records = pcap::records(pcap)?;
+    Ok(frames(&records)?
+        .iter()
+        .filter(|frame| *frame.source.ip() == sharer)
+        .filter_map(|frame| match &frame.body {
+            Body::Tcp { opcode, payload } if *opcode == OP_OFFERFILES => {
+                let mut rows = Vec::new();
+                walk_rows(payload, &mut rows).ok()?;
+                Some((
+                    frame.at,
+                    rows.into_iter()
+                        .map(|row| OfferedRow {
+                            hash: row.hash,
+                            client_id: row.client_id,
+                            port: row.port,
+                        })
+                        .collect(),
+                ))
+            }
+            _ => None,
+        })
+        .collect())
+}
+
 /// The server flags word of the last `OP_IDCHANGE` the server sent
 /// `client`; `None` when none was seen or it carried no flags word.
 ///
@@ -461,6 +539,7 @@ fn result_names(payload: &[u8]) -> (Vec<Option<String>>, String) {
 /// One file entry of an `OP_OFFERFILES` or `OP_SEARCHRESULT`: both lay a
 /// hash, a client ID, a port and a tag list out the same way.
 struct Row {
+    hash: [u8; 16],
     name: Option<String>,
     client_id: u32,
     port: u16,
@@ -471,6 +550,11 @@ fn walk_rows(payload: &[u8], rows: &mut Vec<Row>) -> Result<String, &'static str
     let mut at = 4;
     for _ in 0..count {
         // Hash, client id, port.
+        let hash: [u8; 16] = payload
+            .get(at..at + 16)
+            .ok_or("truncated hash")?
+            .try_into()
+            .map_err(|_| "truncated hash")?;
         let client_id = le_u32(payload.get(at + 16..at + 20).ok_or("truncated id")?);
         let port = u16_at(payload, at + 20)?;
         at += 22;
@@ -522,6 +606,7 @@ fn walk_rows(payload: &[u8], rows: &mut Vec<Row>) -> Result<String, &'static str
             }
         }
         rows.push(Row {
+            hash,
             name,
             client_id,
             port,

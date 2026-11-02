@@ -13,13 +13,13 @@ use rmule_core::diagnostics::PartState;
 use crate::theme::Theme;
 
 /// The positional chunk bar (spec §3.2, ADR-0079): glyph *i* of `width` shows
-/// the file region `[i·n/W, (i+1)·n/W)` of the `n`-entry part map — grey
-/// `█` have, green `▓` downloading, dark `░` not yet — so the left of the bar
-/// is the head of the file, the way every eD2k client draws it.
+/// the file region `[i·n/W, (i+1)·n/W)` of the `n`-entry part map — plain
+/// `█` have, green `▓` downloading, dim `░` not yet — so the left of the bar
+/// is the head of the file, the way every eD2k client draws it. The missing
+/// tone is a readable track on every theme, so the bar shows where it ends.
 ///
-/// The bar is a fixed-width *visualization*, not text: it is sized to its
-/// column and never wraps (the wrap policy covers user data, and losing a
-/// glyph here loses no fact — the map is downsampled by definition).
+/// The bar is a *visualization*, not text, sized to its column: losing a glyph
+/// here loses no fact, the map being downsampled by definition.
 ///
 /// An empty map (`n == 0`: core has opened the row but not settled the
 /// scheduler yet, so part status is *unknown*) renders flat dim, the same
@@ -81,12 +81,12 @@ fn bucket_state(parts: &[PartState], index: usize, width: usize) -> PartState {
 
 fn bucket_span(state: PartState, len: usize, theme: &Theme) -> Span<'static> {
     let (glyph, color) = match state {
-        // have → grey full blocks
-        PartState::Verified => ("█", theme.dim),
+        // have → plain full blocks
+        PartState::Verified => ("█", theme.fg),
         // downloading → green
         PartState::InFlight => ("▓", theme.good),
-        // missing → dark (panel tone: barely there, i.e. "not yet")
-        PartState::Missing => ("░", theme.panel),
+        // missing → the dim track
+        PartState::Missing => ("░", theme.dim),
     };
     Span::styled(glyph.repeat(len), Style::new().fg(color))
 }
@@ -97,6 +97,7 @@ mod tests {
     use crate::fixture::part_map;
 
     use super::*;
+    use crate::views::View;
 
     /// The glyphs a bar of `width` draws for `parts`, concatenated.
     fn bar_text(parts: &[PartState], width: usize, theme: &Theme) -> String {
@@ -163,9 +164,9 @@ mod tests {
             .iter()
             .map(|span| (span.content.to_string(), span.style.fg))
             .collect();
-        assert_eq!(tones, vec![("░".repeat(10), Some(theme.panel))]);
+        assert_eq!(tones, vec![("░".repeat(10), Some(theme.dim))]);
 
-        let mut view = TransfersView::new();
+        let mut view = TransfersView::by_name();
         assert_golden(
             "transfers_paused_before_hash_set",
             GOLDEN_W,
@@ -187,9 +188,9 @@ mod tests {
         assert_eq!(
             tones,
             vec![
-                ("██", Some(theme.dim)),
+                ("██", Some(theme.fg)),
                 ("▓", Some(theme.good)),
-                ("░░", Some(theme.panel)),
+                ("░░", Some(theme.dim)),
             ],
         );
     }

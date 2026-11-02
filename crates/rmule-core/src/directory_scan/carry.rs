@@ -1,5 +1,5 @@
-//! A rename carries its hash when the file's identity proves it (ADR-0104,
-//! "What the scan remembers"): a file at a path no record vouches for is
+//! A rename carries its hash when the file's identity proves it (ADR-0104): a file at a path no
+//! record vouches for is
 //! matched, by its **File Identity**, size and modification time, against the
 //! rows and spare copies under the directory, and taken over unread. Nothing
 //! here reads a byte; a file is looked at (its identity) only when some record

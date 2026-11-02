@@ -1,0 +1,49 @@
+# Genuine stock aMule 2.3.3 source publish for a file past 4 GiB: the `0x44
+# KADEMLIA2_PUBLISH_SOURCE_REQ` a firewalled Kad node emitted for the
+# 5,000,000,000-byte file it shares, while holding rmule as its recruited
+# buddy. Captured on the fake-public Kad bench (Config A) during interop flow M
+# `kad-core-buddy --publish-source`, with the file staged as one sparse hole
+# (no 4 GiB on disk; the publisher hashed it as zeros). The frame is
+# counterparty bytes lifted off a tcpdump on the counterparty's own network
+# namespace; nothing is fabricated or edited (ADR-0045).
+#
+# ## What this fixture is evidence FOR
+#
+# A file past `OLD_MAX_FILE_SIZE` (4,290,048,000 bytes, `Constants.h:77`) takes
+# the large-file twin of each source type (`Search.cpp:587-633`): the
+# firewalled buddy row is type 5 rather than 3 (`:613`), and `TAG_FILESIZE`
+# rides as a `CTagVarInt`, which widens to `UINT64` above `0xFFFFFFFF`
+# (`Tag.h:176-182`). Everything else is the type-3 row of
+# `amule-233-publish-source-req-20260922`: the same tag order and widths, the
+# same upper-case big-endian `TAG_BUDDYHASH`, no `TAG_SOURCEUPORT`, and
+# `TAG_ENCRYPTION` last. eMule's spelling of this row stays source-derived: no
+# body on the bench writes it.
+
+[provenance]
+counterparty   = "aMule 2.3.3, release build of the pinned Debian source package 1:2.3.3-3build5, image rmule/interop-amule:local (sha256:ddcd70dc49cc8e4464c5f55c16185f15c348e4823d43811074df9a2ade5bbf01)"
+scenario       = "rmule-interop-harness kad-core-buddy --publish-source --mesh-members 3 --window 1200 --file-size 5000000000 --file-content sparse (flow M)"
+run            = "1792364377"
+harness_commit = "97e0fb8c"
+date           = "2026-10-19"
+subnet         = "203.0.113.0/24 (RFC 5737 fake-public, Config A; docker --internal)"
+amule_endpoint = "203.0.113.2 — Kad UDP 4674, eD2k TCP 4662 (iptables-DROPped)"
+rmule_endpoint = "203.0.113.3 — Kad UDP 4679, serve listener TCP 4663; the recruited buddy"
+storer         = "203.0.113.6 — Kad UDP 4690; a placed `rmule-tools kad join-node` member, pinned to the file's own Kad key"
+shared_file    = "5,000,000,000 zero bytes as one sparse hole; ED2K hash C31BE58AEC5FF63340B50A31B88106D4"
+verdict        = "PASS (0x51 in 1, 0x5A out 1, buddy TCP SYN 1, OP_BUDDYPING 1, link attached, 0x44 out 1, body 115 bytes)"
+
+[frames.publish_source_req_0x44]
+opcode    = "0x44 KADEMLIA2_PUBLISH_SOURCE_REQ (proto 0xE4), plain"
+direction = "aMule (203.0.113.2:4674) -> the placed near-file member (203.0.113.6:4690)"
+length    = "115 bytes"
+layout    = "proto+opcode + fileKey(16) + sourceID(16) + tagCount(1) + 7 tags"
+file_key  = "8ae51bc333f65fec310ab540d40681b8 — the file's ED2K hash under the per-32-bit-word swap Kad targets use"
+
+[frames.publish_source_req_0x44.tags]
+"0xFF SOURCETYPE" = "UINT8 (0x09) = 5 — firewalled, buddy-served, past 4 GiB"
+"0xFB SERVERIP"   = "UINT32 (0x03), `cb 00 71 03` = 203.0.113.3 — the buddy's IPv4"
+"0xFA SERVERPORT" = "UINT16 (0x08) = 4679 — the buddy's UDP port"
+"0xF8 BUDDYHASH"  = "STRING (0x02), length 32, `CCDDEEFF8899AABB4455667700112233` — upper-case big-endian ~publisherKadID"
+"0xFD SOURCEPORT" = "UINT16 (0x08) = 4662"
+"0x02 FILESIZE"   = "UINT64 (0x0B), `00 f2 05 2a 01 00 00 00` = 5,000,000,000"
+"0xF3 ENCRYPTION" = "UINT8 (0x09) = 0x00 — appended after the firewalled/direct branch, so it rides last"

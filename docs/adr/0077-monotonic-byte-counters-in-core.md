@@ -35,6 +35,11 @@ statistics API:
   (`KnownFile.cpp:76-98`): upload requests, slots granted and bytes served, for this
   run and all time (`ShareTotals`).
 
+**A storage reading on the same row is not a counter.** `DownloadDiagnostics::allocated_bytes`
+(ADR-0111) is what the filesystem reserved for the `.part`, read after a write: it falls when a
+gap is punched, may exceed the file's length, and is never a total or a rate. Facts only, no
+ratio, kept in the shared `DiagnosticsState`.
+
 **Rows are transient; totals are not.** A download row retires on teardown and an
 upload row when its slot is released, but nothing subtracts from the session totals,
 and a byte counted after its row is gone still lands there. A consumer polling more
@@ -46,9 +51,9 @@ slowly than transfers finish still sees every byte.
   `PeerWorkerEvent::BlockReceived`, before the scheduling brain judges the block. A
   duplicate range or a block a later hash check discards still crossed the socket.
   `received_bytes` is a transfer fact; verified parts remain the progress fact.
-- **Up** — in the serve enactor, when a `SendBlock` command is accepted by the peer's
-  connection writer, the last core-owned step before the socket. A command dropped into
-  a dead connection is never claimed. The upload row's lifetime follows the same
+- **Up** — in the serve enactor, when a block's session says it has left for the
+  socket (ADR-0031), the last core-owned step before the wire. A block dropped with a
+  dead connection or an ended flow is never claimed. The upload row's lifetime follows the same
   enactor's `UploadSlotGranted` / `UploadSlotReleased` facts.
 
 The sans-I/O `DownloadState` and `ServeState` brains stay clock-free and I/O-free; the

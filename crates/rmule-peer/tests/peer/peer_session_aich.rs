@@ -3,10 +3,11 @@
 //! between two real sessions.
 
 use rmule_peer::{
-    PeerCommand, PeerEvent, RequesterCommand, RequesterEvent, ServerCommand, ServerEvent,
+    AichFileHashReq, PeerCommand, PeerEvent, PeerOutput, RequesterCommand, RequesterEvent,
+    ServerCommand, ServerEvent,
 };
 use rmule_primitives::session::drain;
-use rmule_primitives::{AichRootHash, PacketProtocol};
+use rmule_primitives::{AichRootHash, Packet, PacketProtocol};
 use rmule_testkit::peer_session::*;
 
 #[test]
@@ -130,6 +131,7 @@ fn aich_file_hash_request_and_answer_round_trip_between_two_sessions() {
     );
 
     server.handle_command(PeerCommand::Server(ServerCommand::AnswerAichFileHash {
+        file_hash: h,
         root,
     }));
     let ans = last_write_bytes(&drain(|| server.poll_output()));
@@ -138,7 +140,112 @@ fn aich_file_hash_request_and_answer_round_trip_between_two_sessions() {
     assert!(
         events(&client_out)
             .iter()
-            .any(|e| matches!(e, PeerEvent::Requester(RequesterEvent::AichFileHashReceived { root: r }) if *r == root)),
+            .any(|e| matches!(e, PeerEvent::Requester(RequesterEvent::AichFileHashReceived { file_hash, root: r }) if *file_hash == h && *r == root)),
         "the client surfaces the server's root proposal: {client_out:?}"
     );
+}
+
+/// aMule's answer when it has no recovery data is the file hash alone
+/// (`DownloadClient.cpp:1691-1695`): the asker's part goes to its refetch, and
+/// the link stays.
+#[test]
+fn a_refused_recovery_ask_keeps_the_link_and_says_which_file() {
+    let h = file_hash(0xA4);
+    let mut session = asked_session(h);
+    let frame = Packet::new(PacketProtocol::Emule, 0x9C, h.as_bytes().to_vec());
+
+    session.handle_bytes(&frame.encode());
+
+    let out = drain(|| session.poll_output());
+    assert!(
+        !out.iter().any(|o| matches!(o, PeerOutput::Close(_))),
+        "a refusal is no violation: {out:?}"
+    );
+    assert!(
+        events(&out).iter().any(|e| matches!(e,
+            PeerEvent::Requester(RequesterEvent::AichRefused { file_hash }) if *file_hash == Some(h))),
+        "the refusal reaches the asker: {out:?}"
+    );
+}
+
+/// aMule counts any `OP_AICHANSWER` of 16 bytes or fewer as a failed ask
+/// (`DownloadClient.cpp:1611-1614`), so one too short to name its file is no
+/// violation either: the link stays, and the refusal names no file.
+#[test]
+fn an_answer_too_short_to_name_its_file_is_a_refusal() {
+    let mut session = asked_session(file_hash(0xA4));
+    let frame = Packet::new(PacketProtocol::Emule, 0x9C, vec![0xA4; 15]);
+
+    session.handle_bytes(&frame.encode());
+
+    let out = drain(|| session.poll_output());
+    assert!(
+        !out.iter().any(|o| matches!(o, PeerOutput::Close(_))),
+        "a short answer is no violation: {out:?}"
+    );
+    assert!(
+        events(&out).iter().any(|e| matches!(
+            e,
+            PeerEvent::Requester(RequesterEvent::AichRefused { file_hash: None })
+        )),
+        "the refusal reaches the asker: {out:?}"
+    );
+}
+
+#[test]
+fn a_refusal_is_the_file_hash_alone_on_the_wire() {
+    let h = file_hash(0xA5);
+    let mut session = identified_session();
+
+    session.handle_command(PeerCommand::Server(ServerCommand::RefuseAich {
+        file_hash: h,
+    }));
+
+    let out = drain(|| session.poll_output());
+    let sent = writes(&out);
+    assert_eq!(sent.len(), 1);
+    assert_eq!(
+        (sent[0].opcode(), sent[0].payload()),
+        (0x9C, h.as_bytes().as_slice())
+    );
+}
+
+/// A root may land long after its ask, past a later ask for another file: it
+/// goes out naming its own.
+#[test]
+fn a_late_root_names_its_own_file_after_a_later_ask() {
+    let (first, second) = (file_hash(0xA6), file_hash(0xA7));
+    let root = AichRootHash::from_bytes([0x5C; AichRootHash::BYTE_LEN]);
+    let mut session = identified_session();
+    for asked in [first, second] {
+        session.handle_bytes(
+            &AichFileHashReq { file_hash: asked }
+                .encode_packet()
+                .encode(),
+        );
+    }
+    let _ = drain(|| session.poll_output());
+
+    session.handle_command(PeerCommand::Server(ServerCommand::AnswerAichFileHash {
+        file_hash: first,
+        root,
+    }));
+
+    let out = drain(|| session.poll_output());
+    let sent = writes(&out);
+    assert_eq!(sent.len(), 1);
+    assert_eq!(sent[0].opcode(), 0x9D);
+    assert_eq!(&sent[0].payload()[..16], first.as_bytes());
+}
+
+/// An identified link with one `OP_AICHREQUEST` out for `file`.
+fn asked_session(file: rmule_primitives::FileHash) -> rmule_peer::PeerSession {
+    let mut session = identified_session();
+    session.handle_command(PeerCommand::Requester(RequesterCommand::RequestAich {
+        file_hash: file,
+        part: 0,
+        root: rmule_primitives::AichRootHash::from_bytes([0x11; 20]),
+    }));
+    let _ = drain(|| session.poll_output());
+    session
 }

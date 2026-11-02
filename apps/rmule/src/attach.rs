@@ -21,28 +21,41 @@
 //! act (ADR-0095), and a listed server is what they connect to — so the gate
 //! reads eD2k as on. The fetch dials no server, and it is one-shot like
 //! amuled's: a failure waits for the operator.
+//!
+//! The seed servers the deployment carries go in ahead of it (ADR-0120), the
+//! same way, through the actor: a cold start's list is the seeds, and what the
+//! fetch gives lands beside them or, when it fails, not at all.
+//!
+//! The server.met auto-update walk (ADR-0065), when the operator turned it
+//! on, goes the same way as the `AutoUpdateServerList` command. Both share
+//! the actor's one update slot, so when a first run is due too its mirror
+//! goes in front of the walk's addresses and one walk runs.
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use rmule_bootstrap::{
-    BootstrapConfig, FetchError, Fetcher, ReqwestFetcher, should_auto_fetch_server_met,
+    BootstrapConfig, FetchError, Fetcher, ReqwestFetcher, Seeds, should_auto_fetch_server_met,
+    should_seed_server_list,
 };
 use rmule_core::{
-    AppConfigStore, Core, CoreCommand, CoreConfig, DurableAppConfig, KadEnableConfig,
-    MappingBackend, ServerListCommand, ServerListStore, open_durable_store,
+    AppConfigStore, Core, CoreCommand, CoreConfig, CoreError, DurableAppConfig, Flag,
+    KadEnableConfig, ManagedServer, MappingBackend, OpenRefusal, Opening, OpeningWatch,
+    ServerListCommand, ServerListStore, open_durable_store_watched,
 };
 
 use crate::args::DataDir;
-use crate::config::{Preferences, SharedConfig};
+use crate::config::{AppFlag, Preferences, SharedConfig};
 use crate::connect::AtStart;
 use crate::state::{AttachFailure, SessionConfig};
 
 /// What attaching hands core from past this process: the HTTP fetch the
-/// server-list update and the Kad seed acquisition share, the backends port
-/// mapping talks to the router through, and the operator's home directory the
-/// share guards refuse. Given rather than built inside, because talking to a
-/// mirror or a router, and whose machine this is, are deployment facts: the
-/// app takes [`Live`], a test a canned fetch, no backends and a scratch home.
+/// server-list update and the Kad seed acquisition share, the seeds a cold
+/// start begins from, the backends port mapping talks to the router through,
+/// and the operator's home directory the share guards refuse. Given rather than
+/// built inside, because talking to a mirror or a router, naming public hosts,
+/// and whose machine this is, are deployment facts: the app takes [`Live`], a
+/// test a canned fetch, no public seed, no backends and a scratch home.
 pub trait Deployment {
     /// The fetch this deployment makes.
     type Fetcher: Fetcher + Clone + Send + Sync + 'static;
@@ -54,6 +67,9 @@ pub trait Deployment {
     /// When the HTTP client cannot be built.
     fn fetcher(&self, bootstrap: &BootstrapConfig) -> Result<Self::Fetcher, FetchError>;
 
+    /// The seeds a cold start begins from (ADR-0120).
+    fn seeds(&self) -> Seeds;
+
     /// The Mapping Backends (ADR-0086), keyed by the install's PCP nonce
     /// secret. Empty maps nothing.
     fn mapping_backends(&self, port_map_secret: u32) -> Vec<Arc<dyn MappingBackend>>;
@@ -63,8 +79,8 @@ pub trait Deployment {
     fn home(&self) -> Option<std::path::PathBuf>;
 }
 
-/// The shipped app's deployment: `reqwest` for the mirrors, and PCP, NAT-PMP
-/// and UPnP-IGD for the router.
+/// The shipped app's deployment: `reqwest` for the mirrors, the seed list
+/// compiled in, and PCP, NAT-PMP and UPnP-IGD for the router.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Live;
 
@@ -73,6 +89,10 @@ impl Deployment for Live {
 
     fn fetcher(&self, bootstrap: &BootstrapConfig) -> Result<ReqwestFetcher, FetchError> {
         ReqwestFetcher::from_config(bootstrap)
+    }
+
+    fn seeds(&self) -> Seeds {
+        Seeds::embedded()
     }
 
     fn mapping_backends(&self, port_map_secret: u32) -> Vec<Arc<dyn MappingBackend>> {
@@ -98,9 +118,15 @@ pub struct Attachment<F> {
     pub preferences: Preferences,
     /// The Kad join, assembled here and run by the app later.
     pub kad: KadJoin<F>,
-    /// What the start does about connecting (ADR-0095): nothing unless the
-    /// operator turned connect at start on.
+    /// What the start does about connecting (ADR-0095): nothing with connect
+    /// at start off, or on a first run.
     pub at_start: AtStart,
+    /// The Connection Ceiling the open-descriptor limit lowered at attach,
+    /// for the operator to read why (ADR-0116).
+    pub ceiling_lowered: Option<rmule_core::CeilingLowered>,
+    /// This run is a cold start in a build with no seed list (ADR-0120): the
+    /// first list rests on the mirror alone, and the operator is told.
+    pub no_seeds: bool,
 }
 
 /// Everything the Kad join needs once the app arms it. Assembled during
@@ -119,10 +145,23 @@ pub struct KadJoin<F> {
     pub fetcher: F,
 }
 
+/// A slow open said on the plain terminal, before the screen starts: a climb
+/// as it begins, a repair once, whatever its progress.
+fn opening_on_the_terminal() -> OpeningWatch {
+    let repair_told = AtomicBool::new(false);
+    Arc::new(move |opening| {
+        if matches!(opening, Opening::Repairing { .. }) && repair_told.swap(true, Ordering::Relaxed)
+        {
+            return;
+        }
+        eprintln!("rmule: {}", crate::words::app::store_opening(opening));
+    })
+}
+
 /// Trace why attaching failed, for the Run Log, and hand back the step.
 fn attach_failed(failure: AttachFailure, error: &dyn std::fmt::Display) -> AttachFailure {
     tracing::warn!(
-        step = crate::words::app::attach_failure_words(failure),
+        step = %crate::words::app::attach_failure_words(&failure),
         %error,
         "the core could not be attached"
     );
@@ -142,14 +181,21 @@ fn attach_failed(failure: AttachFailure, error: &dyn std::fmt::Display) -> Attac
 pub async fn attach<D: Deployment>(
     resolved: Option<DataDir>,
     deployment: &D,
+    run_log: rmule_core::run_log::LevelHandle,
 ) -> Result<Attachment<D::Fetcher>, AttachFailure> {
     let resolved = resolved.ok_or(AttachFailure::NoDataDir)?;
     let data_dir = resolved.path.clone();
     // The one store open of the process: every durable seam below is a view
     // over this handle, and the engine's file lock makes a second app on the
     // same data dir fail here rather than race.
-    let durable = open_durable_store(&data_dir)
-        .map_err(|error| attach_failed(AttachFailure::OpenStore, &error))?;
+    let durable =
+        open_durable_store_watched(&data_dir, &opening_on_the_terminal()).map_err(|error| {
+            let refusal = match &error {
+                CoreError::StoreRefused { refusal, .. } => *refusal,
+                _ => OpenRefusal::Damaged,
+            };
+            attach_failed(AttachFailure::OpenStore(refusal, data_dir.clone()), &error)
+        })?;
     let store = DurableAppConfig::new(Arc::clone(&durable));
 
     // The per-install PCP nonce secret (ADR-0086): generate-once, so a restart
@@ -186,11 +232,15 @@ pub async fn attach<D: Deployment>(
     // until the user happened to open a peer session. It is a *preference*
     // rather than a hardcode — defaulting to the opt-in, and something an
     // operator can turn back off — as are both mirror URLs.
+    let flags = &preferences.core.flags;
     let bootstrap = BootstrapConfig {
-        auto_fetch_server_met: preferences.auto_fetch_server_met,
-        auto_fetch_nodes_dat: preferences.auto_fetch_nodes_dat,
-        server_met_url: preferences.server_met_url.clone(),
-        nodes_dat_url: preferences.nodes_dat_url.clone(),
+        auto_fetch_server_met: flags.is_on(Flag::AutoFetchServerMet),
+        auto_update_enabled: flags.is_on(Flag::AutoUpdateServerMet),
+        auto_update_urls: preferences.core.server_met_auto_update_urls.clone(),
+        auto_fetch_nodes_dat: flags.is_on(Flag::AutoFetchNodesDat),
+        server_met_url: preferences.core.server_met_url.clone(),
+        nodes_dat_url: preferences.core.nodes_dat_url.clone(),
+        seeds: deployment.seeds(),
         ..BootstrapConfig::default()
     };
     let fetcher = deployment
@@ -204,7 +254,16 @@ pub async fn attach<D: Deployment>(
     // every seam method is `&self`, so nothing locks). The operator's Core
     // Settings — the UDP port, the obfuscation policy, `Remember peers`, the
     // port-mapping switch — come off that handle too (ADR-0069).
-    let core = Core::builder(CoreConfig::default(), durable)
+    // The Connection Ceiling under the open-descriptor limit, raised once
+    // here, at start (ADR-0116).
+    let (peer_connections, ceiling_lowered) = CoreConfig::default()
+        .peer_connections
+        .within_descriptors(rmule_os::descriptors::raise_descriptor_limit());
+    let config = CoreConfig {
+        peer_connections,
+        ..CoreConfig::default()
+    };
+    let core = Core::builder(config, durable)
         .server_list_fetcher(fetcher.clone())
         // Credit-ring continuity: seed from and flush to clients.met beside
         // the other data files (ADR-0066).
@@ -224,6 +283,7 @@ pub async fn attach<D: Deployment>(
         // Settings' nickname and port, and the Kad identity is the store's,
         // read by core itself (ADR-0069).
         .restore_at_attach()
+        .run_log(run_log)
         // The Shared Directory List's guards (ADR-0101), the download
         // directory's among them: core never reads the environment, so the
         // home and the data directory are named here.
@@ -237,20 +297,34 @@ pub async fn attach<D: Deployment>(
     // live key is taken up at once (ADR-0069).
     let config = SharedConfig::new(core.settings(), store.clone());
 
-    // ADR-0065's first-run fetch, through the actor (see the module docs).
-    if should_auto_fetch_server_met(true, listed.is_empty(), bootstrap.auto_fetch_server_met) {
-        let url = bootstrap.server_met_url.clone();
-        let update = CoreCommand::ServerList(ServerListCommand::UpdateServerList { url });
-        // A core that cannot take its first command is gone; the bridge
-        // reports the closed core, so the run still opens.
-        if let Err(error) = core.send(update).await {
-            tracing::warn!(%error, "first-run server list fetch could not be sent");
+    // The seeds, then ADR-0065's first-run fetch and auto-update walk, through
+    // the actor and in this order (see the module docs). A core that cannot
+    // take a command is gone; the bridge reports the closed core, so the run
+    // still opens.
+    let cold = should_seed_server_list(true, listed.is_empty());
+    if cold {
+        for server in bootstrap.seeds.servers().iter().cloned() {
+            let add = ServerListCommand::AddServer {
+                server: ManagedServer::seed(server),
+            };
+            if let Err(error) = core.send(CoreCommand::ServerList(add)).await {
+                tracing::warn!(%error, "a seed server could not be sent");
+            }
         }
+    }
+    let no_seeds = cold && bootstrap.seeds.is_empty();
+    if no_seeds {
+        tracing::warn!("this build carries no seed list");
+    }
+    if let Some(acquisition) = list_acquisition_at_start(&bootstrap, listed.is_empty())
+        && let Err(error) = core.send(CoreCommand::ServerList(acquisition)).await
+    {
+        tracing::warn!(%error, "the server list acquisition at start could not be sent");
     }
 
     let session = SessionConfig {
         server,
-        download_dir: preferences.download_dir.clone(),
+        download_dir: preferences.core.download_dir.clone(),
     };
     let kad = KadJoin {
         config: crate::kad::enable_config(&data_dir),
@@ -259,7 +333,7 @@ pub async fn attach<D: Deployment>(
         fetcher,
     };
     let at_start = crate::connect::at_start(
-        preferences.connect_at_start,
+        preferences.flags.is_on(AppFlag::ConnectAtStart),
         preferences.last_server.as_ref(),
         &listed,
     );
@@ -271,5 +345,29 @@ pub async fn attach<D: Deployment>(
         preferences,
         kad,
         at_start,
+        ceiling_lowered,
+        no_seeds,
+    })
+}
+
+/// What the app sends core at start to grow the server list (ADR-0065): the
+/// auto-update walk when its switch is on, with the first-run mirror in
+/// front of its addresses when a first run is due too, so one acquisition
+/// runs; else the first-run fetch alone when it is due; else nothing.
+fn list_acquisition_at_start(
+    bootstrap: &BootstrapConfig,
+    list_empty: bool,
+) -> Option<ServerListCommand> {
+    let first_run = should_auto_fetch_server_met(true, list_empty, bootstrap.auto_fetch_server_met);
+    if bootstrap.auto_update_enabled {
+        let urls = first_run
+            .then(|| bootstrap.server_met_url.clone())
+            .into_iter()
+            .chain(bootstrap.auto_update_urls.iter().cloned())
+            .collect();
+        return Some(ServerListCommand::AutoUpdateServerList { urls });
+    }
+    first_run.then(|| ServerListCommand::UpdateServerList {
+        url: bootstrap.server_met_url.clone(),
     })
 }

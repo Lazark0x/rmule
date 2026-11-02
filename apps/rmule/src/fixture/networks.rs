@@ -3,12 +3,15 @@
 use std::time::{Duration, Instant};
 
 use ratatui::crossterm::event::KeyCode;
-use rmule_core::diagnostics::{DiagnosticsSnapshot, KadRuntimeDiagnostics, ServerDiagnostics};
+use rmule_core::diagnostics::{
+    DiagnosticsSnapshot, KadRuntimeDiagnostics, PingState, ServerDiagnostics,
+};
 use rmule_core::{CoreEvent, DownloadEvent, ManagedServer, ServerPriority};
 use rmule_primitives::{ClientId, Ed2kText, ServerEndpoint};
 
 use crate::action::Action;
 use crate::state::{Ed2kConnection, UiState};
+use crate::views::View;
 use crate::views::networks::NetworksView;
 
 use super::{download_id, press, session};
@@ -39,10 +42,11 @@ pub(crate) fn listed(host: &str, port: u16, name: &str) -> ServerDiagnostics {
 pub(crate) fn listed_servers() -> UiState {
     let mut first = listed("10.0.0.1", 4661, "eDonkey Prime");
     first.server.description = Ed2kText::from_utf8("Main hub, no fakes");
-    first.ping = Some(Duration::from_millis(42));
+    first.ping = PingState::Measured(Duration::from_millis(42));
     first.users = Some(1_204_331);
     first.files = Some(24_507_112);
     first.age = Some(Duration::from_secs(12));
+    first.status_age = Some(Duration::from_secs(12));
     first.server.figures = Some(rmule_core::ServerFigures {
         udp_flags: Some(rmule_primitives::ServerUdpFlags::from_bits(0x0000_073B)),
         ..rmule_core::ServerFigures::answered(1_700_000_000)
@@ -58,10 +62,11 @@ pub(crate) fn listed_servers() -> UiState {
     second.server.description = Ed2kText::from_utf8("Operator pinned");
     second.server.is_static = true;
     second.server.priority = ServerPriority::High;
-    second.ping = Some(Duration::from_millis(1_200));
+    second.ping = PingState::Measured(Duration::from_millis(1_200));
     second.users = Some(9_812);
     second.files = Some(431_004);
     second.age = Some(Duration::from_secs(2 * 3_600));
+    second.status_age = Some(Duration::from_secs(2 * 3_600));
     second.health = rmule_core::ServerHealth::Answered;
 
     let mut third = listed("172.16.9.9", 5000, "Flaky Mirror");
@@ -69,6 +74,9 @@ pub(crate) fn listed_servers() -> UiState {
     third.server.priority = ServerPriority::Low;
     third.health = rmule_core::ServerHealth::Dead;
     third.dead_since = Some(rmule_core::DeadSince::For(Duration::from_secs(45 * 60)));
+    third.ping = PingState::Unanswered {
+        since: Duration::from_secs(90 * 60),
+    };
 
     let fourth = listed("192.168.4.4", 4661, "");
 
@@ -76,12 +84,13 @@ pub(crate) fn listed_servers() -> UiState {
         ed2k: Ed2kConnection::Connected {
             client_id: ClientId::from_u32(ClientId::LOW_ID_THRESHOLD),
         },
+        connected_server: Some(endpoint("10.0.0.1", 4661)),
         diagnostics: DiagnosticsSnapshot {
             servers: vec![first, second, third, fourth],
             connected_server: Some(endpoint("10.0.0.1", 4661)),
             ..DiagnosticsSnapshot::default()
         },
-        session: Some(session()),
+        session: session(),
         ..UiState::default()
     }
 }
@@ -114,10 +123,8 @@ pub(crate) fn with_kad(contact_responded: bool) -> UiState {
     state
 }
 
-/// A long name and a long description at the 80-column design floor have
-/// nowhere to go but down. Nothing is clipped and no ellipsis appears
-/// The identity columns are at their floors, so the wrap is the
-/// tightest the table ever renders without the shrink path.
+/// A long name and a long description at the 80-column design floor: both
+/// cut on one line, both whole on the Off-screen line.
 pub(crate) fn long_row() -> UiState {
     let mut row = listed(
         "198.51.100.200",

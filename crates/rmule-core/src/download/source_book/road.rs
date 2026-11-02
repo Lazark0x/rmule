@@ -5,7 +5,9 @@
 //! CallbackPending stage, so a road that ends by any route takes its deadlines
 //! with it, and the brain's tick expires those that come due (ADR-0026).
 
-use std::time::Instant;
+use std::time::{Duration, Instant};
+
+use rmule_peer::natt::CALLBACK_SILENCE_FALLBACK;
 
 use super::SourceBook;
 use super::record::Stage;
@@ -79,6 +81,20 @@ impl PendingRoad {
     /// Arm `deadline` to fall at `at`, replacing any instant it held.
     pub(crate) fn arm(&mut self, deadline: Deadline, at: Instant) {
         *self.at_mut(deadline) = Some(at);
+    }
+
+    /// The callback's ask leaves at `leaves`: the deadlines that count from it
+    /// count from there, those still armed.
+    pub(crate) fn wait_from(&mut self, leaves: Instant, callback_timeout: Duration) {
+        if self.slot_release_at.is_some() {
+            self.arm(Deadline::SlotRelease, leaves + callback_timeout);
+        }
+        if self.silence_at.is_some() {
+            self.arm(
+                Deadline::SilenceFallback,
+                leaves + CALLBACK_SILENCE_FALLBACK,
+            );
+        }
     }
 
     fn at_mut(&mut self, deadline: Deadline) -> &mut Option<Instant> {

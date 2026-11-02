@@ -1,12 +1,12 @@
-┌ Search ───────────────────────────────────────────────── / focus  ←→ method  o options ┐
+┌ Search ──────────────────────────────────────────────────────────── i focus  o options ┐
 │❯ linux                                                                                 │
-│Method: eD2k server ▾  Kad ▾ (always on — every search also walks Kad)                  │
+│Asks: nobody yet; a search waits for a server or Kad                                    │
 │Filters: none   o edit                                                                  │
 └────────────────────────────────────────────────────────────────────────────────────────┘
 [linux · 1]
-┌ Results · Stopped with the core ─────────────── [ ] search  x close  s sort  S reverse ┐
-│  Name ▲                                                    Size      Sources Type      │
-│▸ linux-1.iso                                             1.0 KB           40 CD-Images │
+┌ Results · Stopped with the engine ────────── Enter menu  / filter  [ ] search  x close ┐
+│  Name ▲                                                          Size Sources Type     │
+│▸ linux-1.iso                                                   1.0 KB      40 CD-Images│
 │                                                                                        │
 │                                                                                        │
-└────────────────────────────────────────────────────────────────────────────────────────┘
+└───────────────────────────────────────────────────────────────────────────────── 1 / 1 ┘

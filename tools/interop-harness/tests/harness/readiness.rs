@@ -6,6 +6,7 @@ use std::net::{SocketAddr, TcpListener};
 use std::time::Duration;
 
 use rmule_interop_harness::readiness::{retry_with_backoff, wait_for_tcp_ready};
+use socket2::{Domain, Protocol, Socket, Type};
 
 #[test]
 fn tcp_readiness_succeeds_when_port_accepts_connections() -> anyhow::Result<()> {
@@ -19,9 +20,13 @@ fn tcp_readiness_succeeds_when_port_accepts_connections() -> anyhow::Result<()> 
 
 #[test]
 fn tcp_readiness_times_out_for_unused_port() {
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    let addr = listener.local_addr().unwrap();
-    drop(listener);
+    // Bound but never listening: every connect is refused, and the port stays ours, so no other
+    // listener takes it and no retry can connect to itself from it.
+    let socket = Socket::new(Domain::IPV4, Type::STREAM, Some(Protocol::TCP)).unwrap();
+    socket
+        .bind(&SocketAddr::from(([127, 0, 0, 1], 0)).into())
+        .unwrap();
+    let addr = socket.local_addr().unwrap().as_socket().unwrap();
 
     let error = wait_for_tcp_ready(addr, Duration::from_millis(30)).unwrap_err();
 

@@ -1,11 +1,9 @@
 //! The `natt-server-punch-{cone,symmetric}` topology: an `ed2ksrv` on the
 //! fake-public WAN and **two rmule peers, each behind its own NAT Gateway**.
 //!
-//! One gateway per peer is not tidiness. ADR-0091 records that
-//! `ed2k-server` `4da4774` keys `observed_udp_ports` by IPv4 address alone, so
-//! two NAT-T clients behind one NAT overwrite each other's observed port and
-//! each is introduced at whichever `0x9F` keepalive landed last. Two gateways
-//! give the server two addresses to key on.
+//! One gateway per peer keeps each NAT's own mapping on the wire: the punch is
+//! between two gateways. ed2k-server before v0.9.84 also kept one observed port
+//! per address, so two clients behind one gateway overwrote each other's.
 //!
 //! **Both ends of the punch are rmule**, so this is an `rmule-only` row
 //! (ADR-0045's 2026-09-16 amendment): what the *server* emits — `0x60` in,
@@ -45,7 +43,7 @@ use crate::bench_doctor::CONNTRACK_UDP_TIMEOUT_SECS;
 use crate::docker::{InternalNetwork, RunContainer};
 use crate::fake_public::{MAX_NODES_PER_SUBNET, fake_public_address, subnet_cidr};
 use crate::flow::bench::{Bench, run_checked};
-use crate::flow::ed2ksrv::Ed2ksrvImage;
+use crate::flow::ed2ksrv::ED2KSRV;
 use crate::flow::gate::wait_for_container_log;
 use crate::flow::nat::NAT_CLIENT_UDP_PORT;
 use crate::flow::nat::claims::Body;
@@ -160,6 +158,10 @@ pub(crate) fn drive(
     Vec<crate::flow::taps::TapRow>,
 )> {
     let flow = options.flow;
+    let crypt_target = options.target_requires_crypt;
+    if crypt_target && flow != NattFlow::ServerPunchCone {
+        bail!("--target-requires-crypt runs on natt-server-punch-cone only");
+    }
     // Requester first. Every row but the one-symmetric one stands both peers
     // behind `nat_type`.
     let peer_types = flow.peer_nat_types().unwrap_or([nat_type; 2]);
@@ -315,10 +317,15 @@ pub(crate) fn drive(
                 .filter(|_| index == 1)
                 .map(|file| file.path.as_path()),
         };
-        let extra = observers
+        let mut extra = observers
             .as_ref()
             .map(|observers| observers.driver_args(index))
             .unwrap_or_default();
+        if crypt_target {
+            // Peer A asks and peer B is asked: B requires, A can.
+            let policy = if index == 1 { "required" } else { "supported" };
+            extra.extend(["--peer-crypt".to_owned(), policy.to_owned()]);
+        }
         start_driver(bench, options, peer, &plan, &server_v4, &extra)?;
     }
 
@@ -399,7 +406,7 @@ pub(crate) fn drive(
         bench,
         &server_taps,
         &gateway_taps,
-        wire_rows(&server_v4, &peers),
+        wire_rows(&server_v4, &peers, crypt_target),
     )?;
     let taps = server_taps.rows(&bench.docker, "ip")?;
     let prediction = match &observers {
@@ -444,7 +451,7 @@ pub(crate) fn drive(
         vec![Body {
             name: "ed2ksrv".to_owned(),
             image: options.ed2ksrv_image.to_owned(),
-            pin: crate::flow::ed2ksrv::body_pin(&bench.docker, options.ed2ksrv_image),
+            pin: crate::flow::ed2ksrv::ED2KSRV.body_pin(&bench.docker, options.ed2ksrv_image),
             address_v4: server_v4.clone(),
             address_v6: String::new(),
         }],
@@ -524,7 +531,7 @@ pub(super) fn start_server(
         .with_context(|| format!("write {}", config_path.display()))?;
 
     let name = format!("rmule-interop-nattsrv-{suffix}");
-    let ed2ksrv = Ed2ksrvImage::check(&bench.docker, options.ed2ksrv_image)?;
+    let ed2ksrv = ED2KSRV.check(&bench.docker, options.ed2ksrv_image)?;
     bench.start_extra(
         &name,
         ed2ksrv

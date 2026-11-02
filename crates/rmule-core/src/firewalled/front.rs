@@ -71,7 +71,6 @@ use tokio::sync::{mpsc, watch};
 use super::direct_callback::DirectCallbackConsume;
 use super::link::{BuddySnapshot, FirewalledSlot, RecruitedBuddy};
 use super::recruit::{AdoptOutcome, FindBuddyRes};
-use crate::CoreEvent;
 use crate::adapters::{HelloAdverts, SharedTunnelAdmit};
 use crate::address_learning::SharedAddressLearning;
 use crate::client_udp::ClientUdpDatagram;
@@ -212,7 +211,7 @@ pub(crate) struct FirewalledWiring {
     /// Where a buddy dial that did not hold is reported (ADR-0075, Run Log).
     /// Weak, as every long-lived task's event sender is: this front must not
     /// keep the actor's event channel open.
-    pub(crate) events: Option<mpsc::WeakSender<CoreEvent>>,
+    pub(crate) events: Option<crate::service::WeakOutbox>,
 }
 
 /// The front itself.
@@ -294,7 +293,12 @@ fn spawn_with<D: Dialer>(
         kad_start: shared.kad_starts(),
         dialed_tx,
     };
-    tokio::spawn(front.run(command_rx, dialed_rx, tick));
+    let events = front.wiring.events.clone();
+    crate::supervisor::spawn_told(
+        crate::service::LongTask::FirewalledFront,
+        events,
+        front.run(command_rx, dialed_rx, tick),
+    );
     command_tx
 }
 

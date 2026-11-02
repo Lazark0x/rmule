@@ -12,38 +12,41 @@
 use std::time::Instant;
 
 use ratatui::Frame;
-use ratatui::layout::{Constraint, Rect};
+use ratatui::layout::Rect;
 use ratatui::style::Style;
-use ratatui::text::Span;
-use ratatui::widgets::{Cell, HighlightSpacing, Row, Table};
 use rmule_core::DownloadId;
+use rmule_core::diagnostics::WorkerPhase;
 
 use super::downloads::display_name;
-use super::{
-    COL_SPACING, Pane, SYMBOL_W, TransfersView, draw_centered, pane_block, selected_id,
-    table_widths,
-};
-use crate::row_selection::{MARKER, selection_style};
+use super::{Pane, TransfersView, draw_centered, pane_block, selected_id};
 use crate::state::{DownloadRow, DownloadStatus, NO_NETWORK_WAIT, UiState};
-use crate::table_sort::{SortedTable, arrow_floors, header_label, header_widths};
+use crate::table::{self, Cell, Rows, Table, widest};
 use crate::theme::Theme;
-use crate::views::{DrawnRows, say_gave_way};
 use crate::views::{rate_cell, software_label};
 use crate::words::Sentence;
-use crate::words::download::source_wait_words;
-use crate::wrap::{TableColumns, clamp_u16, gave_way, wrapped_cell};
+use crate::words::download::{phase_words, source_wait_words};
+use crate::words::{absent, hints, transfers};
+use crate::wrap::display_width;
 
 mod row;
 pub(super) mod sort;
 
 use row::{SourceRow, source_rows};
-use sort::SourcesTable;
 
 /// Sources table columns: Source · Software · Phase · Speed. `Software` holds
 /// the text a peer chose to call itself, so it is greedy and takes the slack
 /// left after the others; they are bounded — an endpoint, a phase, a rate —
-/// and ask for the widest drawn, up to [`SOURCE_CAPS`].
-const SOURCE_COLS: [usize; 4] = [22, 12, 16, 10];
+/// and ask for the widest drawn, up to [`SOURCE_CAPS`]. Source's floor holds an
+/// IPv4 endpoint with its port, Phase's its widest usual words.
+fn source_floors() -> [usize; 4] {
+    let phase = widest(&[
+        phase_words(&WorkerPhase::Connecting),
+        phase_words(&WorkerPhase::AskingFile),
+        phase_words(&WorkerPhase::WaitingForSlot { rank: Some(9_999) }),
+        phase_words(&WorkerPhase::VerifyingPart { part_index: 999 }),
+    ]);
+    [22, 12, phase, crate::words::units::rate_cells()]
+}
 const SOURCE_FLEX: usize = 1;
 
 /// The most each bounded column asks for: an IPv6 endpoint with its port, a
@@ -66,9 +69,7 @@ impl TransfersView {
         now: Instant,
     ) {
         let focused = self.focus == Pane::Sources;
-        self.source_rows = DrawnRows::default();
-        self.source_header_area = Rect::default();
-        let selected = selected_id(ids, &self.table_state);
+        let selected = selected_id(ids, self.selected);
         let title = match selected {
             Some(id) => {
                 let row = state.downloads.get(&id);
@@ -76,177 +77,128 @@ impl TransfersView {
                     row.and_then(|r| r.metadata.as_ref()),
                     row.and_then(|r| r.file_hash),
                 );
-                format!(" Sources · {name} ")
+                transfers::sources_title(Some(&name))
             }
-            None => " Sources ".to_string(),
+            None => transfers::sources_title(None),
         };
-        let block = pane_block(area.width, (&title, ""), focused, theme);
-        let inner = block.inner(area);
-
-        // A row waiting for sources or a network has none to list, and the
-        // pane says what would end the wait rather than only that it is empty.
-        let selected_row = selected.and_then(|id| state.downloads.get(&id));
-        let (Some(id), Some(diag)) = (selected, self.selected_diag(state, ids)) else {
+        if let Some(text) = self.idle_sources_text(state, ids, now) {
+            let block = pane_block(area.width, (&title, ""), focused, theme);
+            let inner = block.inner(area);
             frame.render_widget(block, area);
-            let reconnect_wait = reconnect_wait(state, now);
-            let text = match selected {
-                Some(_) => idle_text(selected_row, reconnect_wait.as_ref()),
-                None => "no download selected",
-            };
-            draw_centered(frame, inner, text, theme.dim_text());
+            draw_centered(frame, inner, &text, theme.dim_text());
+            return;
+        }
+        let (Some(id), Some(diag)) = (selected, self.selected_diag(state, ids)) else {
             return;
         };
         let listed = source_rows(diag);
-        if listed.is_empty() {
-            frame.render_widget(block, area);
-            let reconnect_wait = reconnect_wait(state, now);
-            let text = idle_text(selected_row, reconnect_wait.as_ref());
-            draw_centered(frame, inner, text, theme.dim_text());
-            return;
-        }
 
-        let block = pane_block(area.width, (&title, " s sort  S reverse "), focused, theme);
-        // Greedy endpoint column, wrapping cells; the sorted column is
-        // floored wide enough for its arrow, so the header stays one line.
+        let block = pane_block(
+            area.width,
+            (
+                &title,
+                &hints::line(&[
+                    hints::TO_DOWNLOADS,
+                    hints::FILTER,
+                    hints::SORT,
+                    hints::REVERSE,
+                    hints::ZOOM,
+                ]),
+            ),
+            focused,
+            theme,
+        );
         let keys = self.source_keys(state, Some(id));
         let workers: Vec<SourceRow<'_>> = keys
             .iter()
             .filter_map(|key| listed.iter().find(|row| row.key() == *key).copied())
             .collect();
-        let widest = |text: &dyn Fn(&SourceRow<'_>) -> String| {
-            workers
-                .iter()
-                .map(|worker| text(worker).chars().count())
-                .max()
-                .unwrap_or(0)
+        let plain = Style::new().fg(theme.fg);
+        // Per-slot receive rate, differenced from the `bytes_received` this
+        // worker carries while receiving. Software is a dash until the slot's
+        // peer completes its hello — and for good for a source whose dial
+        // ended before it.
+        let cells = |index: usize, _: &[usize]| {
+            let worker = &workers[index];
+            vec![
+                Cell::new(worker.source_label(), plain),
+                worker.software().map_or_else(
+                    || Cell::absent(absent::UNKNOWN, theme.dim_text()),
+                    |software| Cell::new(software_label(software), plain),
+                ),
+                Cell::new(worker.phase_cell(), plain),
+                rate_cell(worker.bps(id, state), theme),
+            ]
         };
-        let widths_drawn = [
-            widest(&|worker| worker.source_label()),
-            0,
-            widest(&|worker| worker.phase_cell()),
-            widest(&|worker| rate_cell(worker.bps(id, state), theme).0),
-        ];
         let mut wants = [0; 4];
         for (index, cap) in SOURCE_CAPS.into_iter().enumerate() {
             if let Some(cap) = cap {
-                wants[index] = widths_drawn[index].min(cap);
+                let widest = (0..workers.len())
+                    .map(|row| display_width(&cells(row, &[])[index].text))
+                    .max()
+                    .unwrap_or(0);
+                wants[index] = widest.min(cap);
             }
         }
-        let floors = arrow_floors(&self.source_sort, &SOURCE_COLS, SOURCE_FLEX);
-        let headers = header_widths(&self.source_sort);
-        let cols = table_widths(
-            area,
-            &TableColumns {
-                floors: &floors,
-                headers: &headers,
-                flex: SOURCE_FLEX,
-                wants: &wants,
-                give_way: &SOURCE_GIVE_WAY,
-            },
-        );
-        let header = Row::new(
-            SourcesTable::COLUMNS
-                .iter()
-                .map(|column| header_label(column.label, self.source_sort.arrow(column.column))),
+        let table = Table::of(
+            &self.source_sort,
+            &source_floors(),
+            SOURCE_FLEX,
+            &SOURCE_GIVE_WAY,
+            theme.header(),
         )
-        .style(theme.dim_text());
-        let mut values: Vec<Vec<String>> = Vec::new();
-        let (rows, heights): (Vec<_>, Vec<u16>) = workers
-            .iter()
-            .map(|worker| {
-                let endpoint = worker.source_label();
-                let (source, source_h) =
-                    wrapped_cell(&endpoint, cols[0], Style::new().fg(theme.fg), false);
-                let (phase, phase_h) = wrapped_cell(
-                    &worker.phase_cell(),
-                    cols[2],
-                    Style::new().fg(theme.fg),
-                    false,
-                );
-                // Per-slot receive rate, differenced from the `bytes_received`
-                // this worker carries while receiving.
-                let (speed_text, speed_style) = rate_cell(worker.bps(id, state), theme);
-                let (speed, speed_h) = wrapped_cell(&speed_text, cols[3], speed_style, false);
-                // Degrade: a dash until the slot's peer completes its hello —
-                // and for good for a source whose dial ended before it.
-                let (software, software_h) = worker.software().map_or_else(
-                    || (Cell::from(Span::styled("—", theme.dim_text())), 1),
-                    |s| {
-                        wrapped_cell(
-                            &software_label(s),
-                            cols[1],
-                            Style::new().fg(theme.fg),
-                            false,
-                        )
-                    },
-                );
-                values.push(vec![
-                    endpoint.clone(),
-                    worker
-                        .software()
-                        .map_or_else(|| "—".to_string(), software_label),
-                    worker.phase_cell(),
-                    speed_text.clone(),
-                ]);
-                let height = source_h.max(phase_h).max(speed_h).max(software_h);
-                let row = Row::new(vec![source, software, phase, speed]).height(height);
-                (row, height)
-            })
-            .unzip();
-        let widths = cols
-            .iter()
-            .map(|width| Constraint::Length(clamp_u16(*width)));
-        let table = Table::new(rows, widths)
-            .header(header)
-            .column_spacing(COL_SPACING)
-            .row_highlight_style(selection_style(theme, focused))
-            .highlight_symbol(MARKER)
-            // The gutter is always there, so a header click lands where drawn.
-            .highlight_spacing(HighlightSpacing::Always);
-        let framed = block.inner(area);
+        .wants(&wants);
+        let rows = Rows {
+            count: workers.len(),
+            selected: self.source_selected,
+            focused,
+            cells: &cells,
+            marker: None,
+            tagged: None,
+            filter: Some((&self.source_filter, listed.len())),
+        };
+        let inner = block.inner(area);
         frame.render_widget(block, area);
-        // The selected source's values in the columns that gave way.
-        let off_screen = self
-            .sources_state
-            .selected()
-            .and_then(|index| values.get(index))
-            .map_or_else(Vec::new, |row| {
-                crate::views::off_screen::hidden(
-                    SourcesTable::COLUMNS.iter().map(|c| c.label),
-                    row,
-                    &cols,
-                )
-            });
-        let table_area = crate::views::off_screen::draw(frame, framed, &off_screen, theme);
-        frame.render_stateful_widget(table, table_area, &mut self.sources_state);
-        say_gave_way(
+        self.source_drawn = table::draw(
             frame,
-            area,
-            &gave_way(SourcesTable::COLUMNS.iter().map(|c| c.label), &cols),
+            (area, inner),
+            &table,
+            &rows,
+            &mut self.source_viewport,
             theme,
         );
-        // Below the one header line, down to the `Off-screen:` line if any.
-        let inner = Rect::new(
-            table_area.x,
-            table_area.y.saturating_add(1),
-            table_area.width,
-            table_area.height.saturating_sub(1),
-        );
-        self.source_header_area = Rect::new(
-            inner.x.saturating_add(SYMBOL_W),
-            inner.y.saturating_sub(1),
-            inner.width.saturating_sub(SYMBOL_W),
-            1,
-        );
-        self.source_header_cols = cols;
-        // The header is one line: its labels are fixed and fit their floors.
-        let offset = self.sources_state.offset().min(heights.len());
-        self.source_rows = DrawnRows::new(inner, offset, heights[offset..].to_vec());
     }
 }
 
-/// What a download waiting for a network waits for while core re-makes the
-/// operator's lost session.
+impl TransfersView {
+    /// What the pane says in place of a table with no source to list, a row
+    /// waiting for sources or a network saying what would end the wait.
+    /// `None` while there are rows.
+    pub(super) fn idle_sources_text(
+        &self,
+        state: &UiState,
+        ids: &[DownloadId],
+        now: Instant,
+    ) -> Option<String> {
+        let selected = selected_id(ids, self.selected);
+        let selected_row = selected.and_then(|id| state.downloads.get(&id));
+        let listed = self
+            .selected_diag(state, ids)
+            .is_some_and(|diag| !source_rows(diag).is_empty());
+        if listed {
+            return None;
+        }
+        let reconnect_wait = reconnect_wait(state, now);
+        Some(
+            match selected {
+                Some(_) => idle_text(selected_row, reconnect_wait.as_ref()),
+                None => transfers::NO_DOWNLOAD_SELECTED,
+            }
+            .to_string(),
+        )
+    }
+}
+
 /// What the pane says of a selected download with no source to list: what
 /// its run waits on, when it said so — a reconnect under way first, as that
 /// is what ends a wait for a network — else that none is active.
@@ -257,7 +209,7 @@ fn idle_text<'a>(row: Option<&DownloadRow>, reconnect: Option<&'a Sentence>) -> 
             .map(Sentence::as_str)
             .or(wait)
             .unwrap_or(NO_NETWORK_WAIT),
-        _ => wait.unwrap_or("no active sources"),
+        _ => wait.unwrap_or(transfers::NO_ACTIVE_SOURCES),
     }
 }
 
@@ -278,7 +230,7 @@ mod tests {
 
     #[test]
     fn golden_sources_focus() {
-        let mut view = TransfersView::new();
+        let mut view = TransfersView::by_name();
         view.focus = Pane::Sources;
         let state = three_downloads();
         assert_golden("transfers_sources_focus", GOLDEN_W, GOLDEN_H, |frame| {
@@ -287,12 +239,95 @@ mod tests {
         });
     }
 
+    /// A source handed over to another download has no slot and keeps a row,
+    /// sorted by its rank behind every slot and ahead of an ended dial
+    /// (ADR-0090).
+    #[test]
+    fn a_handed_over_source_has_a_row_saying_so() {
+        let mut view = TransfersView::by_name();
+        let mut state = three_downloads();
+        let handed = rmule_primitives::PeerEndpoint::V4(rmule_primitives::Ipv4Endpoint::new(
+            std::net::Ipv4Addr::new(198, 51, 100, 40),
+            4662,
+        ));
+        let row = state
+            .diagnostics
+            .downloads
+            .get_mut(&download_id(1))
+            .expect("the first row");
+        row.handed_over.insert(handed);
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(150, 24)).expect("terminal");
+        terminal
+            .draw(|frame| {
+                let area = frame.area();
+                view.draw(frame, area, &state, &Theme::default_dark(), now());
+            })
+            .expect("draw");
+        let buffer = terminal.backend().buffer();
+        let shown: String = (0..buffer.area.height)
+            .map(|y| {
+                (0..buffer.area.width)
+                    .map(|x| buffer[(x, y)].symbol())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            shown
+                .lines()
+                .any(|line| line.contains(&crate::words::units::address(handed))
+                    && line.contains(crate::words::download::HANDED_OVER)),
+            "{shown}"
+        );
+    }
+
+    /// A source another download of its peer holds the link to waits on that
+    /// link, and its row says so (ADR-0107).
+    #[test]
+    fn a_source_waiting_on_its_peers_link_says_so_on_its_row() {
+        let mut view = TransfersView::by_name();
+        let mut state = three_downloads();
+        let row = state
+            .diagnostics
+            .downloads
+            .get_mut(&download_id(1))
+            .expect("the first row");
+        let worker = row.workers.values_mut().next().expect("a slot");
+        let waiting = worker.peer_endpoint().expect("the slot holds a peer");
+        worker.mark_link_turn(rmule_core::LinkTurn::Waiting);
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(150, 24)).expect("terminal");
+        terminal
+            .draw(|frame| {
+                let area = frame.area();
+                view.draw(frame, area, &state, &Theme::default_dark(), now());
+            })
+            .expect("draw");
+        let buffer = terminal.backend().buffer();
+        let shown: String = (0..buffer.area.height)
+            .map(|y| {
+                (0..buffer.area.width)
+                    .map(|x| buffer[(x, y)].symbol())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            shown
+                .lines()
+                .any(|line| line.contains(&crate::words::units::address(waiting))
+                    && line.contains("waits for the link")),
+            "{shown}"
+        );
+    }
+
     /// A seed refused under a `required` policy for its unknown crypt stance
     /// says so on its own row after its slot took its next peer (ADR-0110,
-    /// "The cause is the source's, not the slot's").
+    /// "the cause outlives the slot").
     #[test]
     fn a_dial_that_ended_before_the_hello_says_why_after_its_slot_moved_on() {
-        let mut view = TransfersView::new();
+        let mut view = TransfersView::by_name();
         let mut state = three_downloads();
         let row = state
             .diagnostics
@@ -312,7 +347,7 @@ mod tests {
         worker.attach_peer(peer_endpoint(77));
         worker.transition(rmule_core::diagnostics::WorkerPhase::Connecting);
         let mut terminal =
-            ratatui::Terminal::new(ratatui::backend::TestBackend::new(200, 24)).expect("terminal");
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(150, 24)).expect("terminal");
         terminal
             .draw(|frame| {
                 let area = frame.area();
@@ -346,7 +381,7 @@ mod tests {
     /// would be, what would end the wait.
     #[test]
     fn a_row_waiting_for_a_network_says_what_would_end_the_wait() {
-        let mut view = TransfersView::new();
+        let mut view = TransfersView::by_name();
         let mut state = three_downloads();
         state
             .downloads

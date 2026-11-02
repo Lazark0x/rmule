@@ -13,15 +13,17 @@ A search result carries at most one of six marks, by this precedence:
 
 | Mark | Meaning | Drawn |
 |---|---|---|
-| Downloading | a running, waiting or paused download | mark colour, bold |
+| Downloading | a running, waiting, paused or completing download | mark colour, bold |
 | Failed | a download whose run ended in an error; it still holds the file's place | `mark_failed`, bold and underlined |
-| Have | in the Shared File Registry and offered — on disk now | mark colour, dim |
+| Have | in the Shared File Registry and offered — on disk now | mark colour; dim only where the theme has no colour, since dim takes back the contrast the colour is held to |
 | Withheld | in the registry, but rmule cannot read the file now | `mark_withheld`, underlined |
 | Had | was in the registry; its file has since left the disk | mark colour, italic |
 | Cancelled | a download dropped before it completed | mark colour, struck through |
 
 An unmarked row keeps the source-count tint; a marked row takes the mark's colour in its
-place, and the attribute is the second cue so a mark survives a monochrome terminal. Marks
+place, the attribute is the second cue, and the mark's word opens the Name cell
+(`have · name`), so a mark survives a monochrome terminal and a colour-blind reader, and a
+cut takes it last. The help overlay's Words table says what each word means. Marks
 hold no column and are no Table Sort key (ADR-0070). Failed ranks above Have because the
 store refuses a new download of the file while the failed row holds its place. Had and
 Cancelled stay apart: one says the content was worth finishing, the other that the operator

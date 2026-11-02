@@ -22,7 +22,7 @@
 # scopes to. The final stage carries `org.rmule.bench=1` by inheriting it
 # from `rmule/interop-amule:local`, not by re-declaring it here.
 
-FROM ubuntu:24.04 AS build
+FROM ubuntu:24.04@sha256:fe81560990fae86dc4743202b2cb4d3df98d0bcf949173cecef15ce1127ef852 AS build
 LABEL org.rmule.bench.stage=1
 ENV DEBIAN_FRONTEND=noninteractive
 # Enable deb-src, install the build toolchain and aMule's build dependencies.

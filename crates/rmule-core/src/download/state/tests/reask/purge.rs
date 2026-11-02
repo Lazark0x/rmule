@@ -122,7 +122,7 @@ fn a_no_needed_parts_source_is_let_go_near_the_source_limit() {
         queue_and_hang_up(&mut state, peer(1), true, 5);
         let window = t0() + udp_due();
         let _ = state.on_tick(window);
-        let empty = PartBitmap::decode(3, &[0b0000_0000]).expect("three parts");
+        let empty = WireStatus::decode(3, &[0b0000_0000]).expect("three parts");
         let _ = state.on_reask_reply(window, contact(peer(1)), &v4_ack_with(empty, 2));
 
         let want = if let_go {
@@ -140,7 +140,12 @@ fn a_no_needed_parts_source_is_let_go_near_the_source_limit() {
 /// A started download holding `SOURCE_PURGE_AT - 2` High IDs and two Low IDs
 /// another server assigned, under `capability`.
 fn with_two_global_low_ids(capability: CallbackCapability) -> DownloadState {
-    let global = |n| SourceSighting::plain(rmule_primitives::PeerSource::new(low(n), 4662));
+    let global = |n| {
+        SourceSighting::plain(
+            rmule_primitives::PeerSource::new(low(n), 4662),
+            rmule_primitives::Informant::Own,
+        )
+    };
     let mut state = state_from(
         file_hash_only_content(ONE_PART),
         SourcingPosture {
@@ -187,10 +192,10 @@ fn a_low_id_source_no_road_reaches_is_let_go_near_the_source_limit() {
     assert_eq!(
         purged(&state.on_tick(first)),
         vec![(
-            PurgedSource::LowId {
+            PurgedSource::Callback(CallbackKey::Server {
                 low_id: low(7),
                 server: Some(source_server(9))
-            },
+            }),
             SourcePurgeReason::LowToLow
         )]
     );
@@ -221,7 +226,7 @@ fn the_purges_share_one_clock() {
     let window = t0() + udp_due();
     let _ = state.on_tick(window);
     let _ = state.on_reask_reply(window, contact(peer(1)), &queue_full_datagram());
-    let empty = PartBitmap::decode(3, &[0b0000_0000]).expect("three parts");
+    let empty = WireStatus::decode(3, &[0b0000_0000]).expect("three parts");
     let _ = state.on_reask_reply(window, contact(peer(2)), &v4_ack_with(empty, 2));
     let _ = state.on_reask_reply(window, contact(peer(3)), &queue_full_datagram());
 

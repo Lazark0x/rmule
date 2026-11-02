@@ -18,8 +18,10 @@
 //!   refuse **silently** when we are TCP-firewalled / UDP-firewalled /
 //!   UDP-unverified (an unopen node cannot relay for anyone), when the slot is
 //!   already taken, when the requester is a known client or under a
-//!   firewall-check collision, or when it is ourselves; else accept, fill the
-//!   slot, and answer `0x5A` `<buddyID><ourHash><ourTCPport>`.
+//!   firewall-check collision, or when it is ourselves; else accept, keep the
+//!   **Buddy Recruit**, and answer `0x5A` `<buddyID><ourHash><ourTCPport>`. The
+//!   first recruit to dial fills the slot ([`attach`](BuddyService::attach)):
+//!   a `0x51` is spoofable and holds nothing, as stock's `KS_INCOMING_BUDDY`.
 //! - **Relays, both verified** ([`relay`](BuddyService::relay)): a Kad
 //!   `KADEMLIA_CALLBACK_REQ` (`0x52`) becomes `OP_CALLBACK` (`0x99`) and a
 //!   peer-UDP `OP_REASKCALLBACKUDP` (`0x94`) becomes `OP_REASKCALLBACKTCP`
@@ -46,6 +48,8 @@
 //! driver's policy (timeouts are driver-owned, `rmule-peer`'s session doctrine),
 //! so the staleness sweep takes it as a parameter.
 
+use std::collections::VecDeque;
+use std::net::IpAddr;
 use std::time::{Duration, Instant};
 
 use rmule_kad::KadId;
@@ -207,6 +211,9 @@ pub(crate) enum RelayVerdict {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct RelayedCallback {
     pub(crate) kind: RelayKind,
+    /// The ID the buddy registered, which a `0x99` names whatever form the
+    /// `0x52` arrived in: every source's check takes it.
+    pub(crate) buddy_id: KadId,
     pub(crate) requester: Ipv4Endpoint,
     pub(crate) forwarded: Vec<u8>,
 }
@@ -245,28 +252,53 @@ struct BuddyLink {
     /// The buddy's UDP mapping as observed at recruitment — what an endpoint
     /// hint names (ADR-0091).
     observed_udp: Ipv4Endpoint,
-    /// When we last heard from the buddy (recruitment, then each ping/pong):
-    /// the keepalive anchor the staleness sweep measures against.
+    /// When we last heard from the buddy (recruitment, its dial, then each
+    /// ping/pong): the anchor the recruit's window and the staleness sweep
+    /// measure against.
     last_seen: Instant,
 }
 
-/// The open-node buddy service: one slot, either empty or holding our buddy.
+/// How long a **Buddy Recruit** waits for its dial: two of stock's connection
+/// timeouts (`CONNECTION_TIMEOUT`), its dial's own and a margin. Long enough for
+/// a recruiter's queue, and no lease: only the dial holds anything.
+pub(crate) const RECRUIT_WINDOW: Duration = Duration::from_secs(80);
+
+/// How many **Buddy Recruit**s wait at once, the oldest going first. Stock's
+/// list has no cap. A forger rotating addresses can push out a real recruit
+/// only by keeping this many `0x51`s inside its short dial, some 13 a second.
+const RECRUIT_ROWS: usize = 1024;
+
+/// How long a held link may stay silent: stock's buddy socket timeout, 15
+/// minutes on the connection timeout (`ClientTCPSocket.cpp:207-218`), which a
+/// ten-minute ping always beats.
+pub(crate) const LINK_SILENCE: Duration = Duration::from_secs(15 * 60 + 40);
+
+/// The open-node buddy service: one slot, empty or holding the buddy whose link
+/// attached, and the recruits that may yet dial.
 pub(crate) struct BuddyService {
     slot: Option<BuddyLink>,
+    /// The **Buddy Recruit**s waiting for their dial, oldest first. A `0x51`
+    /// is spoofable, so it waits here and fills nothing (ADR-0061).
+    recruits: VecDeque<BuddyLink>,
 }
 
 impl BuddyService {
     /// A fresh service with no buddy.
     pub(crate) fn new() -> Self {
-        Self { slot: None }
+        Self {
+            slot: None,
+            recruits: VecDeque::new(),
+        }
     }
 
     /// Whether the single slot is currently filled.
+    #[cfg(test)]
     pub(crate) fn has_buddy(&self) -> bool {
         self.slot.is_some()
     }
 
     /// Our registered buddy-ID, or `None` when the slot is empty.
+    #[cfg(test)]
     pub(crate) fn buddy_id(&self) -> Option<KadId> {
         self.slot.map(|link| link.buddy_id)
     }
@@ -277,16 +309,15 @@ impl BuddyService {
         self.slot.map(|link| (link.hash, link.observed_udp))
     }
 
-    /// Our registered buddy's eD2k user hash, or `None` when the slot is empty
-    /// — what the socket-unification attach matches an inbound identified
-    /// peer against (aMule's attach-to-already-known-client by hash).
+    /// Our registered buddy's eD2k user hash, or `None` when the slot is empty.
+    #[cfg(test)]
     pub(crate) fn buddy_hash(&self) -> Option<UserHash> {
         self.slot.map(|link| link.hash)
     }
 
     /// Consider one `FINDBUDDY_REQ` against the refusal matrix and, on accept,
-    /// fill the slot and answer `0x5A`. Silent refusals otherwise (aMule's
-    /// guarded early returns), each with its precise reason.
+    /// keep its **Buddy Recruit** and answer `0x5A`. Silent refusals otherwise
+    /// (aMule's guarded early returns), each with its precise reason.
     pub(crate) fn consider_findbuddy(
         &mut self,
         req: &FindBuddyReq,
@@ -320,8 +351,15 @@ impl BuddyService {
         if req.check_collision {
             return refuse(FindBuddyRefusal::CheckCollision);
         }
-        // Accept: the slot is now this requester's, its link fresh at `now`.
-        self.slot = Some(BuddyLink {
+        // Accept: this requester may dial. A repeat restarts its wait.
+        self.expire_recruits(now);
+        self.recruits.retain(|recruit| {
+            recruit.hash != req.requester_hash || recruit.endpoint.ip != req.requester.ip
+        });
+        if self.recruits.len() == RECRUIT_ROWS {
+            self.recruits.pop_front();
+        }
+        self.recruits.push_back(BuddyLink {
             buddy_id: req.buddy_id,
             hash: req.requester_hash,
             endpoint: req.requester,
@@ -335,6 +373,40 @@ impl BuddyService {
         })
     }
 
+    /// A connection identified as `hash` from `ip`: whether it is the buddy's
+    /// link. It is when a live recruit named that hash at that address, which
+    /// fills the slot and ends the wait of the others, or when it is the
+    /// buddy dialing again.
+    pub(crate) fn attach(&mut self, hash: UserHash, ip: IpAddr, now: Instant) -> bool {
+        let names = |link: &BuddyLink| link.hash == hash && IpAddr::V4(link.endpoint.ip) == ip;
+        if let Some(link) = &mut self.slot {
+            if !names(link) {
+                return false;
+            }
+            link.last_seen = now;
+            return true;
+        }
+        self.expire_recruits(now);
+        let Some(mut link) = self
+            .recruits
+            .iter()
+            .position(names)
+            .and_then(|index| self.recruits.remove(index))
+        else {
+            return false;
+        };
+        link.last_seen = now;
+        self.slot = Some(link);
+        self.recruits.clear();
+        true
+    }
+
+    /// The recruits whose dial never came go.
+    pub(crate) fn expire_recruits(&mut self, now: Instant) {
+        self.recruits
+            .retain(|recruit| now.saturating_duration_since(recruit.last_seen) < RECRUIT_WINDOW);
+    }
+
     /// Verify and forward one inbound relay — the two verified open-node relays.
     /// Reject silently when we hold no buddy, or when the claimed buddy-ID does
     /// not match our registered buddy (the tightening, applied to `0x52` and
@@ -346,33 +418,33 @@ impl BuddyService {
             };
         };
         // The tightening: verify the addressed buddy-ID against our registered
-        // buddy on BOTH the 0x52 and the 0x94 relay — aMule checks only 0x94.
-        // On the 0x52 either `TAG_BUDDYHASH` spelling is our buddy:
-        // a requester of the other family reads the row's tag one
-        // per-word swap away. Relayed verbatim, as aMule relays every 0x52;
-        // our buddy's own 0x99 check has the last word. The 0x94 keeps the
-        // exact match aMule itself applies there.
-        let swapped_spelling = if req.claimed_buddy_id == link.buddy_id {
-            false
-        } else if req.kind == RelayKind::Callback
-            && req.claimed_buddy_id.word_swapped() == link.buddy_id
-        {
-            tracing::info!(
-                requester = ?req.requester,
-                "0x52 names our buddy in the other TAG_BUDDYHASH spelling \
-                 (eMule-family reading); relaying verbatim"
-            );
-            true
-        } else {
+        // buddy on BOTH the 0x52 and the 0x94 relay, in either layout: a
+        // requester reads the row's tag one per-word swap from its publisher
+        // when the two are of different families, and a 0x94's key is the
+        // big-endian form our registered wire-order ID is a swap from. A 0x52
+        // goes on under the registered ID, which an exact 0x99 check takes
+        // where the form it came in would be dropped (aMule 3.2.0
+        // `KadBuddyCallback.h`).
+        let swapped = req.claimed_buddy_id != link.buddy_id;
+        if swapped && req.claimed_buddy_id.word_swapped() != link.buddy_id {
             return RelayVerdict::Reject {
                 reason: RelayReject::BuddyIdMismatch,
             };
-        };
+        }
+        let swapped_spelling = swapped && req.kind == RelayKind::Callback;
+        if swapped_spelling {
+            tracing::info!(
+                requester = ?req.requester,
+                "0x52 names our buddy in the other TAG_BUDDYHASH layout; \
+                 relaying under the registered ID"
+            );
+        }
         RelayVerdict::Relay {
             swapped_spelling,
             buddy_link: link.endpoint,
             callback: RelayedCallback {
                 kind: req.kind,
+                buddy_id: link.buddy_id,
                 requester: req.requester,
                 forwarded: req.forwarded.clone(),
             },

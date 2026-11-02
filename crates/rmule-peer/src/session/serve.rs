@@ -11,11 +11,11 @@ use rmule_primitives::{Ed2kText, FileHash};
 
 use super::{PeerError, PeerEvent, PeerSession};
 use crate::ServerEvent;
-use crate::file::PartBitmap;
 use crate::file_request::{FileReqAnsNoFil, FileStatus, PartStatusTail, ReqFileNameAnswer};
 use crate::parts::RequestParts as RequestPartsPacket;
-use crate::parts::{CompressedPart, PartOffsetWidth, SendingPart};
-use crate::slot::{AcceptUploadReq, QueueRanking};
+use crate::parts::{CompressedPart, SendingPart};
+use crate::slot::{AcceptUploadReq, OutOfPartReqs, QueueRanking};
+use crate::wire_status::WireStatus;
 
 impl PeerSession {
     pub(super) fn on_file_requested(&mut self, file_hash: FileHash, status: PartStatusTail) {
@@ -62,21 +62,22 @@ impl PeerSession {
     }
 
     /// Server Capability — answer an inbound `RequestFileName` with the file's
-    /// name, composing into a pending `OP_MULTIPACKETANSWER` (ADR-0054) instead
-    /// of framing `OP_REQFILENAMEANSWER` standalone when this file's request
-    /// arrived bundled.
+    /// name, composing into a pending `OP_MULTIPACKETANSWER` (ADR-0054) that
+    /// still owes one instead of framing `OP_REQFILENAMEANSWER` standalone.
     pub(super) fn answer_file_name(&mut self, file_hash: FileHash, file_name: Ed2kText) {
-        if let Some(pending) = self.served_multipacket.get_mut(&file_hash) {
-            pending.name = Some(file_name);
-            self.try_flush_multipacket_answer(file_hash);
-        } else {
-            self.write_packet(
+        let file_name = match self.served_multipacket.get_mut(&file_hash) {
+            Some(pending) => pending.take_name(file_name),
+            None => Some(file_name),
+        };
+        match file_name {
+            Some(file_name) => self.write_packet(
                 ReqFileNameAnswer {
                     file_hash,
                     file_name,
                 }
                 .encode_packet(),
-            );
+            ),
+            None => self.try_flush_multipacket_answer(file_hash),
         }
     }
 
@@ -92,7 +93,7 @@ impl PeerSession {
 
     /// Server Capability — answer an inbound `SetReqFileId` with the file's
     /// part bitmap, composing into a pending `OP_MULTIPACKETANSWER` (ADR-0054)
-    /// instead of framing `OP_FILESTATUS` standalone when bundled. A bitmap
+    /// that still owes one instead of framing `OP_FILESTATUS` standalone. A bitmap
     /// holding every part collapses to aMule's own writer shape first
     /// (`ClientTCPSocket.cpp` `OP_SETREQFILEID`, kno `ab483654`:
     /// `IsPartFile() ? WritePartStatus() : data.WriteUInt16(0)` — a
@@ -100,17 +101,19 @@ impl PeerSession {
     /// to spell out): the literal part-count-0 sentinel, not a real bitmap
     /// with every bit set. Both the standalone and the bundled writer share
     /// this one call site, so the collapse covers both.
-    pub(super) fn answer_file_status(&mut self, file_hash: FileHash, bitmap: PartBitmap) {
+    pub(super) fn answer_file_status(&mut self, file_hash: FileHash, bitmap: WireStatus) {
         let bitmap = if bitmap.is_complete() {
-            PartBitmap::complete_source_sentinel()
+            WireStatus::complete_source()
         } else {
             bitmap
         };
-        if let Some(pending) = self.served_multipacket.get_mut(&file_hash) {
-            pending.status = Some(bitmap);
-            self.try_flush_multipacket_answer(file_hash);
-        } else {
-            self.write_packet(FileStatus { file_hash, bitmap }.encode_packet());
+        let bitmap = match self.served_multipacket.get_mut(&file_hash) {
+            Some(pending) => pending.take_status(bitmap),
+            None => Some(bitmap),
+        };
+        match bitmap {
+            Some(bitmap) => self.write_packet(FileStatus { file_hash, bitmap }.encode_packet()),
+            None => self.try_flush_multipacket_answer(file_hash),
         }
     }
 
@@ -122,6 +125,18 @@ impl PeerSession {
         }
         self.served_slot = Some(file_hash);
         self.write_packet(AcceptUploadReq.encode_packet());
+    }
+
+    /// Server Capability — the slot ended on our side while the peer stays: a
+    /// block still on its way is refused by the cleared slot, and the peer is
+    /// told to go back on queue before anything else leaves
+    /// (`UploadClient.cpp:493-510`).
+    pub(super) fn end_upload_session(&mut self) {
+        if !self.require_identified() {
+            return;
+        }
+        self.served_slot = None;
+        self.write_packet(OutOfPartReqs.encode_packet());
     }
 
     /// Server Capability — the waiting peer's place in core's cross-connection
@@ -150,44 +165,47 @@ impl PeerSession {
         }
     }
 
-    pub(super) fn send_block(&mut self, file_hash: FileHash, start: u64, end: u64, bytes: Vec<u8>) {
+    /// Whether a block for `file_hash` may go out now, rejecting it if not.
+    fn may_send_block(&mut self, file_hash: FileHash) -> bool {
         if !self.require_identified() {
-            return;
+            return false;
         }
         if self.served_slot != Some(file_hash) {
             self.reject(PeerError::ServeSlotNotGranted);
-            return;
+            return false;
         }
-        let width = PartOffsetWidth::for_file_size(end.max(start));
-        // Compress only if the peer advertised data-compression support AND
-        // the result is actually smaller (matches eMule; most ed2k content
-        // is already-compressed media that does not shrink).
-        let peer_compresses = self
-            .peer_misc_options
-            .is_some_and(|m| m.data_compression_version() > 0);
-        let compressed = if peer_compresses {
-            let c = crate::compress::deflate(&bytes);
-            (c.len() < bytes.len()).then_some(c)
-        } else {
-            None
-        };
-        let packet = match compressed {
-            Some(c) => CompressedPart {
-                file_hash,
-                start,
-                compressed_block_len: c.len() as u32,
-                compressed_chunk: c,
+        true
+    }
+
+    /// Serve one plain block as aMule's uploader cuts it (ADR-0031): a run of
+    /// `OP_SENDINGPART` of about 10 KiB. A stock downloader restarts its
+    /// download timeout only on a whole packet (`DownloadClient.cpp:848`), so
+    /// one block-sized packet would starve a slow link. `bytes` is the block;
+    /// its range is `start..start + bytes.len()`.
+    pub(super) fn send_block(&mut self, file_hash: FileHash, start: u64, bytes: Vec<u8>) {
+        if self.may_send_block(file_hash) {
+            for frame in SendingPart::block_frames(file_hash, start, &bytes) {
+                self.core.push_write(frame.into());
             }
-            .encode_packet(width),
-            None => SendingPart {
-                file_hash,
-                start,
-                end,
-                data: bytes,
-            }
-            .encode_packet(width),
+            self.block_on_its_way = Some((file_hash, start, start + bytes.len() as u64));
         }
-        .expect("width derived from offsets always satisfies its own range check");
-        self.write_packet(packet);
+    }
+
+    /// Serve the zlib `stream` of the block `start..end`, cut the same way: a
+    /// run of `OP_COMPRESSEDPART` sharing the block's start and the stream's
+    /// length.
+    pub(super) fn send_deflated_block(
+        &mut self,
+        file_hash: FileHash,
+        start: u64,
+        end: u64,
+        stream: Vec<u8>,
+    ) {
+        if self.may_send_block(file_hash) {
+            for frame in CompressedPart::block_frames(file_hash, start, end, &stream) {
+                self.core.push_write(frame.into());
+            }
+            self.block_on_its_way = Some((file_hash, start, end));
+        }
     }
 }

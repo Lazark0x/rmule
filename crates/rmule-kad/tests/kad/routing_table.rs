@@ -13,7 +13,7 @@ use rmule_kad::{
     KadContact, KadContactState, KadId, KadNodeEndpoint, KadRoutingTable, KadRoutingUpdate,
     KadUdpKey,
 };
-use rmule_testkit::kad_node::{OWN_IP, T0, id};
+use rmule_testkit::kad_node::{OWN_IP, T0, host_ip, id};
 
 /// An ID landing in bucket 0 of an all-zero own ID: byte 3 is the MSB of the
 /// most-significant distance word (word_le_msw_first), so setting its top bit
@@ -26,7 +26,7 @@ fn bucket0_id(salt: u8) -> KadId {
 }
 
 fn endpoint(byte: u8, port: u16) -> KadNodeEndpoint {
-    KadNodeEndpoint::new(Ipv4Addr::new(203, 0, 113, byte), port)
+    KadNodeEndpoint::new(host_ip(byte), port)
 }
 
 fn contact(id: KadId, endpoint_byte: u8) -> KadContact {

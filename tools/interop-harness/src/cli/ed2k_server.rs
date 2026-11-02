@@ -9,7 +9,7 @@ use std::path::PathBuf;
 
 use crate::cli::bench::{
     AmuleArgs, BenchArgs, CaptureArgs, DEFAULT_FILE_SIZE, DEFAULT_RMULE_CLIENT_IMAGE,
-    DEFAULT_TIMEOUT_SECS, EserverArgs, stage_synthetic,
+    DEFAULT_TIMEOUT_SECS, EserverArgs, FirstServerArgs, stage_synthetic,
 };
 use crate::cli::nat::{
     DEFAULT_ED2KSRV_BUILD_CONTEXT, DEFAULT_ED2KSRV_CONFIG, DEFAULT_ED2KSRV_IMAGE,
@@ -43,7 +43,7 @@ pub(crate) struct BenchSmokeArgs {
     #[command(flatten)]
     pub(crate) bench: BenchArgs,
     #[command(flatten)]
-    pub(crate) eserver: EserverArgs,
+    pub(crate) eserver: FirstServerArgs,
     /// Rust image used to run the rmule probe inside the interop network.
     #[arg(long, default_value = DEFAULT_RMULE_CLIENT_IMAGE)]
     pub(crate) rmule_client_image: String,
@@ -55,6 +55,11 @@ pub(crate) struct BenchSmokeArgs {
     /// login a running core sends.
     #[arg(long)]
     pub(crate) udp_ports_advert: Option<u16>,
+    /// Ride `CT_MOD_IP_V6` (`0xAE`) on the
+    /// probe's login, naming this address. Beside `--udp-ports-advert` the
+    /// login carries six tags, the shape a dual-stack core sends.
+    #[arg(long)]
+    pub(crate) advertise_ipv6: Option<std::net::Ipv6Addr>,
 }
 
 #[derive(Debug, Serialize)]
@@ -72,6 +77,7 @@ pub(crate) struct BenchSmokeResolvedConfig {
     pub(crate) server_host_port: u16,
     pub(crate) server_env: Vec<String>,
     pub(crate) udp_ports_advert: Option<u16>,
+    pub(crate) advertise_ipv6: Option<std::net::Ipv6Addr>,
 }
 
 /// The eserver + one aMule shape every skeleton leg, the server cycle, the
@@ -110,6 +116,11 @@ pub(crate) struct AmuleServesRmuleDownloadsArgs {
     /// rmule marked are printed as `obfuscation_flips`.
     #[arg(long, value_parser = rmule_interop_harness::rmule::crypt_flip_arg)]
     pub(crate) peer_crypt_flip: Vec<String>,
+    /// Share the synthetic file under this name, so rmule's own read of the
+    /// file's class meets it; the link keeps `shared.bin`. Read only by
+    /// `rmule-serves-amule-downloads`.
+    #[arg(long)]
+    pub(crate) serve_file_name: Option<String>,
     /// Test hook for the ED2K hash command.
     #[arg(long, hide = true)]
     pub(crate) ed2k_hash_command: Option<PathBuf>,
@@ -150,6 +161,7 @@ impl AmuleServesRmuleDownloadsArgs {
             server_env: self.eserver.server_env.clone(),
             amule_env: self.amule.amule_env.clone(),
             amule_ready_log_pattern: self.amule_ready_log_pattern.clone(),
+            serve_file_name: self.serve_file_name.clone(),
         }
     }
 }
@@ -173,6 +185,8 @@ pub(crate) struct ResolvedConfig {
     pub(crate) server_env: Vec<String>,
     pub(crate) amule_env: Vec<String>,
     pub(crate) amule_ready_log_pattern: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) serve_file_name: Option<String>,
 }
 
 /// Which skeleton leg a subcommand drives and with what posture.
@@ -221,6 +235,7 @@ fn skeleton(args: AmuleServesRmuleDownloadsArgs, leg: SkeletonLeg) -> Result<()>
         rmule_serve: leg.rmule_serve,
         rmule_peer_crypt: args.peer_crypt.as_deref(),
         rmule_peer_crypt_flip: &args.peer_crypt_flip,
+        rmule_serve_file_name: args.serve_file_name.as_deref(),
         rmule_client_action: leg.action,
     })
 }
@@ -243,6 +258,7 @@ pub(crate) fn bench_smoke(args: BenchSmokeArgs) -> Result<()> {
         server_host_port: args.eserver.server_host_port,
         server_env: args.eserver.server_env.clone(),
         udp_ports_advert: args.udp_ports_advert,
+        advertise_ipv6: args.advertise_ipv6,
     };
     write_resolved_config(&run_dir, &config)?;
     println!("run_dir={}", run_dir.display());
@@ -259,6 +275,7 @@ pub(crate) fn bench_smoke(args: BenchSmokeArgs) -> Result<()> {
         server_env: &args.eserver.server_env,
         rmule_client_container: &rmule_client_container,
         udp_ports_advert: args.udp_ports_advert,
+        advertise_ipv6: args.advertise_ipv6,
     })
 }
 
@@ -724,9 +741,9 @@ pub(crate) struct ServerLoginCryptArgs {
     /// rmule's obfuscation policy: off, supported, requested or required.
     #[arg(long, default_value = "requested")]
     pub(crate) policy: String,
-    /// Log in to ed2k-server at its pin instead of Lugdunum.
+    /// Log in to Lugdunum instead of ed2k-server at its pin.
     #[arg(long)]
-    pub(crate) ed2ksrv: bool,
+    pub(crate) lugdunum: bool,
     /// The ed2k-server image (refused unless its commit label matches the pin).
     #[arg(long, default_value = DEFAULT_ED2KSRV_IMAGE)]
     pub(crate) ed2ksrv_image: String,
@@ -766,10 +783,10 @@ pub(crate) fn server_login_crypt(args: ServerLoginCryptArgs) -> Result<()> {
             flow: "server-login-crypt",
             policy: args.policy.clone(),
             by_name: args.by_name,
-            server_image: if args.ed2ksrv {
-                args.ed2ksrv_image.clone()
-            } else {
+            server_image: if args.lugdunum {
                 args.eserver.server_image.clone()
+            } else {
+                args.ed2ksrv_image.clone()
             },
             rmule_tools_image: args.rmule_tools_image.clone(),
             capture_image: args.capture.capture_image.clone(),
@@ -788,8 +805,7 @@ pub(crate) fn server_login_crypt(args: ServerLoginCryptArgs) -> Result<()> {
         rmule_tools_image: &args.rmule_tools_image,
         capture_image: &args.capture.capture_image,
         policy: &args.policy,
-        ed2ksrv: args
-            .ed2ksrv
+        ed2ksrv: (!args.lugdunum)
             .then_some((args.ed2ksrv_image.as_str(), args.ed2ksrv_config.as_path())),
         by_name: args.by_name,
     })

@@ -44,18 +44,19 @@ the `CoreSettings` value and a synchronous handle on it — `Core::settings()` o
 running core, or opened on the store alone where no core runs (the CLI's `config`
 subcommands).
 
-- **The key split.** Core's keys are the download directory, obfuscation, port mapping
-  (with the learned method and the PCP secret), the Kad UDP Key, `Remember peers`, the
-  Dead Server Limit, the Announce Policy, both mirror URLs with their fetch switches,
-  the nickname and both ports. The nickname and the ports stay in the identity rows;
-  the handle hides where each value is kept. `CoreSettings::credentials` turns the
+- **The key split.** Core's keys are the download directory, the Temp Directory,
+  obfuscation, port mapping (with the learned method and the PCP secret), the Kad UDP
+  Key, `Remember peers`, the Dead Server Limit, the Announce Policy, both mirror URLs
+  with their fetch switches, the server.met auto-update switch and its URL list
+  (ADR-0065), the nickname and both ports. The nickname and the ports stay
+  in the identity rows; the handle hides where each value is kept. `CoreSettings::credentials` turns the
   nickname and the TCP port into what every login, hello and Kad dial presents. Core
   reads them itself, so no command carries credentials and a front end never composes
   them from the rows; `StartServing` names only where to listen. A test or a tool
   injects its own `CoreSettings` per core, where a TCP port of `0` takes one the OS
   assigns and presents the port bound — each hello reads the listener's port as it is
   sent, so a download begun before the bind, or before the listener restarted on another
-  port, presents the one bound now, as does its global callback request, and a Kad start
+  port, presents the one bound now, and a Kad start
   binds the listener first (ADR-0095); the store refuses `0`. The Kad UDP Key and the
   Kad ID are read from core's store at build, so `EnableKad` carries neither. Likewise
   `StartDownload` names the file only: core places it in the download directory its
@@ -63,12 +64,20 @@ subcommands).
   start when there is none or the guards refuse it, so no front end composes a path and
   no download finishes where core would not share it. `DownloadCompleted` names the
   final path core placed the file at, so a front end shows where it landed without
-  composing one. Five keys are the front end's: the theme,
-  the table sorts, the Run Log level, connect at start and the last server — the last
-  two because connecting is the operator's act (ADR-0095). They stay in the one
+  composing one. `DownloadQueued` and `DownloadRecovered` name where a download's bytes
+  lie now (ADR-0114). Six keys are the front end's: the theme, the table sorts, the Run
+  Log level, connect at start and the last server — those two because connecting is the
+  operator's act (ADR-0095) — and the Player Command, because core never runs a player
+  (ADR-0114). They stay in the one
   `preferences` table under the same key strings. Core keeps them through a raw
   key/value surface that refuses a key of core's own, and never interprets one; each
   front end names its keys in an enum of its own.
+- **A preference that is on or off is a Flag.** One row of a table holds its name,
+  stored key and unset value, and every step of the door reads the table, so a new one
+  is that row and its words. A front end declares its own flags with the same table.
+- **A front end shows what core reads.** Its snapshot holds a `CoreSettings`, not a
+  copy of its fields, and folds a saved `Setting` with `CoreSettings::apply`, so a key
+  has one default, one type and one fold.
 - **The change path.** `set(Setting)` validates the value, persists it, and answers
   when it takes effect: `Now` or `NextStart`. A download directory is validated against
   the Shared Directory List's guards too (ADR-0101) — the running core's, or those the
@@ -92,6 +101,7 @@ subcommands).
 | `Remember peers` | now: the next seed write keeps that many |
 | Dead Server Limit, Announce Policy | now: every server is judged again, and the live session follows |
 | Download directory | now: core starts its scan, with the answer the front end's confirm gave (ADR-0101); a core scans the one its settings name from attach, asking from the answer recorded for it |
+| Temp Directory | now: downloads started after the change place their part files there; every stored download keeps its own (ADR-0115) |
 | Obfuscation | now: every surface reads the one policy as it decides, and the Kad node is re-armed (ADR-0046) |
 | every other key | at the next start |
 
@@ -112,9 +122,46 @@ subcommands).
   counters of ADR-0077.
 - **Render policy.** Dirty-flag coalescing capped at about 30 fps, each frame in
   synchronized output (mode 2026). Input redraws at once; bursts of core events between
-  frames collapse into one draw. Backpressure is coalescing — bounded channels,
-  latest state wins, a snapshot poll skips while one is in flight — so no queue can
-  grow.
+  frames collapse into one draw.
+
+### Core never waits on the front end
+
+A reader that stops reading — a full pty, a stalled ssh, a remote transport's dead link —
+costs the front end its view and costs the node nothing. Peers do not wait for a
+terminal, so nothing that serves them waits for one.
+
+- **The Outbox.** Every core task reports through the Outbox, whose send is synchronous
+  and never waits. `Core::next_event()` and `Core::quit()`'s stream read it. It holds
+  three weights, named for each `CoreEvent` in one exhaustive match, so a new event does
+  not compile until it is placed:
+  - An **Edge** is a change the front end's state folds and cannot rebuild: a download's
+    or a search's lifecycle, a verified part, a session's transitions, a refusal. An Edge
+    is never dropped. Edges grow with what the operator and the library do, not with
+    peer traffic.
+  - A **Level** is a value a later one of the same subject replaces: a queue rank, a
+    search's legs, a reconnect countdown. A new value takes the old one's place out of
+    the queue and joins the tail, so what the reader sees is always what core said, in
+    the order core said it, less the values already superseded.
+  - A **Note** is a peer-driven fact with no successor: a source found, a dial's end, a
+    slot granted. Notes are delivered in order while the reader keeps up.
+- **The room.** The Outbox holds a fixed room of events. Past it, Levels and Notes are
+  dropped together and one `EventsShed` Edge takes their place with their count, so peer
+  traffic never grows the queue and the reader learns what it missed. A shed loses a
+  front end some per-peer detail, never a row's lifecycle.
+- **The Run Log is written in core** (ADR-0075), at the send, before any weight is read.
+  It holds every event a stalled front end missed, and it does not stop with the bridge.
+  The level handle is the builder's, shared with the front end that changes it.
+- **The bridge is two tasks.** One forwards commands and may wait for the inbox's room;
+  the other reads events and may wait for the `Action` bus. Neither wait holds the
+  other. `CoreClient::send` hands a command over and returns, so the UI loop never waits
+  on the bridge. The forwarding queue is unbounded because the operator is its only
+  writer; the inbox's room is the bound.
+- **Stops do not join in a command arm.** A stop tells the run and goes on. The actor
+  retires the run when its task has ended, finishes the operator's act there, and holds
+  later commands for that download until then, so they run in the order they were sent.
+- **Inner cycles follow the same rule.** The Kad pump holds what discovery has not read,
+  as it holds what the node's inbox has no room for, and a sweep's asks wait for room
+  outside the task that reads the answers (ADR-0093).
 - **State model.** The bridge owns a single-writer `UiState`; components hold view
   state only (selection, scroll). `UiState` evolves purely —
   `fold(state, event)` and `apply_snapshot(state, snapshot, now)` with time injected —
@@ -124,7 +171,30 @@ subcommands).
 - **Closing the UI stops the transfers**, as in stock aMule. Quit is `Core::quit`, the
   one retire sequence of ADR-0093; the status bar redraws on each
   `CoreEvent::Quitting { step }`, and if the bridge's `CORE_SHUTDOWN_GRACE` elapses
-  before the flush confirms, it says so rather than reporting a clean drain.
+  before the flush confirms, it says so rather than reporting a clean drain. Every way
+  out of a run is this Quit (ADR-0118).
+
+### The terminal the TUI draws on
+
+The TUI reads one **Capability** at the start: the environment's claims, then the
+terminal's answers to one probe sent after raw mode is up, ending in device attributes so
+that answer closes the wait. It is the run's only question: its bytes go through the Line
+(ADR-0118) before the loop starts, the loop asks nothing, and a stop's re-entry keeps the
+answers. A silent terminal holds the first frame for a bound of 150 ms, and input starts
+only once a late answer can no longer read as keys, with the keys typed meanwhile handed on.
+The answers replace crossterm's two-second kitty query.
+
+- **Palettes.** Truecolor, 256, the sixteen named colours and none are four tiers of one
+  set of roles, and a test holds every text pair in every palette to WCAG's 4.5:1. A
+  terminal that names its ground keeps it and gets the palette for that side; only one that
+  says nothing gets the opaque ground. An explicit `RMULE_THEME` or Settings choice paints
+  what it names.
+- **Shape stands in for colour.** With no accent, the active tab and the selected row
+  reverse, headers underline and the focused pane's border turns heavy, all behind the
+  theme's role methods, so no view asks which theme it is.
+- **Glyphs are a last pass.** Views draw Unicode; a **Glyph Tier** rewrites the finished
+  frame, one ASCII cell for one mark, so it costs no layout and no view can miss one.
+- **No cursor, no run.** `TERM=dumb` is refused like a missing terminal (ADR-0076).
 
 ## Consequences
 
@@ -148,3 +218,11 @@ subcommands).
   operator had changed.
 - **Growing `rmule-tools` into the product CLI.** Rejected: the diagnostic tool and the
   product stay separate members.
+- **Bounded channels with awaited edges.** The first shape: every event awaited a
+  32-slot channel and the bridge awaited the bus. Rejected: a stalled terminal stopped
+  every run, and the bridge, the actor and the UI formed two cycles of bounded awaits
+  that about 66 commands could close for good.
+- **A plain unbounded event channel.** Rejected: a stalled front end would grow it with
+  peer traffic for as long as the stall lasted.
+- **Dropping any event past the room.** Rejected: a lost lifecycle edge leaves a row
+  wrong for the rest of the session, and no later event repairs it.

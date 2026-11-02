@@ -141,6 +141,7 @@ async fn an_ipv6_0x94_is_dropped_and_counted_while_its_ipv4_twin_relays() {
         PeerEndpoint::V4(Ipv4Endpoint::new(Ipv4Addr::new(198, 51, 100, 1), 61234)),
         buddy_hash,
         link_tx,
+        Instant::now()
     ));
 
     // One genuine, verifiable `0x94`, delivered twice: once from an IPv6
@@ -385,6 +386,7 @@ async fn the_firewalled_front_takes_the_standalone_rendezvous_and_the_direct_cal
         diagnostics.clone(),
         mpsc::channel(4).0,
         SharedKadInlet::default(),
+        crate::ban_store::SharedBanStore::default(),
     );
     engine.run().await;
 

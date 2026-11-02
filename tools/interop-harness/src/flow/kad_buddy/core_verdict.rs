@@ -9,9 +9,7 @@
 //! Nothing is ever fabricated (ADR-0045); an absent row is written as an
 //! absence.
 
-use std::fs;
-
-use anyhow::{Context, Result, bail};
+use anyhow::{Result, bail};
 
 use crate::artifacts::RunLayout;
 use crate::flow::evidence::read_verdict_log;
@@ -22,6 +20,7 @@ use crate::flow::kad_buddy::core::{
 };
 use crate::flow::kad_buddy::core_tap::{TapReadout, read_core_tap};
 use crate::flow::kad_buddy::verify_keys::KAD_UDP_KEY_SEED;
+use crate::verdict::Verdict;
 
 /// Judge flow M from the pcap rows plus both sides' logs.
 ///
@@ -133,20 +132,20 @@ pub(crate) fn assert_kad_core_buddy(
     // `FirewalledCheck` only fires out of `Process2Hello{Request,Response}`, so a
     // `0x53` is not a precondition of anything here.
     let verdict = if recruit_in > 0 && answer_out > 0 {
-        "PASS"
+        Verdict::Pass
     } else if tcp_fw
         && serving
         && (kad_in > 0 || (options.kad_crypt && rmule_kad_crypt_decode_activity))
     {
-        "OBSERVED"
+        Verdict::Observed
     } else {
-        "FAIL"
+        Verdict::Fail
     };
 
     let mut verdict_toml =
         String::from("# Flow M — Core-Pumped Stimulus Node buddy/relay leg (ADR-0061).\n");
     verdict_toml.push_str(&format!("verdict = \"{verdict}\"\n"));
-    verdict_toml.push_str(&format!("helper_count = {}\n", options.helper_count));
+    verdict_toml.push_str(&format!("helper_count = {}\n", options.helpers_effective()));
     verdict_toml.push_str(&format!("block_udp_requested = {}\n", options.block_udp));
     // Helpers force the UDP block, so the requested flag alone would misstate
     // what ran; record both.
@@ -249,8 +248,7 @@ pub(crate) fn assert_kad_core_buddy(
          # documented absence, not a failure. Never fabricated (ADR-0045).\n",
     );
     let verdict_path = layout.kad_dir().join("kad-core-buddy-verdict.toml");
-    fs::write(&verdict_path, &verdict_toml)
-        .with_context(|| format!("write {}", verdict_path.display()))?;
+    crate::verdict::write(&verdict_path, &verdict_toml)?;
     println!(
         "kad-core-buddy verdict={verdict} 0x51_in={recruit_in} 0x5A_out={answer_out} \
          buddy_tcp_syn={buddy_syn} buddyping={buddy_ping} link_attached={link_attached} \
@@ -258,7 +256,7 @@ pub(crate) fn assert_kad_core_buddy(
         publish_body.map_or(0, <[u8]>::len)
     );
 
-    if verdict == "FAIL" {
+    if verdict == Verdict::Fail {
         bail!(
             "flow M did not stand up: amule_tcp_firewall_installed={tcp_fw}, \
              rmule_serving_started={serving}, amule_kad_datagrams_in_rmule_tap={kad_in} \
@@ -319,8 +317,8 @@ pub(crate) fn assert_kad_core_buddy(
 
 /// Whether rmule's own trail shows a Kad message the crypt gate opened and
 /// decoded: the firewall dial-back, an accepted recruit, or the buddy link it
-/// attached. A peer-TCP flood-ban line is not one — it fires on the peer TCP
-/// surface, where no Kad-UDP crypt applies.
+/// attached. A flood report is not one — it fires at the gate, before any
+/// handler has read the message.
 fn kad_crypt_decode_activity(rmule_trail: &str) -> bool {
     rmule_trail.contains("kad firewall dial-back")
         || rmule_trail.contains("accepted recruit, answering 0x5A")
@@ -331,14 +329,11 @@ fn kad_crypt_decode_activity(rmule_trail: &str) -> bool {
 mod tests {
     use super::kad_crypt_decode_activity;
 
-    /// The peer-TCP flood-ban line used to count as Kad-crypt decode proof,
-    /// so a crypt leg whose Kad exchange never reached the node could read
-    /// `OBSERVED` on a TCP event.
+    /// The flood line used to count as Kad-crypt decode proof, so a crypt leg
+    /// whose Kad exchange never reached a handler could read `OBSERVED`.
     #[test]
-    fn a_peer_tcp_ban_is_not_kad_crypt_decode_activity() {
-        assert!(!kad_crypt_decode_activity(
-            "flood offender banned at the peer-TCP surface"
-        ));
+    fn a_flood_report_is_not_kad_crypt_decode_activity() {
+        assert!(!kad_crypt_decode_activity("flood offender reported"));
         assert!(kad_crypt_decode_activity(
             "accepted recruit, answering 0x5A"
         ));

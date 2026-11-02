@@ -236,6 +236,7 @@ pub fn run_kad_required_check(options: KadRequiredCheckOptions<'_>) -> Result<()
                 },
                 &names.rmule,
                 crate::rmule::KadStimulusKnobs {
+                    extra_files: &[],
                     static_ip: &ipv4_string(rmule_ip),
                     kad_id_hex: &hex_lower(&KAD_REQUIRED_RMULE_KAD_ID),
                     udp_port: KAD_RMULE_UDP_PORT,
@@ -433,7 +434,7 @@ fn assert_kad_required_check(
         ));
     }
     let path = layout.kad_dir().join("kad-required-check-verdict.toml");
-    fs::write(&path, &toml).with_context(|| format!("write {}", path.display()))?;
+    crate::verdict::write(&path, &toml)?;
     println!(
         "kad-required-check peer_crypt={peer_crypt} verdict={} {last_verdicts}",
         verdict.label()

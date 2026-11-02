@@ -95,9 +95,9 @@ impl ReservedPort {
 /// scattered by the process id, so two test binaries running at once do not
 /// walk the same sequence.
 fn next_band_port() -> u16 {
-    static CURSOR: std::sync::LazyLock<std::sync::Mutex<u16>> =
-        std::sync::LazyLock::new(|| std::sync::Mutex::new(band_start(std::process::id())));
-    let mut cursor = CURSOR.lock().expect("port cursor is never poisoned");
+    static CURSOR: std::sync::LazyLock<parking_lot::Mutex<u16>> =
+        std::sync::LazyLock::new(|| parking_lot::Mutex::new(band_start(std::process::id())));
+    let mut cursor = CURSOR.lock();
     let candidate = *cursor;
     *cursor = if candidate + 1 >= PORT_BAND.end {
         PORT_BAND.start
@@ -194,7 +194,7 @@ pub(crate) fn env_value(run_line: &str, key: &str) -> String {
 }
 
 /// Drive the Kad capture flow against the fake docker, with the settle window
-/// disabled so the fake-docker test stays fast (real timing is only for live
+/// and search schedule zeroed so the fake-docker test stays fast (real timing is only for live
 /// runs). Asserts success.
 pub(crate) fn run_fake_kad_capture(
     docker: &Path,
@@ -205,6 +205,8 @@ pub(crate) fn run_fake_kad_capture(
     let mut command = Command::cargo_bin("rmule-interop-harness").unwrap();
     command
         .env("RMULE_KAD_SETTLE_WINDOW_SECS", "0")
+        .env("RMULE_KAD_SEARCH_CANCEL_GAP_SECS", "0")
+        .env("RMULE_KAD_SEARCH_RETRY_INTERVAL_SECS", "0")
         .args([
             "kad-source-lookup-capture",
             "--skip-build",

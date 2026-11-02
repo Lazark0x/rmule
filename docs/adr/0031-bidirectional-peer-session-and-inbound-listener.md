@@ -43,10 +43,11 @@ scheduling is (ADR-0026).
 - `UploadSlotQueue` in `rmule-core` admits, ranks, promotes and purges remote
   requesters across all connections. Rank is aMule's credit-weighted score
   (ADR-0041); the serve activity re-ranks idle waiters every
-  `CoreConfig::queue_rerank_interval` and sends `OP_QUEUERANKING`.
+  `RERANK_INTERVAL` and sends `OP_QUEUERANKING`.
 - Core pushes part bytes down with `ServerCommand::SendBlock`, read from the
-  content store's `read_range`. The session compresses a block only when the peer
-  advertised compression and the result is smaller, as eMule does. The Server
+  content store's `read_range`, or with `ServerCommand::SendDeflatedBlock` when the
+  block's zlib stream is smaller, its file may be compressed and the peer inflates
+  (below). The Server
   Capability reports requests as `Server` events and obeys `Server` commands (answers,
   grant, queue rank, blocks), so the session stays sans-I/O and storage-free.
 - The serve activity speaks those groups directly: its input is a connection's
@@ -70,6 +71,248 @@ scheduling is (ADR-0026).
   self-facts cell (ADR-0032) and clear when the session ends, because a node between
   sessions is Low-ID and shares a server with nobody.
 
+**A block request is judged whole before anything is read.**
+
+- A peer holding a slot asks up to three ranges in one `OP_REQUESTPARTS` or
+  `OP_REQUESTPARTS_I64`. Every live range is checked as asked, before the ranges
+  already served are taken off it: one range that ends past the file's end, or is
+  longer than three blocks (`3 × EMBLOCKSIZE`, 552,960 bytes), ends the peer's slot.
+  Nothing of the request is read or sent, the slot goes to the next waiter, and the
+  peer leaves the queue: a later ask queues it afresh. Its link stays and its address
+  is not banned. aMule throws on either range while it cuts the block, and its handler
+  only takes the client out of the upload queue (`UploadClient.cpp:211-224`,
+  `:270-281`); it bans nobody for it. A Partial Share's request whose unserved rest
+  leaves its Verified Range ends the slot the same way (ADR-0113).
+- A range whose end is not past its start is skipped alone, as aMule skips one in
+  `OP_REQUESTPARTS` (`UploadClient.cpp:871-882`; 3.1.0 `UploadClient.cpp:317-322`). It
+  is not live, so the checks above never judge it, and the other ranges of the request
+  are served. Each of the three ranges reads one line of this table, top line first:
+
+  | The range | What it does |
+  |---|---|
+  | `start >= end`, padding and backward pairs alike, wherever they point | skipped alone; the slot stays |
+  | `end` past the file's end | ends the slot, nothing of the request sent |
+  | longer than three blocks | ends the slot, nothing of the request sent |
+  | a Partial Share's unserved rest outside its Verified Range | ends the slot, nothing of the request sent |
+  | anything else | served, less what was served already |
+
+- **Where rmule departs.** aMule judges each range as its turn comes, so ranges ahead
+  of a bad one may already be sent; rmule judges the request whole and sends none of
+  it. aMule 3.1.0 and eMule AI drop such a range at the ask and keep the slot
+  (aMule 3.1.0 `UploadClient.cpp:317-328`, eMule AI
+  `srchybrid/UploadClient.cpp:711-721`); rmule keeps 2.3.3's rule, because no stock
+  downloader asks a range longer than one block, so a peer that asks one is not one a
+  slot should wait on.
+- The refusal is its own serve event, `BlockAskRefused`, naming the fault — past the
+  end, longer than three blocks, outside the Verified Range — ahead of the slot's
+  release, so the run log and the operator read why the peer lost its slot.
+- **No read is longer than three blocks.** The content store refuses a read longer
+  than `3 × EMBLOCKSIZE` before it allocates a byte, whoever asks; the check above
+  means the serve state never asks one. A shared file's AICH tree (ADR-0038) is built
+  from the file one block at a time, so a build holds one block however large the
+  file is.
+
+**A served block crosses in packets of about 10 KiB, as aMule cuts it.**
+
+- A stock aMule downloader restarts its 100 s download timeout only when a whole
+  part packet lands (`DownloadClient.cpp:848`, `DOWNLOADTIMEOUT` in
+  `Constants.h:64`) and sends `OP_CANCELTRANSFER` when none has
+  (`DownloadClient.cpp:1189-1193`). A block of 184,320 bytes framed as one packet
+  needs more than 1.8 KiB/s to cross inside that window, so a slower link can
+  never finish one. The session therefore writes each `SendBlock` as aMule's
+  uploader does.
+- **Packet size.** A payload of `n` bytes larger than 10,240 is cut into packets of
+  `n / (n / 10240)` bytes, integer division, and the last packet takes whatever is
+  left once less than two packets' worth remains; a payload of at most 10,240 bytes
+  goes whole (`UploadClient.cpp:290-299`, `:349-358`). A full 184,320-byte block is
+  eighteen packets of 10,240 bytes, and a payload of more than 10,240 bytes never
+  yields a packet under 10,240 or of 20,480 and over.
+- **Plain.** Each packet is an `OP_SENDINGPART` naming its own range; the ranges
+  tile the block in order. Each packet picks its offset width on its own offsets
+  (`UploadClient.cpp:307`).
+- **Which blocks may be compressed.** Every block but an archive's: core marks a
+  block plain when the name its file is offered under falls in the Archive eD2k File
+  Class, as aMule never compresses an archive (`UploadClient.cpp:252`; aMule 3.1.0
+  keeps the rule, `UploadDiskIOThread.cpp:252`). rmule skips nothing more. A video or
+  a picture rarely shrinks, but those classes hold uncompressed formats too (`wav`,
+  `bmp`, `tiff`), and the first pass below makes a block that does not shrink cheap.
+  eMule AI skips a fixed list instead (`zip`, `rar`, `7z`, `cbz`, `cbr`, `ace`, `ogm`;
+  `srchybrid/UploadDiskIOThread.cpp:452-460`).
+- **The level.** Any zlib stream inflates the same, so the level is not on the wire;
+  it trades CPU for bytes. A block is deflated at level 1 first: a block that
+  does not shrink goes plain, and one that does is deflated again at level 6 and the
+  smaller stream is sent. aMule 2.3.3 deflates at level 9 (`UploadClient.cpp:337`);
+  aMule 3.1.0 and eMule 0.70b moved to level 1 for speed (aMule 3.1.0
+  `UploadDiskIOThread.cpp:523-525`, eMule AI
+  `srchybrid/UploadDiskIOThread.cpp:518-523`). rmule departs from both on its own
+  deflate (`flate2` 1.1.9 over `miniz_oxide`), measured on 184,320-byte blocks on an
+  Apple M1 Pro: level 9 takes 1.4 to 1.6 times level 6's time for a stream at most
+  0.4 % smaller; level 1 takes a fifth to a quarter of it, but its stream is 18 % to
+  41 % longer on executables and source text; on random bytes every level from 2 up
+  spends about 3.1 ms a block shrinking nothing, and level 1 0.6 ms. Most shared
+  content is already compressed, so the first pass cuts the CPU an upload slot spends
+  on such a block to a fifth of one pass at level 6, and a block that does shrink costs
+  about a quarter more than level 6 alone, for level 6's bytes.
+- **Where it is deflated.** Off the async runtime, on the blocking pool, awaited by the
+  task that forwards that one connection's commands. Core marks a block for deflate only
+  when its file may be compressed and the peer's capability block says it inflates, so
+  no pass is spent on a peer that cannot use it. A block takes 5.1 ms on source text and
+  0.7 ms on random bytes (184,320 bytes, `flate2` 1.1.9, release build, Apple M1 Pro), far
+  too long for a runtime worker. It does not go in the read's closure, though that
+  already holds the block: the serve loop awaits every read in turn, so 5 ms a block
+  there would cap the node at about 36 MiB/s across all slots and stall every peer's
+  asks behind each block. On the connection's task it costs only that connection's next
+  command, the blocks of one connection keep their order, and slots deflate side by side.
+  The session frames what it is handed and never deflates.
+- **Compressed.** The block is deflated whole and sent compressed only when that is
+  smaller (above). The one zlib stream is cut by the same rule into a run of
+  `OP_COMPRESSEDPART`, every one carrying the block's start and the stream's total
+  length, its offset width picked on the block's offsets
+  (`UploadClient.cpp:361-370`).
+- **What meters it.** rmule paces no upload bytes: TCP back-pressure on the
+  connection writer is the only brake, and the Send-Ahead carries it back to the read.
+  The slot budget counts slots, and the credit and upload counters count the block's
+  uncompressed bytes as it leaves for the socket (ADR-0077). The cut happens before
+  that and after every decision about the block, so it changes neither slot fairness
+  nor the budget. One block's packets are queued back to back; nothing else of that
+  connection lands between them.
+- **Receiving.** rmule's requester already reads a block in several packets of
+  either kind: each `OP_SENDINGPART` is its own range, merged into the part
+  (ADR-0029), and `OP_COMPRESSEDPART` chunks for one start are buffered until the
+  declared total arrives, then inflated as one block.
+- Each packet is framed straight from its slice of the one block buffer (or the
+  one compressed buffer); no packet copies the block.
+
+**The serve loop never waits on a peer, a disk or the store.**
+
+- The serve loop is one task, and every peer's next answer passes through it. So a
+  decision enacted there is a memory step, a `try_send` into a bounded inbox, or the
+  start of a task whose end comes back as one more input. Nothing else.
+
+  | The loop | Is | Enacted as |
+  |---|---|---|
+  | its `select!` over its inboxes | the one place it parks | |
+  | the event stream to core | a wait on this process, kept: it is lossless, and only a front end that stops reading holds it, which no peer can cause | `send().await` |
+  | the ban list | a memory lock, kept: every holder holds it for a map step | `lock().await` |
+  | a command to a link | a wait on a peer, so never | `try_send` into the link's **Link Outbox** |
+  | a block read | a wait on a disk, so never | a read on its own task, its end an input |
+  | the credit ledger | a wait on the store, so never | the ledger's memory; a task writes it |
+  | the share set | a wait on the store, so never | a read on its own task, its end an input |
+  | an announce | a wait on a server, so never | handed to the Session Follower, its outcome an input |
+  | a reask reply | a wait on a socket, so never | `try_send`; a datagram the full queue refuses is lost as any datagram may be |
+
+  The first read of the share set is the one thing a peer's input waits for, so the
+  first ask is answered from it, and no shared file is called unknown because nobody
+  has read the set: `OP_FILEREQANSNOFIL` and the reask's `OP_FILENOTFOUND` cost the asker
+  this source, and an unanswered name ask costs it the link's first request. The
+  activity awaits that read before the loop starts or, while the Registry Check's first
+  look is unfinished, the loop holds what links say and reask pings until the read that
+  look's end starts has landed. A read made before that end is no set at all, not an
+  empty one. A look that cannot run offers nothing, so the hold takes nothing from the
+  peers it holds. After the first read a read is off the loop, and an ask meanwhile is
+  answered from the set before it.
+- **A slot's flow.** A slot holder's asked ranges wait in its **Serve Flow**, in the
+  Serve State. One read of a flow is out at a time, so its blocks land in the order
+  they were asked, go down one Link Outbox in that order, and are deflated one at a
+  time on that link's task. Nothing reorders them.
+- **What a flow may hold.** A read starts only while fewer than ten blocks of the flow
+  have been read and not yet left for the socket (**Send-Ahead**), and a block has left
+  when its last byte is in the kernel: the session says so once the driver has written
+  it. aMule 2.3.3 holds 100 KiB ahead (`UploadClient.cpp:195`); 3.1.0 holds one block,
+  or ten on a fast slot (`UploadDiskIOThread.cpp:192`), which it derives from the
+  bandwidth-delay product of a slot. rmule holds ten for every slot, because the socket
+  brakes a slow one and ten blocks hold at most 5.3 MiB. It counts blocks and not bytes,
+  so a flood of short ranges holds no more entries. A flow keeps at most
+  32 asked ranges waiting, above the Request Depth's 24 (ADR-0029). An ask past that is
+  dropped and never recorded as served, as if it had not come. aMule keeps no such
+  bound (`UploadClient.cpp:523`); here it is what keeps a peer that asks and never
+  reads from growing the flow.
+- **What the reader may hold.** Eight reads run across all flows, first asked first. A
+  blocking read cannot be cancelled, so a dead mount holds up to eight and the blocks of
+  every flow behind them wait; the loop and every answer that is not a block go on.
+  aMule 3.1.0 reads on one disk thread (`UploadDiskIOThread.cpp`). The eight is not
+  measured.
+- **A slot's end cancels what is in flight.** Every way a slot ends ends its flow: its
+  waiting ranges go, a read waiting for its turn is not started, a read out lands and is
+  dropped, and blocks still in the Link Outbox are not deflated or sent. Flows are
+  numbered, so a block of an ended flow cannot pass for one of a slot the same peer
+  was granted since. What the link already handed its connection, at most one
+  block, goes out; a peer's own `OP_CANCELTRANSFER` drops even that, in its
+  session. aMule truncates its socket's standard queue the same way
+  (`UploadClient.cpp:665-671`, `EMSocket.cpp:712`).
+- **A failed read** is a fact about the file whichever flow it was for, ended or not.
+  A Served Download's is judged against the Part File Identity that read was
+  checked against, which the entry may have moved on from.
+- **A Link Outbox** has two lanes, an answer's and a block's, of 64 entries each, and a
+  full one is a peer asking faster than it reads, whose link ends at once: its slot goes
+  to the next waiter and nothing has to wait. aMule's queues have no bound
+  (`EMSocket.cpp:330-358`), and 64 is safe against its clients because of how they ask,
+  not because of how much they hold. A client asks for one file at a time (`m_reqfile`)
+  and waits for each answer, so one file costs at most six answers (name, status, hash
+  set, AICH root, sources, rank), and the next file waits on the socket until the
+  transfer ends. Sixty-four answers is ten whole files asked with none read, which only
+  a peer that stops reading does. A peer holding a slot adds no answers for it: its
+  `OP_REQUESTPARTS` go to its flow. The Send-Ahead keeps a flow to ten blocks, and an
+  ended flow's leave at the link's next look, so the block lane fills only behind
+  a socket nothing moves through. Ending that link is the design, so the number
+  stays; a bench run of a stock client on a throttled link would disprove it.
+- **An answer goes ahead of the blocks.** aMule's socket drains its control queue before
+  its standard queue (`EMSocket.cpp:500-504`, 3.1.0 `:534`), and everything but block
+  data is a control packet (`UploadClient.cpp:328`, `:658`). A connection is a FIFO,
+  and what it holds no later answer can pass, so the link hands it one block at a
+  time: the next waits until the session says this one left (**Send-Ahead**), or until
+  this one's flow ends, since the session frames no block of a slot gone and says
+  nothing of it. An answer goes down whenever the connection has room. So an answer
+  waits for the block on the wire and no other, however many the Send-Ahead
+  holds, as a slot holder's status for its next file would behind ten. The rule falls
+  on a block's end, not between its frames as aMule's may: the block goes as one run
+  (`OP_SENDINGPART`, `OP_COMPRESSEDPART`), and a driver takes a command once the last
+  one's bytes are in the kernel. Blocks keep their order. The next block is read and
+  deflated while this one is on the wire, so the wire waits for neither.
+- The link's task parks on neither its
+  outbox nor its connection alone, so what the peer says still reaches the loop while
+  a command waits to go down. A link whose connection ended under a command says so,
+  as every link does when it ends, or its slot would never be released.
+- **The driver never stops reading to write.** Reads, writes and events run side by
+  side in the driver of every connection, so a socket the peer has stopped reading
+  holds neither what the peer says nor what the node says to it next. Without this two
+  rmule nodes uploading to each other over one link would each sit in a full write
+  with the other's read parked behind it, and the event channel between a driver and
+  its router would close the same circle with no socket involved. A command is taken
+  when the last one's bytes are written, and reading pauses while 1 MiB is unwritten or
+  an event is unread, so a peer's asks are braked by what it leaves unread.
+- **Two bounds end a stuck peer**, both aMule's `CONNECTION_TIMEOUT` of 40 s
+  (`Constants.h:34`), which ends a client socket that moved no byte either way for that
+  long (`ClientTCPSocket.cpp:226`, reset at `:1888`, `:1895`, `:2059`, `:2071`, `:2080`).
+  - A driver owing bytes to a socket that moved none for 40 s closes the connection with
+    `TimedOut`. The clock hears the socket, not only the write: Linux wakes a writer only
+    at half free, so a slow reader's full socket drains for longer than the bound with no
+    write taken. A write that takes a byte re-arms the bound. So does a reading of the
+    socket's send side that is past the last one: on Linux and macOS the bytes the kernel
+    still holds, unsent and unacked, fallen (`SIOCOUTQ`, `SO_NWRITE`); on Windows, which
+    counts no unsent byte, the bytes acknowledged, risen (`SIO_TCP_INFO`). The driver reads
+    the socket 1 s after the last byte taken, for the count the bound compares against, and
+    again at the bound; a reading that stands ends the connection, and so does a socket
+    that cannot answer. A socket that keeps taking bytes pays no call, a stalled one one
+    per bound. Unlike aMule's, this clock is not reset by what the peer sends: a peer that
+    asks and never reads has not moved the socket that is stuck, and its count stands once
+    its receive window is full.
+  - A slot holder with nothing left to send and nothing moving for 40 s, neither a word
+    from it nor a block leaving, loses its slot and its link at the next re-rank tick,
+    20 s by default. This is the peer that stopped reading with all its bytes in the
+    kernel, which no write will ever show. A read parked on the disk is not the peer's
+    silence, and does not count. The slot is released here and not left to the link's
+    close, because a download riding the link holds the link up (ADR-0107).
+  - A block that has left is in the kernel, not at the peer, and a slow holder reads
+    those bytes for as long as its link takes. aMule's clock stops there too
+    (`ClientTCPSocket.cpp:1886-1895`, `:2059-2080`: a read, a write that moved a byte, a
+    writable socket), and only its throttler keeps bytes on its own side. So each block
+    leaving lends the holder the time its bytes take at 1 KiB/s, about half the 16 kbit/s
+    the partial-share bench holds a slot over, and the 40 s runs from when the lent time
+    is spent. The loan stands at 5 minutes at most, which covers aMule's three asked
+    blocks at 16 kbit/s; it is what a dead holder costs, and nothing the kernel knows
+    shortens it, because the serve loop sees no socket.
+
 **The listener is in `rmule-net`; core holds one connection registry.**
 
 - `PeerListener` in `rmule-net` binds the advertised TCP port and yields accepted
@@ -84,7 +327,10 @@ scheduling is (ADR-0026).
 - The registry lives in the typed store (ADR-0083): one record per shared file, keyed
   by its file hash, with its part hashes beside it, written in one transaction.
 - Shares arrive from the shared directories and the download directory (ADR-0101)
-  and from completed downloads; `ServeCommand::UnshareFile` withdraws one.
+  and from completed downloads; `ServeCommand::UnshareFile` withdraws one. Beside the
+  registry, the serve side answers for every running download larger than one part and
+  offers it from its first verified part (ADR-0113); that offer is the download's, never
+  a row.
 - The serve side answers probes and hash-set requests from it and announces it with
   `OP_OFFERFILES` (`Ed2kCommand::OfferFiles`) to the live server session and each one
   connected after it (ADR-0095).
@@ -116,6 +362,44 @@ scheduling is (ADR-0026).
   Callback Capability (ADR-0039) reads this cell.
 - When the activity ends, `DiagnosticsState::close_all_uploads` closes every open
   upload row with the same stop reason.
+
+### An upload session ends at stock's bound
+
+A slot is one **Upload Session**. While a waiter the queue can reach stands behind every
+slot, a session ends at 10 485 760 bytes sent or at one hour, whichever comes first
+(`UploadQueue.cpp:586-623`; 2.3.3 `UploadQueue.cpp:580-581`). With nobody reachable waiting
+it runs on: the bound exists to move the queue. At most one session ends per second, as
+`Process` kicks one client a cycle and starts one a second (`UploadQueue.cpp:244-258`). A
+friend slot or Release priority would be exempt; rmule has neither.
+
+The holder is told `OP_OUTOFPARTREQS` at once and asks again on its own terms: it is back
+on the wait list with a fresh wait, as `SendOutOfPartReqsAndAddToWaitingQueue` adds it
+(`UploadClient.cpp:493-510`), and the link stays. The slot goes to the best waiter in the
+same batch. Two inputs read the bound, one owner holds it: the queue counts a block when it
+has left and stamps the slot's start, and the serve brain asks after each block and at the
+slot sweep, so a stalled holder is ended by the hour too.
+
+The count lives on the slot, so it rides a relink (ADR-0107) and ends with the slot. A
+Cancel, a disconnect, a refused block ask and a serve restart end it with the slot; Pause
+and Resume of a download do not touch it, and a process restart loses it with the queue.
+
+### Every link is bounded, and so is what the listener takes
+
+A served link that moved nothing either way for stock's 40 s is told to the serve side
+(`ClientTCPSocket.cpp:201-229`). The link holds that clock, because only it sees both
+directions; the serve side judges it. A slot holder's silence stays the slot sweep's, which
+lends what the kernel still holds, and any other link closes: a waiter keeps its place on
+its reask (ADR-0057), as stock leaves it queued. A download riding the link, or the buddy
+slot, holds it, as the 15 minutes stock adds for a buddy and the Queued Hang-Up a rider owes
+make a shorter clock meaningless there (ADR-0107 invariant 9). A link rmule dialed for a
+download is that download's own to end, so stock's bound does not run on it yet.
+
+The **Accept Limit** is the last Accept Gate. Past the Connection Ceiling, which counts every
+live link and dial, or past 50 accepts in a five-second window, the listener refuses a peer
+before anything reads it (`ListenSocket.cpp:85`, `:186-196`, `Constants.h:72`). An awaited
+server's port test goes past it, as stock accepts past it while connecting. Stock's spike
+brake (`ListenSocket.cpp:218-232`) is not modelled: it only tightens the same window, whose
+bound already holds a burst to ten a second.
 
 ## Consequences
 

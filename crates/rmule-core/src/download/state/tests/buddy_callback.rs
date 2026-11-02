@@ -39,6 +39,7 @@ fn direct_row(connect_options: u8) -> SourceSighting {
         Some(rmule_primitives::SourceCryptOptions::from_byte(
             connect_options,
         )),
+        rmule_primitives::Informant::Own,
     )
 }
 
@@ -107,9 +108,7 @@ fn a_capable_downloader_asks_an_amule_rows_buddy_for_a_callback() {
     assert!(
         !decisions.iter().any(|d| matches!(
             d,
-            Decision::FallToNatTraversal { .. }
-                | Decision::RequestCallback { .. }
-                | Decision::RequestGlobalCallback { .. }
+            Decision::FallToNatTraversal { .. } | Decision::RequestCallback { .. }
         )),
         "no server is asked and nothing can punch an aMule row: {decisions:?}"
     );
@@ -240,7 +239,7 @@ fn a_row_with_the_direct_callback_bit_takes_it_ahead_of_its_own_buddy() {
     }) else {
         panic!("the direct-UDP road is taken, not the buddy's: {decisions:?}");
     };
-    assert_eq!(candidate.kad_udp, target_row.kad_udp);
+    assert_eq!(candidate.kad_udp(), target_row.kad_udp());
     assert_eq!(candidate.user_hash, Some(TARGET));
     assert!(
         !decisions
@@ -284,7 +283,7 @@ fn a_direct_udp_callback_falls_to_the_punch_after_twelve_silent_seconds() {
         *silence,
         CallbackSilence::After {
             taken: PeerReachRoute::DirectUdp {
-                target_kad_udp: target_row.kad_udp.expect("the row names one"),
+                target_kad_udp: target_row.kad_udp().expect("the row names one"),
             },
             elapsed: CALLBACK_SILENCE_FALLBACK,
         }

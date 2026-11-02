@@ -25,8 +25,8 @@
 use std::net::{Ipv4Addr, Ipv6Addr};
 
 use rmule_primitives::{
-    ClientId, Ipv4Endpoint, PeerSource, SourceCryptOptions, Tag, TagName, TagValue, UserHash,
-    WireReader, WireTruncated,
+    ClientId, Ed2kIp, Ipv4Endpoint, KadIp, PeerSource, SourceCryptOptions, Tag, TagName, TagValue,
+    UserHash, WireReader, WireTruncated,
 };
 
 use crate::opcode::Kad2Opcode;
@@ -90,15 +90,6 @@ pub(crate) const SOURCETYPE_DIRECT_LARGE: u8 = 4;
 pub(crate) const SOURCETYPE_BUDDY: u8 = 3;
 pub(crate) const SOURCETYPE_BUDDY_LARGE: u8 = 5;
 pub(crate) const SOURCETYPE_FIREWALLED_UDP: u8 = 6;
-
-/// The large-file boundary a source publish's type keys on: aMule's
-/// `OLD_MAX_FILE_SIZE` (`include/protocol/ed2k/Constants.h:89`) and eMuleAI's
-/// `OLD_MAX_EMULE_FILE_SIZE` (`Opcodes.h:165`), 4 290 048 000 bytes, the
-/// largest whole number of `PARTSIZE` parts under `2^32`. A file is large
-/// when it is **strictly greater** (`IsLargeFile`, kno `KnownFile.h:129`;
-/// eMuleAI `Search.cpp:885`, `:901`). This is not `u32::MAX`: a file of
-/// 4 290 048 001 bytes fits a `u32` and is still large.
-pub(crate) const OLD_MAX_FILE_SIZE: u64 = 4_290_048_000;
 
 /// Decode the source rows of a `KADEMLIA2_SEARCH_RES` envelope into candidates.
 ///
@@ -227,11 +218,11 @@ pub const SOURCE_RESULT_ROWS_PER_DATAGRAM: usize = 50;
 /// "Source-publish layouts"). Zero rows encode to zero envelopes — a storer
 /// with nothing to say stays silent, like aMule.
 ///
-/// Row tags are written in the stored-entry order the aMule storer produces
-/// (SOURCEIP, SOURCETYPE, SOURCEPORT, SOURCEUPORT, the buddy trio on a
-/// type-3/5 row, then ENCRYPTION when present, then the string-named `ip6` and
-/// `bi6` last), each in the explicit length-prefixed name form and at a fixed
-/// width (`decode_source_result` tolerates narrower variable-width forms; the
+/// Row tags go out as SOURCEIP, SOURCETYPE, SOURCEPORT, SOURCEUPORT, the
+/// buddy trio on a type-3/5 row, ENCRYPTION when present, and the string-named
+/// `ip6` and `bi6` last, as the publisher wrote them. Every reader ignores tag
+/// order, so no other order is reproduced. Each tag is in the explicit
+/// length-prefixed name form and at a fixed width (`decode_source_result` tolerates narrower variable-width forms; the
 /// encoder never emits them). The caller applies result budgets and start
 /// offsets — this is pure serialization of already-selected rows.
 #[must_use]
@@ -257,26 +248,18 @@ pub fn encode_source_result(sender: KadId, key: KadId, rows: &[KadSourceRow]) ->
 fn encode_row(payload: &mut Vec<u8>, row: &KadSourceRow) {
     payload.extend_from_slice(&row.source_id);
 
-    // eMule's TAG_SOURCEIP value is the host-order u32 of `a.b.c.d`
-    // (see `project_direct` for the inverse used by the sealed projection).
-    let ip_host_order = u32::from_be_bytes(row.ip.octets());
     let mut tags = vec![
-        (TAG_SOURCEIP, TagValue::U32(ip_host_order)),
+        (TAG_SOURCEIP, TagValue::U32(KadIp::new(row.ip).wire())),
         (TAG_SOURCETYPE, TagValue::U8(row.source_type)),
         (TAG_SOURCEPORT, TagValue::U16(row.tcp_port)),
         (TAG_SOURCEUPORT, TagValue::U16(row.udp_port)),
     ];
     // The buddy tags follow the source ones, in the publisher's own order
-    // (`TAG_SERVERIP`, `TAG_SERVERPORT`, `TAG_BUDDYHASH`) — the storer keeps
-    // the tags it received in arrival order, and that is the order they arrive
-    // in. `TAG_BUDDYHASH` goes out as the 32 hex characters aMule writes.
+    // (`TAG_SERVERIP`, `TAG_SERVERPORT`, `TAG_BUDDYHASH`). `TAG_BUDDYHASH`
+    // goes out as it came in from a publish, a stored row's spelling unmoved.
     if let Some(buddy) = row.buddy {
         if let Some(udp) = buddy.buddy_udp {
-            let [a, b, c, d] = udp.ip.octets();
-            tags.push((
-                TAG_SERVERIP,
-                TagValue::U32(u32::from_le_bytes([a, b, c, d])),
-            ));
+            tags.push((TAG_SERVERIP, TagValue::U32(Ed2kIp::new(udp.ip).wire())));
             tags.push((TAG_SERVERPORT, TagValue::U16(udp.port)));
         } else if let Some(udp) = buddy.buddy_udp_ipv6 {
             // eMuleAI's IPv6-buddy row, its `UINT_MAX` `TAG_SERVERIP` refused
@@ -289,7 +272,7 @@ fn encode_row(payload: &mut Vec<u8>, row: &KadSourceRow) {
         tags.push((
             TAG_BUDDYHASH,
             TagValue::String(rmule_primitives::Ed2kText::from_utf8(md4_hex(
-                crate::lookup::kad_wire_id(*buddy.buddy_id.as_bytes()),
+                *buddy.buddy_id.as_bytes(),
             ))),
         ));
     }
@@ -297,11 +280,11 @@ fn encode_row(payload: &mut Vec<u8>, row: &KadSourceRow) {
         tags.push((TAG_ENCRYPTION, TagValue::U8(options)));
     }
     // The two IPv6 tags close the row, `ip6` then `bi6`, where the publisher
-    // wrote them — eMuleAI's `0x44` ends `ENCRYPTION, ip6, bi6`
+    // wrote them: eMuleAI's `0x44` ends `ENCRYPTION, ip6, bi6`
     // (`Search.cpp:913-923`, `a2f05dc8`), kno's ends in `ip6`
-    // (`Search.cpp:886-902`) — and where kno's storer re-serves them, in
-    // arrival order. Both were gated by `IsUsableTagIdentity` when the publish
-    // was read, so an address this storer refused was never stored to re-serve.
+    // (`Search.cpp:886-902`). Both were gated by `IsUsableTagIdentity` when the
+    // publish was read, so an address this storer refused was never stored to
+    // re-serve.
     let ipv6_tags: Vec<Tag> = [
         row.ipv6
             .map(|address| crate::ipv6_tags::ipv6_tag(crate::ipv6_tags::TAG_SOURCE_IPV6, address)),
@@ -370,7 +353,7 @@ struct RowTags {
     user_hash: Option<UserHash>,
     source_type: Option<u8>,
     /// `SOURCEIP` as eMule's host-order IP `u32` (`GetInt()` of the tag).
-    source_ip_host_order: Option<u32>,
+    source_ip: Option<KadIp>,
     tcp_port: Option<u16>,
     /// `SOURCEUPORT`: the publisher's Kad UDP port.
     udp_port: Option<u16>,
@@ -382,12 +365,11 @@ struct RowTags {
     /// word) and the reader feeds it straight to `SendPacket`
     /// (`src/DownloadClient.cpp:1433`) with no swap in between, while the same
     /// reader swaps `SOURCEIP` (`src/DownloadQueue.cpp:1713`).
-    buddy_ip_network_order: Option<u32>,
+    buddy_ip: Option<Ed2kIp>,
     /// `TAG_SERVERPORT`: the buddy's UDP port.
     buddy_port: Option<u16>,
-    /// `TAG_BUDDYHASH`, decoded from its 32 hex characters into the 16
-    /// big-endian bytes aMule's `CUInt128::ToByteArray` produced.
-    buddy_id_be: Option<[u8; KAD_ID_LEN]>,
+    /// `TAG_BUDDYHASH`, decoded from its 32 hex characters.
+    buddy_id: Option<KadId>,
     /// The row's `ip6` tag (ADR-0087), already past `IsUsableTagIdentity`.
     ipv6: Option<std::net::Ipv6Addr>,
     /// The row's `bi6` tag, gated alike; folded into the buddy contact, so a
@@ -412,12 +394,16 @@ fn decode_row(
         ..RowTags::default()
     };
     for _ in 0..tag_count {
-        let (tag, consumed) = Tag::decode_prefix(reader.remaining_bytes()).map_err(|_| {
-            KadSourceResultDecodeError::MalformedPayload {
-                reason: "source row tag is truncated or malformed",
-            }
-        })?;
+        let (tag, consumed) =
+            Tag::decode_or_step_prefix(reader.remaining_bytes()).map_err(|_| {
+                KadSourceResultDecodeError::MalformedPayload {
+                    reason: "source row tag is truncated or malformed",
+                }
+            })?;
         reader.advance_clamped(consumed);
+        let Some(tag) = tag else {
+            continue;
+        };
         apply_tag(&mut tags, &tag);
     }
 
@@ -454,17 +440,21 @@ fn apply_tag(tags: &mut RowTags, tag: &Tag) {
                 tags.source_type = Some(byte);
             }
         }
-        (TAG_SOURCEIP, &TagValue::U32(ip)) => tags.source_ip_host_order = Some(ip),
+        (TAG_SOURCEIP, &TagValue::U32(ip)) => tags.source_ip = Some(KadIp::from_wire(ip)),
         (TAG_SOURCEPORT, value) => tags.tcp_port = as_u16(value),
         (TAG_SOURCEUPORT, value) => tags.udp_port = as_u16(value),
         (TAG_ENCRYPTION, value) => tags.connect_options = as_u8(value),
         // Both buddy-endpoint tags are written with eMule's *variable* integer
         // tag (`CKadTagUInt` / aMule `CTagVarInt`), which narrows to the
         // smallest width that fits — so a u8 or u16 body is legal here.
-        (TAG_SERVERIP, value) => tags.buddy_ip_network_order = as_u32(value),
+        (TAG_SERVERIP, value) => tags.buddy_ip = as_u32(value).map(Ed2kIp::from_wire),
         (TAG_SERVERPORT, value) => tags.buddy_port = as_u16(value),
         (TAG_BUDDYHASH, TagValue::String(text)) => {
-            tags.buddy_id_be = text.try_as_str().ok().and_then(hex_md4);
+            tags.buddy_id = text
+                .try_as_str()
+                .ok()
+                .and_then(hex_md4)
+                .map(KadId::from_bytes);
         }
         _ => {}
     }
@@ -553,17 +543,15 @@ fn row_facts(tags: &RowTags, source_type: u8) -> KadSourceRowFacts {
         source_type,
         tcp_port: tags.tcp_port.unwrap_or(0),
         kad_udp: endpoint(
-            tags.source_ip_host_order.map(u32::swap_bytes),
+            tags.source_ip.map(KadIp::ip),
             tags.udp_port,
-            crate::net::is_unicast_host,
+            crate::net::may_name_a_host,
         ),
         connect_options: tags.connect_options.map(SourceCryptOptions::from_byte),
-        buddy: tags.buddy_id_be.map(|be| KadBuddyContact {
-            // The tag's big-endian bytes become `KadId`'s wire order under the
-            // same self-inverse word swap the row's source ID uses.
-            buddy_id: KadId::from_bytes(crate::lookup::kad_wire_id(be)),
+        buddy: tags.buddy_id.map(|buddy_id| KadBuddyContact {
+            buddy_id,
             buddy_udp: endpoint(
-                tags.buddy_ip_network_order,
+                tags.buddy_ip.map(Ed2kIp::ip),
                 tags.buddy_port,
                 crate::net::is_claimed_udp_target,
             ),
@@ -580,37 +568,31 @@ fn row_facts(tags: &RowTags, source_type: u8) -> KadSourceRowFacts {
     }
 }
 
-/// Pair an eD2k address word (`a | b<<8 | c<<16 | d<<24`, rmule's [`ClientId`]
-/// order) with a port, dropping the pair when either half is missing, the
-/// port is zero, or `admit` refuses the address.
+/// Pair an address with a port, dropping the pair when either half is missing,
+/// the port is zero, or `admit` refuses the address.
 pub(crate) fn endpoint(
-    address_word: Option<u32>,
+    address: Option<Ipv4Addr>,
     port: Option<u16>,
     admit: fn(Ipv4Addr) -> bool,
 ) -> Option<Ipv4Endpoint> {
-    let [a, b, c, d] = address_word?.to_le_bytes();
-    let ip = Ipv4Addr::new(a, b, c, d);
+    let ip = address?;
     let port = port.filter(|port| *port != 0)?;
     admit(ip).then(|| Ipv4Endpoint::new(ip, port))
 }
 
 /// Project a direct (type 1/4) source row.
 ///
-/// eMule's `TAG_SOURCEIP` is the source IP as the host-order `u32`
-/// `(a<<24)|(b<<16)|(c<<8)|d` for `a.b.c.d`. rmule's [`ClientId`] is the IP read
-/// as little-endian octets (`a | b<<8 | c<<16 | d<<24`) so that
-/// [`PeerSource::as_peer_endpoint`] reconstructs `a.b.c.d`. The two differ only
-/// by a byte swap. A `ClientId` below
+/// An address whose [`ClientId`] falls below
 /// [`ClientId::LOW_ID_THRESHOLD`](rmule_primitives::ClientId) is a Low ID source.
 fn project_direct(tags: &RowTags) -> KadSourceCandidate {
-    let (Some(ip_host_order), Some(tcp_port)) = (tags.source_ip_host_order, tags.tcp_port) else {
+    let (Some(source_ip), Some(tcp_port)) = (tags.source_ip, tags.tcp_port) else {
         return KadSourceCandidate::diagnostic(KadSourceDiagnostic::MissingEndpoint);
     };
     if tcp_port == 0 {
         return KadSourceCandidate::diagnostic(KadSourceDiagnostic::MissingEndpoint);
     }
 
-    let client_id = ClientId::from_u32(ip_host_order.swap_bytes());
+    let client_id = ClientId::from_ipv4(source_ip.ip());
     if client_id.is_high_id() {
         KadSourceCandidate::direct(PeerSource::new(client_id, tcp_port))
     } else {

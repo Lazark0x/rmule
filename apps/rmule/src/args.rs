@@ -29,6 +29,9 @@ pub struct RunArgs {
     pub data_dir: Option<PathBuf>,
     /// `--log-level`: beats the stored *Full run log* preference.
     pub log_level: Option<Level>,
+    /// `--no-mouse`: leave the mouse to the terminal this run, whatever the
+    /// stored *Mouse* preference says.
+    pub no_mouse: bool,
 }
 
 /// An option that takes a value.
@@ -71,6 +74,7 @@ where
         match name.to_str() {
             Some("-h" | "--help") if inline.is_none() => help = true,
             Some("-V" | "--version") if inline.is_none() => version = true,
+            Some("--no-mouse") if inline.is_none() => run.no_mouse = true,
             Some("--data-dir") => {
                 let value = take_value(inline, &mut args, ValueOption::DataDir)?;
                 if run.data_dir.replace(PathBuf::from(value)).is_some() {
@@ -168,7 +172,7 @@ pub const BUILD: Build = Build {
     dirty: matches!(env!("RMULE_BUILD_DIRTY").as_bytes(), b"1"),
 };
 
-/// Which of the run's standard streams is not a terminal.
+/// Why the run has no terminal it can draw on.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MissingTerminal {
     /// Input is not a terminal.
@@ -177,14 +181,22 @@ pub enum MissingTerminal {
     Output,
     /// Neither is.
     Both,
+    /// Both are, but `TERM=dumb` says it has no cursor to address: an editor's
+    /// shell buffer, where a full screen draws as noise.
+    NoCursor,
 }
 
 impl MissingTerminal {
-    /// Which stream fails to be a terminal, from whether input and output
-    /// are; `None` when both are.
+    /// What is missing, from whether input and output are terminals and
+    /// whether `TERM` is `dumb`; `None` when the full screen can run.
     #[must_use]
-    pub const fn from_streams(input_is_terminal: bool, output_is_terminal: bool) -> Option<Self> {
+    pub const fn from_streams(
+        input_is_terminal: bool,
+        output_is_terminal: bool,
+        dumb: bool,
+    ) -> Option<Self> {
         match (input_is_terminal, output_is_terminal) {
+            (true, true) if dumb => Some(Self::NoCursor),
             (true, true) => None,
             (false, true) => Some(Self::Input),
             (true, false) => Some(Self::Output),
@@ -202,12 +214,22 @@ mod tests {
     }
 
     #[test]
+    fn no_mouse_is_a_flag_with_no_value() {
+        let Ok(Invocation::Run(run)) = parsed(&["--no-mouse"]) else {
+            panic!("a run");
+        };
+        assert!(run.no_mouse);
+        assert!(parsed(&["--no-mouse=yes"]).is_err());
+    }
+
+    #[test]
     fn both_value_forms_and_the_level_words_parse() {
         assert_eq!(
             parsed(&["--data-dir", "/d", "--log-level=detailed"]),
             Ok(Invocation::Run(RunArgs {
                 data_dir: Some("/d".into()),
                 log_level: Some(Level::Full),
+                no_mouse: false,
             }))
         );
         assert_eq!(
@@ -215,6 +237,7 @@ mod tests {
             Ok(Invocation::Run(RunArgs {
                 data_dir: Some("/a=b".into()),
                 log_level: Some(Level::Lean),
+                no_mouse: false,
             }))
         );
     }
@@ -232,6 +255,7 @@ mod tests {
         let expected = Ok(Invocation::Run(RunArgs {
             data_dir: Some(PathBuf::from(&path)),
             log_level: None,
+            no_mouse: false,
         }));
         assert_eq!(parse([OsString::from_vec(inline)]), expected);
         assert_eq!(
@@ -247,6 +271,7 @@ mod tests {
             Ok(Invocation::Help(RunArgs {
                 data_dir: Some("/d".into()),
                 log_level: None,
+                no_mouse: false,
             }))
         );
     }

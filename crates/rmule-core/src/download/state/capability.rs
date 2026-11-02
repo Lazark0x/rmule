@@ -47,8 +47,8 @@ enum ServerStanding {
     /// No live session.
     #[default]
     Disconnected,
-    /// Logged in with a Low ID, on `server` (`None` when its host is not an
-    /// IPv4 literal — then no candidate can be proven to share it by address).
+    /// Logged in with a Low ID, on `server` (`None` for a session reached
+    /// over IPv6 — then no candidate can be proven to share it by address).
     LowId { server: Option<Ipv4Endpoint> },
     /// Logged in with a High ID on `server`: it dialled our TCP port and
     /// reached it.
@@ -119,14 +119,11 @@ impl CallbackCapability {
         }
     }
 
-    /// Whether a *server* may relay a callback for us — the connected server's
-    /// `OP_CALLBACKREQUEST` or a per-server `OP_GLOBCALLBACKREQUEST` (ADR-0039,
-    /// ADR-0051). Only on a server High ID: on our own server that is exactly
-    /// what the carve-out leaves, and the global form's payload is our High-ID
-    /// contact, which a Low ID does not have. aMule has no road to a
-    /// remote-server Low-ID source without a buddy at all (`TryToConnect`
-    /// removes it, `BaseClient.cpp:2114-2121`), so this is never wider than
-    /// aMule.
+    /// Whether our server may relay a callback for us: its
+    /// `OP_CALLBACKREQUEST` (ADR-0039), only on a server High ID, which is
+    /// exactly what the carve-out leaves. A remote server relays nothing:
+    /// aMule has no road to a remote-server Low-ID source without a buddy
+    /// (`TryToConnect` removes it, `BaseClient.cpp:2114-2121`).
     pub(crate) fn server_relays(&self) -> bool {
         self.listener_bound && matches!(self.server, ServerStanding::HighId { .. })
     }
@@ -139,7 +136,7 @@ impl CallbackCapability {
         matches!(self.server, ServerStanding::HighId { .. }) || self.kad_open
     }
 
-    /// The server our live session is on, when its host is an IPv4 literal:
+    /// The server our live session is on, by the IPv4 address it reached:
     /// the namespace a Low ID it names is minted in, and the one
     /// [`LowIdCandidate::on_server`] asks a candidate about.
     pub(crate) const fn server(&self) -> Option<Ipv4Endpoint> {
@@ -167,7 +164,7 @@ impl CallbackCapability {
 mod tests {
     use std::net::Ipv4Addr;
 
-    use rmule_primitives::{ClientId, PeerSource, SourceSighting};
+    use rmule_primitives::{ClientId, Informant, PeerSource, SourceSighting};
 
     use super::*;
 
@@ -186,7 +183,7 @@ mod tests {
 
     fn server_candidate(source_server: Option<Ipv4Endpoint>) -> LowIdCandidate {
         LowIdCandidate::from_sighting(
-            SourceSighting::plain(PeerSource::new(ClientId::from_u32(9), 4662)),
+            SourceSighting::plain(PeerSource::new(ClientId::from_u32(9), 4662), Informant::Own),
             source_server,
         )
         .expect("a Low-ID source is a candidate")
@@ -194,7 +191,9 @@ mod tests {
 
     fn kad_candidate() -> LowIdCandidate {
         LowIdCandidate {
-            from_kad: true,
+            id: crate::adapters::CallbackKey::KadRow {
+                observed: Ipv4Endpoint::new(std::net::Ipv4Addr::new(198, 51, 100, 7), 4672),
+            },
             ..server_candidate(None)
         }
     }

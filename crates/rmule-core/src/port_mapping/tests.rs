@@ -6,9 +6,11 @@
 //! The fixture below is the shared vocabulary; each leg owns one behaviour.
 
 mod departure;
+mod ends;
 mod family;
 mod lease;
 mod race;
+mod readd;
 mod rerace;
 
 use std::net::Ipv4Addr;
@@ -64,6 +66,7 @@ pub(super) fn probed(
     mapper.on_result(
         MappingResult::Probed {
             protocol,
+            round: mapper.round,
             outcome: Ok(ProbeAnswer {
                 families: families.to_vec(),
                 epoch_reset: false,
@@ -78,6 +81,7 @@ pub(super) fn probe_absent(protocol: MappingProtocol, now: Instant, mapper: &mut
     mapper.on_result(
         MappingResult::Probed {
             protocol,
+            round: mapper.round,
             outcome: Err(MappingError::Unsupported(protocol)),
         },
         now,

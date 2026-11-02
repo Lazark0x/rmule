@@ -13,7 +13,8 @@
 //!   obfuscated for a waiter we know;
 //! - a known waiter's ping is answered only for the file it waits for, and its
 //!   UDP version decides what is read of the ping (`> 3` the part status,
-//!   `== 3` the complete-source count) and whether our status rides the ack;
+//!   `== 3` the complete-source count) and whether our status rides the ack —
+//!   the parts we hold of the file, a whole file's as the count `0` alone;
 //! - a ping cut short of what that version reads is silenced, as aMule's
 //!   reader throws and its dispatcher only logs;
 //! - an unknown pinger gets `OP_QUEUEFULL`, always plaintext, only while
@@ -27,8 +28,8 @@ use super::codec::{
     udp_header,
 };
 use super::crypt::PeerUdpCryptTarget;
-use crate::file::PartBitmap;
 use crate::file_request::{FileSizedStatus, read_file_sized_status};
+use crate::wire_status::WireStatus;
 
 /// How far above the waiting count an unknown pinger finds the queue full:
 /// aMule answers `OP_QUEUEFULL` while `waiting + 50 > queue size`
@@ -114,6 +115,28 @@ pub struct QueueRoom {
     pub max: usize,
 }
 
+/// The file a ping names, as we share it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SharedFile {
+    /// Its exact size, which a UDPv4 ping's status is read against.
+    pub size: u64,
+    /// The parts we hold, in the writer's count (`size / PARTSIZE + 1`); a
+    /// status holding every part, or the count-`0` sentinel, goes out as the
+    /// count `0` alone.
+    pub status: WireStatus,
+}
+
+impl SharedFile {
+    /// A file we share whole.
+    #[must_use]
+    pub fn whole(size: u64) -> Self {
+        Self {
+            size,
+            status: WireStatus::complete_source(),
+        }
+    }
+}
+
 /// The responder's verdict on one ping.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ReaskAnswer {
@@ -162,19 +185,19 @@ pub enum Standing {
     Heard,
     /// As [`Heard`](Self::Heard), and the ping restated the waiter's part
     /// status, which the runtime records — `None` clears what it held.
-    Restated(Option<PartBitmap>),
+    Restated(Option<WireStatus>),
 }
 
-/// Answer `ping` from `pinger`, given the queue's `room` and the shared file's
-/// size (`None` when we do not share the file).
+/// Answer `ping` from `pinger`, given the queue's `room` and the file as we
+/// share it (`None` when we do not share the file).
 #[must_use]
 pub fn answer(
     ping: &ReaskPing<'_>,
     pinger: &Pinger,
     room: QueueRoom,
-    shared_size: Option<u64>,
+    shared: Option<&SharedFile>,
 ) -> ReaskAnswer {
-    let Some(file_size) = shared_size else {
+    let Some(shared) = shared else {
         // Resolved before the file, so a waiter we know is answered
         // obfuscated even here; anyone else plaintext.
         let encrypt_for = match pinger {
@@ -187,7 +210,7 @@ pub fn answer(
         });
     };
     match pinger {
-        Pinger::Known(waiter) => answer_waiter(ping, waiter, file_size),
+        Pinger::Known(waiter) => answer_waiter(ping, waiter, shared),
         Pinger::Ambiguous => ReaskAnswer::untouched(ReaskReply::Silent(Silence::AmbiguousIp)),
         Pinger::Unknown if room.waiting + QUEUE_FULL_HEADROOM > room.max => {
             // Never obfuscated: there is no identity to key on (aMule: "we
@@ -203,7 +226,8 @@ pub fn answer(
 }
 
 /// A known waiter's ping for a file we share.
-fn answer_waiter(ping: &ReaskPing<'_>, waiter: &KnownWaiter, file_size: u64) -> ReaskAnswer {
+fn answer_waiter(ping: &ReaskPing<'_>, waiter: &KnownWaiter, shared: &SharedFile) -> ReaskAnswer {
+    let file_size = shared.size;
     if waiter.waiting_for != ping.file_hash {
         return ReaskAnswer::untouched(ReaskReply::Silent(Silence::OtherFile));
     }
@@ -227,10 +251,16 @@ fn answer_waiter(ping: &ReaskPing<'_>, waiter: &KnownWaiter, file_size: u64) -> 
     if waiter.udp_version == 3 && !carries_complete_count(ping.datagram) {
         return silenced(standing);
     }
-    // Our status rides only to a UDPv4 waiter, in aMule's writer shape for a
-    // file that is not a part file: the count `0` alone (`:214-219`). Every
-    // file rmule shares is complete.
-    let part_status = (waiter.udp_version > 3).then(PartBitmap::complete_source_sentinel);
+    // Our status rides only to a UDPv4 waiter (`:214-219`): a part file's
+    // own, a whole file's as the count `0` alone, the writer shape for a file
+    // that is not a part file.
+    let part_status = (waiter.udp_version > 3).then(|| {
+        if shared.status.is_complete() {
+            WireStatus::complete_source()
+        } else {
+            shared.status.clone()
+        }
+    });
     ReaskAnswer {
         reply: ReaskReply::Send {
             datagram: ReaskAck {
@@ -304,7 +334,7 @@ fn read_status(datagram: &[u8], file_size: u64, extended_requests: u8) -> PingSt
         // above `1` (`:448-455`); its absence throws after the status is
         // set. Count `0` reads nothing more (`:415-416`).
         FileSizedStatus::Read { status, end }
-            if extended_requests > 1 && status.part_count() != 0 && tail.len() < end + 2 =>
+            if extended_requests > 1 && !status.is_complete_source() && tail.len() < end + 2 =>
         {
             PingStatus::Malformed(Some(status))
         }
@@ -319,11 +349,11 @@ enum PingStatus {
     /// Read to the end the claim asks for: the pinger's status in its wire
     /// shape (count `0` is a complete copy's), or `None` where aMule clears it
     /// without reading — a claim of `0`, or a count that is not the file's.
-    Read(Option<PartBitmap>),
+    Read(Option<WireStatus>),
     /// Cut short where aMule's reader throws: its dispatcher only logs, so
     /// the ping goes unanswered. Carries the status as far as it was read
     /// before the throw, `None` when not even the count arrived.
-    Malformed(Option<PartBitmap>),
+    Malformed(Option<WireStatus>),
 }
 
 #[cfg(test)]
@@ -338,7 +368,7 @@ mod tests {
         use rmule_primitives::ED2K_PART_SIZE;
 
         let ping = |tail: &[u8]| [&[0xC5, 0x90][..], &[0xAB; 16], tail].concat();
-        let bitmap = |count, bytes: &[u8]| PartBitmap::decode(count, bytes).unwrap();
+        let bitmap = |count, bytes: &[u8]| WireStatus::decode(count, bytes).unwrap();
 
         // Twenty parts: a three-byte status, then the complete-source count.
         let size = 19 * ED2K_PART_SIZE + 1;

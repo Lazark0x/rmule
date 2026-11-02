@@ -41,6 +41,7 @@
 
 use rmule_primitives::{
     Ed2kFileClass, Ed2kText, KeywordQuery, Packet, PacketProtocol, WireReader, WireTruncated,
+    write_wire_string,
 };
 
 use crate::{Ed2kError, Opcode, Result};
@@ -167,20 +168,7 @@ impl SearchRequest {
     /// body layout is not this packet's.
     pub fn decode_packet(packet: &Packet) -> Result<Self> {
         let opcode = Opcode::SearchRequest.as_u8();
-        if packet.protocol() != PacketProtocol::Edonkey {
-            return Err(Ed2kError::InvalidPayload {
-                opcode,
-                reason: "unsupported packet protocol",
-            });
-        }
-        if packet.opcode() != opcode {
-            return Err(Ed2kError::InvalidPayload {
-                opcode,
-                reason: "wrong opcode for OP_SEARCHREQUEST",
-            });
-        }
-
-        let mut reader = WireReader::new(packet.payload());
+        let mut reader = WireReader::new(packet.body_of(PacketProtocol::Edonkey, opcode)?);
         let terms = parse_expression(&mut reader, 0)?;
         if !reader.is_exhausted() {
             return Err(Ed2kError::InvalidPayload {
@@ -313,9 +301,7 @@ fn write_term(payload: &mut Vec<u8>, term: &SearchTerm) {
 }
 
 fn write_len_prefixed_text(payload: &mut Vec<u8>, value: &Ed2kText) {
-    let len = u16::try_from(value.as_bytes().len()).expect("search text exceeds u16");
-    payload.extend_from_slice(&len.to_le_bytes());
-    payload.extend_from_slice(value.as_bytes());
+    write_wire_string(payload, value.as_bytes());
 }
 
 /// Maximum search-expression nesting depth a decode accepts. Matches the

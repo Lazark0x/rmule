@@ -10,10 +10,10 @@ use std::time::Duration;
 
 use rmule_peer::{
     AnswerItem, EMBLOCKSIZE, ExtendedRequests, MiscOptions1, MultiPacketAnswer, MultiPacketRequest,
-    PartBitmap, RequestItem,
+    RequestItem, WireStatus,
 };
 use rmule_primitives::{
-    ClientId, Ed2kText, FileHash, PacketProtocol, PartHash, PeerSource, SourceSighting, UserHash,
+    ClientId, Ed2kText, FileHash, PacketProtocol, PartHash, PeerSource, SourceClaim, UserHash,
 };
 use tokio::io::AsyncWriteExt;
 use tokio::net::TcpListener;
@@ -22,6 +22,10 @@ use tokio::task::JoinHandle;
 
 use crate::framing::next_packet;
 use crate::wire;
+
+/// The most one `OP_SENDINGPART` carries from a stock uploader
+/// (`UploadClient.cpp:290`).
+const STOCK_FRAME: usize = 10_240;
 
 /// How the peer answers `OP_STARTUPLOADREQ`.
 pub enum SlotPolicy {
@@ -89,7 +93,7 @@ pub enum SourcesPolicy {
     /// Answer with this source list, packed (`0xD4`) — the ADR-0053
     /// peer-inbound-inflate scenario. aMule always packs `OP_ANSWERSOURCES`
     /// regardless of size.
-    AnswerPacked(Vec<SourceSighting>),
+    AnswerPacked(Vec<SourceClaim>),
 }
 
 /// One accepted connection's script.
@@ -114,7 +118,9 @@ pub struct PeerScript {
     /// how it answers one.
     pub multipacket: MultiPacketPolicy,
     /// The user hash this peer's `HelloAnswer` advertises — the identity a
-    /// credit or ban assertion keys on.
+    /// credit or ban assertion keys on. Two scripts left on the default are
+    /// one client to the downloader, whose one ask clock binds them both: a
+    /// test's second client names its own (ADR-0107 invariant 14).
     pub hello_user_hash: UserHash,
     /// The nickname this peer's `HelloAnswer` advertises.
     pub hello_nickname: String,
@@ -177,7 +183,7 @@ pub struct SeenMultiPacketRequest {
     pub sub_opcodes: Vec<u8>,
     /// The part status the asker's `0x58` sub carried — what it says it
     /// holds; `None` for a bare name ask.
-    pub name_status: Option<PartBitmap>,
+    pub name_status: Option<WireStatus>,
 }
 
 /// Wire facts observed by a script run, for test assertions.
@@ -295,7 +301,9 @@ fn multipacket_answer(script: &PeerScript, req: &MultiPacketRequest) -> MultiPac
                     script.file_name.clone(),
                 )));
             }
-            RequestItem::SetReqId => items.push(AnswerItem::Status(uploader_part_status())),
+            RequestItem::SetReqId => items.push(AnswerItem::Status(wire::full_status(
+                script.bytes.len() as u64,
+            ))),
             RequestItem::Sources | RequestItem::Sources2 { .. } | RequestItem::AichRoot => {}
         }
     }
@@ -304,14 +312,6 @@ fn multipacket_answer(script: &PeerScript, req: &MultiPacketRequest) -> MultiPac
         items,
         unknown_sub: None,
     }
-}
-
-/// The uploader's advertised availability inside a bundled answer: one present
-/// part. The downloader's probe records the bitmap verbatim (it does not
-/// cross-check part count against the requested size), so a single present
-/// part is enough to drive `FileProbed { Available }`.
-fn uploader_part_status() -> PartBitmap {
-    PartBitmap::decode(1, &[0b1]).expect("one present part")
 }
 
 /// The wire sub-opcode a decoded [`RequestItem`] arrived as, for the
@@ -368,11 +368,16 @@ async fn run_script(sock: tokio::net::TcpStream, script: PeerScript) -> PeerStat
             }
             // `OP_REQUESTFILENAME 0x58` asks for the name and is answered by
             // `OP_REQFILENAMEANSWER 0x59`; `OP_SETREQFILEID 0x4F` asks for
-            // availability and is answered by `OP_FILESTATUS 0x50`. The pairing
+            // the part status and is answered by `OP_FILESTATUS 0x50`. The pairing
             // is the one `rmule_peer::file_request` documents — a fake that
-            // answers the other question lets an ordering bug pass.
+            // answers the other question lets an ordering bug pass. A file the
+            // fake does not hold gets no answer: stock's name reader breaks on
+            // it, and a session closes on an answer about a file it never asked.
             0x58 => {
                 stats.standalone_probe_asks += 1;
+                if packet.payload().get(..16) != Some(script.file_hash.as_bytes()) {
+                    continue;
+                }
                 let _ = wtx
                     .send(wire::filename_answer_bytes(
                         script.file_hash,
@@ -382,7 +387,15 @@ async fn run_script(sock: tokio::net::TcpStream, script: PeerScript) -> PeerStat
             }
             0x4F => {
                 stats.standalone_probe_asks += 1;
-                let _ = wtx.send(wire::file_status_bytes(script.file_hash)).await;
+                if packet.payload().get(..16) != Some(script.file_hash.as_bytes()) {
+                    continue;
+                }
+                let _ = wtx
+                    .send(wire::file_status_bytes(
+                        script.file_hash,
+                        script.bytes.len() as u64,
+                    ))
+                    .await;
             }
             0x51 => {
                 let hashes: &[PartHash] = match &script.hash_set {
@@ -445,13 +458,17 @@ async fn run_script(sock: tokio::net::TcpStream, script: PeerScript) -> PeerStat
                                 "peer only serves <= EMBLOCKSIZE blocks, got {start}..{end}"
                             );
                             stats.max_block = stats.max_block.max(end - start);
-                            let _ = wtx
-                                .send(wire::sending_part_bytes(
-                                    script.file_hash,
-                                    start as u32,
-                                    &script.bytes[start as usize..end as usize],
-                                ))
-                                .await;
+                            let block = &script.bytes[start as usize..end as usize];
+                            for (index, frame) in block.chunks(STOCK_FRAME).enumerate() {
+                                let at = start as usize + index * STOCK_FRAME;
+                                let _ = wtx
+                                    .send(wire::sending_part_bytes(
+                                        script.file_hash,
+                                        at as u32,
+                                        frame,
+                                    ))
+                                    .await;
+                            }
                         }
                     }
                     ServePolicy::FirstBlockThenClose => {

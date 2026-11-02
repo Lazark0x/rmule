@@ -30,11 +30,13 @@ the listener and waits for its mapping first (ADR-0086). The listener is up from
 Every activity asks `SharedServerSession::live_session`, which waits out an operator connect in
 flight and then answers the live handle or nothing. It never dials.
 
-- **Connect at start** is a Settings preference, **off by default** (aMule's `Autoconnect` is on,
-  `Preferences.cpp:1160`). When on, the TUI sends at attach the same `ConnectToServer` to the
-  server the operator last connected to, recorded on every `Connected` edge. With none recorded
-  or one no longer listed, nothing is dialed and the status bar says why. An unreachable server
-  gets one attempt; rmule does not walk the list as aMule's `ConnectToAnyServer` does
+- **Connect at start** is a Settings preference, **on by default**, as aMule's `Autoconnect` is
+  (`Preferences.cpp:1160`). It repeats the operator's own act: the TUI sends at attach the same
+  `ConnectToServer` to the server they last connected to, recorded on every `Connected` edge, and
+  a restart of a tool left running for days comes back to work rather than to `No network`. With
+  none recorded, a first run, nothing is dialed and nothing is said; with one no longer listed,
+  nothing is dialed and the status bar says why. The default is the value an unset key reads, so
+  a stored off stays off and no store rung is needed. An unreachable server gets one attempt; rmule does not walk the list as aMule's `ConnectToAnyServer` does
   (`ServerConnect.cpp:55-70`), because each step would dial a server the operator never picked.
 - **The listener is up from attach.** A core built to restore at attach starts the Serve activity at
   attach, before it restores any download, on `0.0.0.0:<the Core Settings' TCP port>`; its TCP
@@ -54,6 +56,20 @@ flight and then answers the live handle or nothing. It never dials.
   Exact mapping grant (ADR-0086) — a trigger within five minutes of the last check is deferred to
   the end of the five minutes, never dropped — and a High ID while Kad TCP reads firewalled, since
   the server has just reached our listener on the port Kad advertises.
+
+**A dial is the operator's to end, and it holds nothing.** The slot's lock guards the take of the
+old session and the install of the new one, no more: a dial may sit out a silent server for a
+minute, and every reader of the slot answers meanwhile, none on the actor waiting. A Disconnect
+ends a dial in flight, said as `Disconnected`, with nothing counted against the server. A named
+server is resolved through the bounded Name Resolver before its filter gate.
+
+**A dead link.** A server link can die with nothing owed on it, so no write of ours finds out. The
+kernel probes every quiet server link (a minute idle, every 15 s, four unanswered; `resolve.rs`).
+The actor compares the monotonic clock with the wall every 30 s, and a gap past two minutes on
+either is a suspend: the mapper races again, and the session is hung up, for the intent to re-make
+as after any lost session (ADR-0096). A re-login rather than a ping: aMule's own ping is an empty
+`OP_OFFERFILES` it waits on no answer to (`ServerConnect.cpp:595-609`), so it proves nothing by
+itself, and a write on a dead link waits on the kernel's retransmission rather than on keepalive.
 
 ## Consequences
 

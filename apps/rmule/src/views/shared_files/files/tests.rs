@@ -13,6 +13,7 @@ use crate::action::Action;
 use crate::fixture::{GOLDEN_H, GOLDEN_W, file_hash, press, theme};
 use crate::golden::{assert_golden, render_to_lines};
 use crate::state::SharedRow;
+use crate::views::View;
 
 fn screen(view: &mut SharedView, state: &UiState, width: u16, height: u16) -> String {
     render_to_lines(width, height, |frame| {
@@ -141,6 +142,18 @@ fn golden_shared_named() {
     });
 }
 
+/// A Partial Share lists under its download's name and size, its State
+/// `partial`, ranked after the offered rows.
+#[test]
+fn golden_shared_partial() {
+    let state = crate::fixture::partially_served();
+    let mut view = SharedView::default();
+    view.handle_key(press(KeyCode::Char('s')), &state);
+    assert_golden("shared_partial", GOLDEN_W, GOLDEN_H, |frame| {
+        view.draw(frame, frame.area(), &state, &theme(), Instant::now());
+    });
+}
+
 /// A file at its realistic widest (six-digit requests and
 /// accepted counts, a near-terabyte transfer) — the pair that must not
 /// split across two lines.
@@ -149,7 +162,7 @@ fn wide_figures_state() -> UiState {
     let row = state.shared.get_mut(&file_hash(1)).expect("shared");
     row.path = Some("/dl/film.mkv".into());
     row.file_size = Some(734_003_200);
-    state.diagnostics.shared_files.insert(
+    state.shared_counters.insert(
         file_hash(1),
         rmule_core::diagnostics::SharedFileCounters {
             requests: 123_456,
@@ -165,11 +178,8 @@ fn wide_figures_state() -> UiState {
     state
 }
 
-/// At 80 columns the declared floors (94 + 6 gaps + the gutter + the
-/// border = 104) do not fit: the run-and-all-time pair drops its
-/// all-time figure rather than wrapping, and the dropped
-/// figures reprint in full, wrapped, on the "Off-screen:" note under the
-/// header.
+/// At 80 columns the counters give way, and the selected row's pairs read in
+/// full on the Off-screen line.
 #[test]
 fn golden_shared_wide_figures_too_narrow() {
     let state = wide_figures_state();
@@ -179,8 +189,7 @@ fn golden_shared_wide_figures_too_narrow() {
     });
 }
 
-/// At 120 columns every floor fits: the same pair stays whole, on one
-/// line, right-aligned, never a wrapped, overprinted pair.
+/// At 120 columns every floor fits: the same pair stays whole, right-aligned.
 #[test]
 fn golden_shared_wide_figures_fit_one_line() {
     let state = wide_figures_state();

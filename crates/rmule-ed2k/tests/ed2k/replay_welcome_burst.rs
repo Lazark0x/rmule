@@ -127,6 +127,8 @@ fn event_type_label(event: &Ed2kEvent) -> &'static str {
         Ed2kEvent::LoginRequested { .. } => "LoginRequested",
         Ed2kEvent::LoginAccepted { .. } => "LoginAccepted",
         Ed2kEvent::LoginRejected => "LoginRejected",
+        Ed2kEvent::ServerRejectedCommand => "ServerRejectedCommand",
+        Ed2kEvent::FoundSourcesSkipped { .. } => "FoundSourcesSkipped",
         Ed2kEvent::ServerMessageReceived { .. } => "ServerMessageReceived",
         Ed2kEvent::ServerStatusReceived { .. } => "ServerStatusReceived",
         Ed2kEvent::ServerIdentified { .. } => "ServerIdentified",

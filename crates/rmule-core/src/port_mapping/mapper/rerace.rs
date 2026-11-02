@@ -1,4 +1,4 @@
-//! The **re-race** (ADR-0086, "the mapper keeps looking for Exact"): a winner
+//! The **re-race** (ADR-0086): a winner
 //! that left any row of the Desired Mapping Set short of its own port — a
 //! shifted TCP port, a refused row, an IPv6 pinhole its protocol cannot
 //! express — is not the end of the search. The other enabled protocols are

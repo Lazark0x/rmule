@@ -37,18 +37,19 @@
 //! A Download relation is held per download: two downloads
 //! fetching from one peer each keep it known until their own worker ends.
 //! Every relation is added and removed by its owner's paired start/terminal
-//! events — ADR-0059 "Roster relations" tables them.
+//! events — ADR-0059 tables them.
 
+use parking_lot::Mutex;
 use std::collections::{HashMap, HashSet};
 use std::net::Ipv4Addr;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use rmule_primitives::Ipv4Endpoint;
 
 use crate::DownloadId;
 
 /// Which relationship a mark or forget belongs to, and whose it is
-/// (ADR-0059 "Roster relations"). Never read back — it only keys a write to
+/// (ADR-0059). Never read back — it only keys a write to
 /// its own holder, so every holder retires only what it marked: an upload and
 /// a download on the same [`Ipv4Endpoint`], or two downloads fetching from one
 /// peer, each keep that endpoint known until their own terminal event.
@@ -83,9 +84,17 @@ impl SharedPeerRoster {
     /// upload or download.
     #[must_use]
     pub(crate) fn knows(&self, ip: Ipv4Addr) -> bool {
-        self.0
-            .lock()
-            .is_ok_and(|known| known.get(&ip).is_some_and(|held| !held.is_empty()))
+        self.0.lock().get(&ip).is_some_and(|held| !held.is_empty())
+    }
+
+    /// Whether `ip` is a source of ours, connected or queued at: aMule's
+    /// `GetDownloadState() != DS_NONE`.
+    #[must_use]
+    pub(crate) fn is_source(&self, ip: Ipv4Addr) -> bool {
+        self.0.lock().get(&ip).is_some_and(|held| {
+            held.iter()
+                .any(|(relation, _)| !matches!(relation, PeerRelation::Upload))
+        })
     }
 
     /// Mark this session as having `relation` with `endpoint`. Idempotent
@@ -93,21 +102,19 @@ impl SharedPeerRoster {
     /// relation — a reask that re-admits an already-queued peer, say — is one
     /// reason to forget, not two.
     pub(crate) fn mark_known(&self, relation: PeerRelation, endpoint: Ipv4Endpoint) {
-        if let Ok(mut known) = self.0.lock() {
-            known
-                .entry(endpoint.ip)
-                .or_default()
-                .insert((relation, endpoint.port));
-        }
+        let mut known = self.0.lock();
+        known
+            .entry(endpoint.ip)
+            .or_default()
+            .insert((relation, endpoint.port));
     }
 
     /// Retire `endpoint`'s `relation` reason. A no-op when it was never
     /// marked — a stray release never un-knows an IP some *other* endpoint,
     /// or the *other* relation on this same endpoint, still holds.
     pub(crate) fn forget(&self, relation: PeerRelation, endpoint: Ipv4Endpoint) {
-        if let Ok(mut known) = self.0.lock()
-            && let Some(held) = known.get_mut(&endpoint.ip)
-        {
+        let mut known = self.0.lock();
+        if let Some(held) = known.get_mut(&endpoint.ip) {
             held.remove(&(relation, endpoint.port));
             if held.is_empty() {
                 known.remove(&endpoint.ip);
@@ -118,12 +125,11 @@ impl SharedPeerRoster {
     /// Retire `relation` on every endpoint it still holds: its owner ended
     /// whole rather than peer by peer. Every other relation stays.
     pub(crate) fn forget_every(&self, relation: PeerRelation) {
-        if let Ok(mut known) = self.0.lock() {
-            known.retain(|_, held| {
-                held.retain(|(held_relation, _)| *held_relation != relation);
-                !held.is_empty()
-            });
-        }
+        let mut known = self.0.lock();
+        known.retain(|_, held| {
+            held.retain(|(held_relation, _)| *held_relation != relation);
+            !held.is_empty()
+        });
     }
 }
 

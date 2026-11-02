@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime};
 
 use ratatui::buffer::Buffer;
+use ratatui::crossterm::event::KeyCode;
 use ratatui::style::{Color, Modifier};
 use rmule_core::file_history::{Ed2kIdentity, FileHistory, HadFile, SharedFileFact};
 use rmule_core::{DownloadEvent, DownloadMetadata, DownloadMetadataOrigin, SearchEvent};
@@ -25,8 +26,8 @@ const CLIP_SIZE: u64 = 734_003_200;
 /// listing the three tiers.
 fn searching(dir: &Path) -> (SearchesView, UiState) {
     let mut state = session_state();
-    state.session.as_mut().expect("session").download_dir = Some(dir.to_path_buf());
-    let mut view = SearchesView::new().having_sent("alpha");
+    state.session.download_dir = Some(dir.to_path_buf());
+    let mut view = SearchesView::by_name().having_sent("alpha");
     fold(
         &mut state,
         search_event(SearchEvent::SearchResultsReceived {
@@ -96,6 +97,7 @@ fn queue_clip(state: &mut UiState) {
                 size: CLIP_SIZE,
                 origin: DownloadMetadataOrigin::Link,
             },
+            file_path: crate::fixture::part_file(),
         }),
     );
 }
@@ -169,7 +171,7 @@ fn each_mark_takes_its_colour_and_attribute_in_place_of_the_source_tint() {
     state.file_history = Some(history(Some(dir.path().join("clip_low.avi")), true, true));
     assert_eq!(
         look(&draw_golden(&mut view, &state), "clip_low"),
-        (t.mark_have, Modifier::DIM)
+        (t.mark_have, Modifier::empty())
     );
     queue_clip(&mut state);
     assert_eq!(
@@ -188,7 +190,6 @@ fn a_download_marks_its_file_in_every_held_search() {
         &rmule_primitives::KeywordQuery::new(Ed2kText::from_utf8("beta"))
             .expect("a valid query")
             .into(),
-        super::super::method::SearchMethod::default(),
         search_id(2),
     );
     fold(
@@ -392,6 +393,7 @@ fn a_failed_download_from_before_reasons_were_kept_says_so() {
                 size: CLIP_SIZE,
                 origin: DownloadMetadataOrigin::Link,
             },
+            file_path: crate::fixture::part_file(),
         }),
     );
 
@@ -424,7 +426,7 @@ fn a_cancelled_file_asks_esc_keeps_it_and_a_yes_starts_it_at_its_place() {
 
 #[test]
 fn golden_searches_readd_have() {
-    let mut view = SearchesView::new().having_sent("alpha");
+    let mut view = SearchesView::by_name().having_sent("alpha");
     let mut state = session_state();
     fold(
         &mut state,
@@ -443,4 +445,34 @@ fn golden_searches_readd_have() {
     assert_golden("searches_readd_have", 78, 21, |frame| {
         view.draw(frame, frame.area(), &state, &theme(), Instant::now());
     });
+}
+
+#[test]
+fn golden_searches_readd_scrolls_in_a_short_frame() {
+    let mut view = SearchesView::by_name().having_sent("alpha");
+    let mut state = session_state();
+    fold(
+        &mut state,
+        search_event(SearchEvent::SearchResultsReceived {
+            search_id: search_id(1),
+            results: three_tier_results(),
+        }),
+    );
+    state.file_history = Some(history(
+        Some(PathBuf::from("/home/me/Downloads/clip_low.avi")),
+        false,
+        false,
+    ));
+    view.held.bind(&state);
+    download_clip(&mut view, &state);
+    let shown = |view: &mut SearchesView| {
+        crate::golden::render_to_lines(60, 6, |frame| {
+            view.draw(frame, frame.area(), &state, &theme(), Instant::now());
+        })
+    };
+    assert_golden("searches_readd_short", 60, 6, |frame| {
+        view.draw(frame, frame.area(), &state, &theme(), Instant::now());
+    });
+    view.handle_key(press(KeyCode::Char('G')), &state);
+    assert!(shown(&mut view).contains("n no"), "{}", shown(&mut view));
 }

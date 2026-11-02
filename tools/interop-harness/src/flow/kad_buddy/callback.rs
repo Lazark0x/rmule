@@ -51,6 +51,7 @@ use crate::flow::wire_filter::{
     OP_EDONKEYPROT, OP_EMULEPROT, WireFilter, lift_ed2k_frames, link_script,
     refuse_segment_payload, streams_from,
 };
+use crate::verdict::Verdict;
 
 /// The downloader's user hash: fixed so a hello and a verdict name one value.
 const HASH_DOWNLOADER: &str = "5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d";
@@ -60,13 +61,13 @@ const DOWNLOADER_KAD_ID: [u8; 16] = [0x2D; 16];
 /// The downloader's serve listener: the port the `0x52` invites aMule to dial.
 pub(crate) const DOWNLOADER_TCP_PORT: u16 = 4662;
 /// The downloader's one UDP bind (Kad, client-UDP and NAT-T share it).
-const DOWNLOADER_UDP_PORT: u16 = 4672;
+pub(crate) const DOWNLOADER_UDP_PORT: u16 = 4672;
 /// How long the download is given once the gate opens.
 const DOWNLOAD_WINDOW_SECS: u64 = 300;
 /// How long the driver is given past its window to write its row and exit.
 const ROW_GRACE_SECS: u64 = 120;
 /// The downloader tap's pcap under its host directory.
-const DOWNLOADER_PCAP: &str = "downloader.pcap";
+pub(crate) const DOWNLOADER_PCAP: &str = "downloader.pcap";
 /// The `--server` every rmule-tools body names; nothing listens on it.
 const ABSENT_SERVER: &str = "192.0.2.1:4661";
 
@@ -82,6 +83,106 @@ pub(crate) struct DownloaderPlan<'a> {
     pub(crate) seed: Vec<String>,
     /// The ed2k link — the one fact it is handed.
     pub(crate) link: String,
+}
+
+/// One `natt buddy-rendezvous --role requester` body handed only the ed2k
+/// link: it downloads once its gate opens ([`open_gate`]) and prints every
+/// core event to its stdout.
+pub(crate) struct RequesterBody<'a> {
+    pub(crate) image: &'a str,
+    pub(crate) name: &'a str,
+    pub(crate) network: &'a str,
+    pub(crate) address_v4: &'a str,
+    /// Mounted at `/out`: its row, its download and its gate file.
+    pub(crate) dir: &'a Path,
+    pub(crate) user_hash: &'a str,
+    pub(crate) kad_id: [u8; 16],
+    pub(crate) link: &'a str,
+    pub(crate) window_secs: u64,
+    /// `--kad-contact` operands.
+    pub(crate) seed: &'a [String],
+    /// `Some(server)` logs in to that server before Kad starts and leaves the
+    /// Kad TCP verdict to the live self-check; `None` names a server nothing
+    /// answers and declares the verdict open, so the body is callable without
+    /// a server.
+    pub(crate) login: Option<&'a str>,
+}
+
+impl RequesterBody<'_> {
+    /// The detached container, its listener on [`DOWNLOADER_TCP_PORT`] and
+    /// its one UDP bind on [`DOWNLOADER_UDP_PORT`].
+    pub(crate) fn container(&self) -> RunContainer {
+        let window = self.window_secs.to_string();
+        let mut container = RunContainer::new(self.image)
+            .detach()
+            .name(self.name)
+            .network(self.network)
+            .ip(self.address_v4)
+            .env(
+                "RMULE_LOG",
+                "info,rmule_core::natt=debug,rmule_core::download=debug,\
+                 rmule_core::adapters=debug,rmule_core::service=debug",
+            )
+            .volume(self.dir, "/out");
+        for arg in [
+            "natt",
+            "buddy-rendezvous",
+            "--role",
+            "requester",
+            "--server",
+            self.login.unwrap_or(ABSENT_SERVER),
+            "--listen",
+            &format!("0.0.0.0:{DOWNLOADER_TCP_PORT}"),
+            "--udp-port",
+            &DOWNLOADER_UDP_PORT.to_string(),
+            "--user-hash",
+            self.user_hash,
+            "--own-ip",
+            self.address_v4,
+            "--share",
+            "/etc/hostname",
+            "--window",
+            &window,
+            "--out",
+            "/out/buddy-rendezvous.toml",
+            "--kad-id",
+            &hex_lower(&self.kad_id),
+            "--file",
+            self.link,
+            "--download-out",
+            "/out/dl/download.bin",
+            "--target-file",
+            "/out/target.toml",
+            "--target-timeout",
+            "60",
+        ] {
+            container = container.arg(arg);
+        }
+        container = match self.login {
+            Some(_) => container.arg("--login"),
+            // Callable with no server: the brain admits route 4.
+            None => container.arg("--assume-open"),
+        };
+        for operand in self.seed {
+            container = container.arg("--kad-contact").arg(operand);
+        }
+        container
+    }
+}
+
+/// Open a requester's gate. The transfer requester reads none of the
+/// fields, but the driver's gate parser wants all three present.
+///
+/// # Errors
+/// If the file cannot be written.
+pub(crate) fn open_gate(dir: &Path) -> Result<()> {
+    let gate = dir.join("target.toml");
+    fs::write(
+        &gate,
+        "user_hash=00000000000000000000000000000000\nbuddy_id=00000000000000000000000000000000\n\
+         buddy_udp=0.0.0.0:0\n",
+    )
+    .with_context(|| format!("write {}", gate.display()))
 }
 
 /// The downloader and its tap — or, when aMule's row never reached the
@@ -126,58 +227,20 @@ impl CallbackLeg {
     ) -> Result<Self> {
         let dir = layout.kad_dir().join("downloader");
         fs::create_dir_all(&dir).with_context(|| format!("create {}", dir.display()))?;
-        let window = DOWNLOAD_WINDOW_SECS.to_string();
-        let gate_secs = "60".to_owned();
-        let mut container = RunContainer::new(plan.image)
-            .detach()
-            .name(&names.requester)
-            .network(&names.network_name)
-            .ip(&plan.address_v4)
-            .env(
-                "RMULE_LOG",
-                "info,rmule_core::natt=debug,rmule_core::download=debug,\
-                 rmule_core::adapters=debug,rmule_core::service=debug",
-            )
-            .volume(&dir, "/out");
-        for arg in [
-            "natt",
-            "buddy-rendezvous",
-            "--role",
-            "requester",
-            "--server",
-            ABSENT_SERVER,
-            "--listen",
-            &format!("0.0.0.0:{DOWNLOADER_TCP_PORT}"),
-            "--udp-port",
-            &DOWNLOADER_UDP_PORT.to_string(),
-            "--user-hash",
-            HASH_DOWNLOADER,
-            "--own-ip",
-            &plan.address_v4,
-            "--share",
-            "/etc/hostname",
-            "--window",
-            &window,
-            "--out",
-            "/out/buddy-rendezvous.toml",
-            // A High-ID downloader: callable, so the brain admits route 4.
-            "--assume-open",
-            "--kad-id",
-            &hex_lower(&DOWNLOADER_KAD_ID),
-            "--file",
-            &plan.link,
-            "--download-out",
-            "/out/dl/download.bin",
-            "--target-file",
-            "/out/target.toml",
-            "--target-timeout",
-            &gate_secs,
-        ] {
-            container = container.arg(arg);
+        let container = RequesterBody {
+            image: plan.image,
+            name: &names.requester,
+            network: &names.network_name,
+            address_v4: &plan.address_v4,
+            dir: &dir,
+            user_hash: HASH_DOWNLOADER,
+            kad_id: DOWNLOADER_KAD_ID,
+            link: &plan.link,
+            window_secs: DOWNLOAD_WINDOW_SECS,
+            seed: &plan.seed,
+            login: None,
         }
-        for operand in &plan.seed {
-            container = container.arg("--kad-contact").arg(operand);
-        }
+        .container();
         run_checked(
             docker.run_container(container),
             "run the callback downloader",
@@ -195,15 +258,7 @@ impl CallbackLeg {
             bpf: "tcp or udp",
         };
         resources.start_capture(layout, &sidecar, "kad-capture-downloader-container-id.txt")?;
-        // Gate only: the transfer requester reads none of these fields, but
-        // the driver's gate parser wants all three present.
-        let gate = dir.join("target.toml");
-        fs::write(
-            &gate,
-            "user_hash=00000000000000000000000000000000\nbuddy_id=00000000000000000000000000000000\n\
-             buddy_udp=0.0.0.0:0\n",
-        )
-        .with_context(|| format!("write {}", gate.display()))?;
+        open_gate(&dir)?;
         println!("kad-buddy-callback: downloader started, gate open");
         Ok(Self {
             container: names.requester.clone(),
@@ -228,6 +283,16 @@ impl CallbackLeg {
     /// Whether the downloader ran.
     pub(crate) fn started(&self) -> bool {
         self.started
+    }
+
+    /// The downloader's host directory: its pcap and its row.
+    pub(crate) fn dir(&self) -> &Path {
+        &self.dir
+    }
+
+    /// The downloader's address.
+    pub(crate) fn address_v4(&self) -> &str {
+        &self.address_v4
     }
 
     /// Give the download its window: wait for the driver's row.
@@ -344,7 +409,11 @@ impl CallbackLeg {
                 count("downloader_callback_req_0x52_out") > 0,
             ),
             (
-                "the-0x52-reached-the-rmule-buddy",
+                if judged.stock_buddy {
+                    "the-0x52-reached-the-stock-buddy"
+                } else {
+                    "the-0x52-reached-the-rmule-buddy"
+                },
                 count("downloader_callback_req_0x52_buddy_tap") > 0,
             ),
             (
@@ -365,7 +434,7 @@ impl CallbackLeg {
             ),
         ];
         let pass = claims.iter().all(|(_, holds)| *holds);
-        let verdict = if pass { "PASS" } else { "FAIL" };
+        let verdict = if pass { Verdict::Pass } else { Verdict::Fail };
 
         let mut out = String::from(
             "# Flow M's third party (kad-core-buddy --callback-downloader): ADR-0061 route 4 against a live\n\
@@ -409,7 +478,7 @@ impl CallbackLeg {
             .layout
             .kad_dir()
             .join("kad-buddy-callback-verdict.toml");
-        fs::write(&path, &out).with_context(|| format!("write {}", path.display()))?;
+        crate::verdict::write(&path, &out)?;
         println!("kad-buddy-callback verdict={verdict} routed={routed}");
         if !pass {
             let failing: Vec<&str> = claims
@@ -443,8 +512,13 @@ pub(crate) struct Judged<'a> {
     /// Flow M's tap on aMule's own netns (tcp and udp under this leg).
     pub(crate) amule_tap: &'a str,
     pub(crate) amule_pcap: &'a str,
+    /// Where that tap writes on the host: a body lifted off it lands there.
+    pub(crate) amule_host_dir: &'a Path,
     pub(crate) amule_ip: &'a str,
+    /// The buddy's address: the stimulus's, or a stock buddy's.
     pub(crate) rmule_ip: &'a str,
+    /// The buddy is a stock aMule (`--stock-buddy`).
+    pub(crate) stock_buddy: bool,
 }
 
 /// One counted row: `{d}` downloader, `{a}` aMule, `{r}` the rmule buddy,
@@ -542,7 +616,12 @@ const DOWNLOADER_TAP_ROWS: &[LegRow] = &[
 /// Count `filter` over the downloader's pcap, since the sidecar that wrote it
 /// is gone: a packet row from a one-shot capture-image container, an eD2k
 /// frame row by walking the file here.
-fn count_offline(docker: &Docker, image: &str, dir: &Path, filter: &WireFilter) -> Result<u64> {
+pub(crate) fn count_offline(
+    docker: &Docker,
+    image: &str,
+    dir: &Path,
+    filter: &WireFilter,
+) -> Result<u64> {
     let offline = |script: String| {
         docker.run_container(
             RunContainer::new(image)

@@ -34,11 +34,11 @@ pub(crate) fn inspect_packet(path: &Path) -> Result<()> {
         PeerPacket::FileStatus(r) => {
             println!("kind: file_status");
             println!("file_hash: {}", r.file_hash.to_hex_upper());
-            println!("part_count: {}", r.bitmap.part_count());
-            let present: Vec<u32> = r
-                .bitmap
-                .iter_present()
-                .map(rmule_peer::PartIndex::value)
+            println!("part_count: {}", r.bitmap.count());
+            // The bits as stated: no file size here to read them against.
+            let bytes = r.bitmap.encode();
+            let present: Vec<u32> = (0..u32::from(r.bitmap.count()))
+                .filter(|part| bytes[(part / 8) as usize] >> (part % 8) & 1 == 1)
                 .collect();
             println!("present_parts: {present:?}");
         }
@@ -46,8 +46,8 @@ pub(crate) fn inspect_packet(path: &Path) -> Result<()> {
         PeerPacket::HashSetAnswer(r) => {
             println!("kind: hash_set_answer");
             println!("file_hash: {}", r.file_hash.to_hex_upper());
-            println!("part_hash_count: {}", r.part_hashes.len());
-            for (i, h) in r.part_hashes.iter().enumerate() {
+            println!("part_hash_count: {}", r.part_hashes.count());
+            for (i, h) in r.part_hashes.hashes().iter().enumerate() {
                 println!("part_hash[{i}]: {}", h.to_hex_upper());
             }
         }
@@ -57,6 +57,10 @@ pub(crate) fn inspect_packet(path: &Path) -> Result<()> {
         PeerPacket::OutOfPartReqs(_) => println!("kind: out_of_part_reqs"),
         PeerPacket::QueueRanking(r) => {
             println!("kind: queue_ranking");
+            println!("rank: {}", r.rank);
+        }
+        PeerPacket::QueueRank(r) => {
+            println!("kind: queue_rank");
             println!("rank: {}", r.rank);
         }
         PeerPacket::RequestParts(r) => {
@@ -110,6 +114,13 @@ pub(crate) fn inspect_packet(path: &Path) -> Result<()> {
             println!("part: {}", a.part);
             println!("root: {}", a.root.to_base32_upper());
             println!("recovery_len: {}", a.recovery_data.len());
+        }
+        PeerPacket::AichRefused(a) => {
+            println!("kind: aich_refused");
+            match a.file_hash {
+                Some(file_hash) => println!("file_hash: {}", file_hash.to_hex_upper()),
+                None => println!("file_hash: none"),
+            }
         }
         PeerPacket::AichFileHashReq(r) => {
             println!("kind: aich_file_hash_req");

@@ -9,36 +9,45 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::DurableDownloadRecord;
 use crate::adapters::{PeerTransferService, SourceLookupService};
-use crate::download::SharedRuntime;
+use crate::download::persist::store_failed;
 use crate::download::state::SourcingPosture;
+use crate::download::{RunNumber, SharedRuntime};
 use crate::durable::DownloadLifecycle;
 use crate::error::DownloadFailure;
 use crate::global_sources::SharedServerList;
+use crate::scheduler::PartOrder;
 use crate::server_session::live_peer_handshake_context;
 use crate::service::{
-    DownloadEvent, DownloadId, FinishedActivity, SourceWait, send_download_event,
+    DownloadEvent, DownloadId, FinishedActivity, SourceWait, VolumeStop, send_download_event,
 };
 use crate::storage::DownloadRepository;
 use rmule_peer::PeerHandshakeContext;
-use rmule_primitives::{Ed2kFileLink, Ed2kLink, SourceSighting};
+use rmule_primitives::{Ed2kFileLink, SourceSighting};
 use tokio::sync::{Mutex, mpsc, watch};
 
 mod adopt;
+mod awaited_grants;
 mod callbacks;
 mod capability;
+mod completion;
 mod enact;
 mod fleet;
 mod intake;
 mod link_sources;
 mod lookup;
+mod persist_lane;
 mod reply_sink;
+mod republish;
+mod served;
 mod server_leg;
 #[cfg(test)]
 pub(super) mod test_context;
 
 pub(crate) use capability::CallbackFacts;
+pub(crate) use completion::{
+    CompletionFs, CompletionGate, FinalFileInPlace, OsCompletionFs, Recovered, StopAnswer,
+};
 use fleet::{FleetStart, StartSources, apply_peer_workers_download};
 pub(crate) use link_sources::{LaterLinkSources, link_sources, names_sources};
 
@@ -55,13 +64,17 @@ pub(crate) enum StopReason {
     Active,
     Pause,
     Cancel,
+    /// The process ends: the run keeps what arrived and writes nothing else,
+    /// so the row says what it said and the next start recovers it (ADR-0093,
+    /// ADR-0117 §4).
+    Quit,
 }
 
 impl StopReason {
     pub(crate) const fn failure(self) -> Option<DownloadFailure> {
         match self {
             Self::Active => None,
-            Self::Pause => Some(DownloadFailure::Paused),
+            Self::Pause | Self::Quit => Some(DownloadFailure::Paused),
             Self::Cancel => Some(DownloadFailure::Cancelled),
         }
     }
@@ -72,15 +85,24 @@ pub(crate) struct DownloadRequest {
     pub(crate) download_id: DownloadId,
     pub(crate) file: Ed2kFileLink,
     /// The node's wire identity: the Core Settings' credentials as the
-    /// build-time hash (ADR-0048 "Identity ownership").
+    /// build-time hash (ADR-0048 "One identity per node, owned by the core").
     pub(crate) identity: rmule_primitives::ClientIdentity,
     pub(crate) verified_part_indexes: Vec<u32>,
-    pub(crate) peer_concurrency: usize,
+    /// How the download ranks its parts: Streaming Priority, read off its
+    /// stored metadata, ranks by a window of
+    /// `CoreConfig::streaming_window_parts` (ADR-0112 §5).
+    pub(crate) order: PartOrder,
     /// The background source-discovery channels, read live (ADR-0093).
     pub(crate) discovery: DiscoveryLiveness,
     /// The download's **Source Seeds** under a day old, handed to a run attach
     /// restores (ADR-0109); empty for every other run.
     pub(crate) remembered: Vec<crate::download::source_seeds::SourceSeed>,
+    /// What attach found of a row it found `Completing`: its run goes
+    /// straight to the move's recovery (ADR-0115). `None` for every other run.
+    pub(crate) recovered: Option<Recovered>,
+    /// The part check a resumed run opens with (ADR-0094); `None` for a new
+    /// download and for a run past it.
+    pub(crate) part_check: Option<crate::download::part_check::PartCheck>,
 }
 
 /// The source-discovery channels a download may wait on — server-UDP global
@@ -128,11 +150,7 @@ impl DiscoveryLiveness {
     }
 
     fn sweep_armed(&self) -> bool {
-        !self
-            .global_servers
-            .lock()
-            .expect("global source server list")
-            .is_empty()
+        !self.global_servers.lock().is_empty()
     }
 }
 
@@ -153,7 +171,7 @@ pub(crate) struct RunnerContext<S, P> {
     pub(crate) rt: Arc<SharedRuntime<S, P>>,
     pub(crate) stop_rx: watch::Receiver<StopReason>,
     /// The run's **Held Part File** (ADR-0094): opened when the run starts and
-    /// the one handle every verified part is written through. `None` before
+    /// the one handle every byte is written through. `None` before
     /// that, and after finalize hands the file over.
     pub(crate) part_file: Mutex<Option<crate::content::HeldPartFile>>,
     /// The sources later links for this file bring while the run runs
@@ -163,9 +181,25 @@ pub(crate) struct RunnerContext<S, P> {
     /// a finished file that did not hash — so its end starts it over in place
     /// instead of failing the download.
     pub(crate) repair: std::sync::atomic::AtomicBool,
+    /// Set when the volume stopped the run (ADR-0094): its end pauses the
+    /// download and says why.
+    pub(crate) volume_stop: parking_lot::Mutex<Option<VolumeStop>>,
+    /// Set once the run's **Hole Probe** has run (ADR-0111): a run that
+    /// holds its part file again after a repair probes nothing and tells
+    /// nothing again, so the probe and its `HoleLess` notice come once per
+    /// run.
+    pub(crate) hole_probed: std::sync::atomic::AtomicBool,
     /// Where the run publishes its **Source Seeds** ranking each reask sweep
     /// (ADR-0109), for the core actor to write.
     pub(crate) seeds_tx: watch::Sender<Vec<crate::download::source_seeds::SourceSeed>>,
+    /// The run's lease on its **Served Download** (ADR-0113); `None` for a
+    /// download of one part, which has none.
+    pub(crate) served: Option<crate::served_downloads::RunLease>,
+    /// Which run of the download this is, carried on its in-place report.
+    pub(crate) run: RunNumber,
+    /// The run's **Completion Gate**, shared with the actor's ledger entry
+    /// (ADR-0115).
+    pub(crate) completion: Arc<CompletionGate>,
 }
 
 impl<S, P> RunnerContext<S, P> {
@@ -174,9 +208,37 @@ impl<S, P> RunnerContext<S, P> {
         self.repair.store(true, std::sync::atomic::Ordering::SeqCst);
     }
 
+    /// The volume stopped the run: answers the failure that ends it, a pause
+    /// in all but the telling.
+    pub(crate) fn stop_for_volume(&self, stop: VolumeStop) -> DownloadFailure {
+        *self.volume_stop.lock() = Some(stop);
+        DownloadFailure::Paused
+    }
+
+    /// What the volume stopped the run for, clearing it.
+    pub(crate) fn take_volume_stop(&self) -> Option<VolumeStop> {
+        self.volume_stop.lock().take()
+    }
+
     /// Whether the run that just ended was marked for repair, clearing it.
     fn take_repair(&self) -> bool {
         self.repair.swap(false, std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// `work`, unless the run's stop arrives first: the stop is looked at
+    /// first, and ends the wait with the failure it stands for.
+    pub(crate) async fn until_stop<T>(
+        &self,
+        work: impl std::future::Future<Output = T>,
+    ) -> Result<T, DownloadFailure> {
+        let mut stop_rx = self.stop_rx.clone();
+        tokio::select! {
+            biased;
+            () = wait_until_stop(&mut stop_rx) => {
+                Err(stop_reason(&stop_rx).unwrap_or(DownloadFailure::Cancelled))
+            }
+            done = work => Ok(done),
+        }
     }
 
     /// Our own half of the family question, read fresh — the chooser's verdict
@@ -187,12 +249,25 @@ impl<S, P> RunnerContext<S, P> {
             known_ipv6: self.rt.ipv6_advert.get(),
         }
     }
+
+    /// What the intake gate reads of us, read fresh for each batch of
+    /// sightings: a login or a new address applies from the next one
+    /// (ADR-0090).
+    pub(crate) fn own_position(&self) -> crate::download::source_book::OwnPosition {
+        let reach = &self.rt.reach;
+        crate::download::source_book::OwnPosition {
+            user_hash: reach.user_hash(),
+            session: reach.session(),
+            public_ip: reach.public_ip(),
+            tcp_port: reach.listener_port(),
+        }
+    }
 }
 
 pub(crate) struct DownloadTask<S, P> {
     pub(crate) request: DownloadRequest,
     /// Which run of the download this is, carried on its finish notice.
-    pub(crate) run: u64,
+    pub(crate) run: RunNumber,
     pub(crate) runner: RunnerContext<S, P>,
     pub(crate) finished_tx: mpsc::Sender<FinishedActivity>,
 }
@@ -202,9 +277,39 @@ where
     S: SourceLookupService,
     P: PeerTransferService,
 {
-    pub(crate) async fn run(self) {
+    /// The run, read by the supervisor: a panic is a failure like any other
+    /// end of a run (ADR-0118), so the row, the store and the finish notice
+    /// all say it ended.
+    pub(crate) async fn supervised(self) {
+        let download_id = self.request.download_id;
+        let run = self.run;
+        let rt = Arc::clone(&self.runner.rt);
+        let stop_rx = self.runner.stop_rx.clone();
+        let finished_tx = self.finished_tx.clone();
+        if crate::supervisor::watched(self.run()).await.is_ok() {
+            return;
+        }
+        if *stop_rx.borrow() == StopReason::Active {
+            crate::download::persist::record_failure(
+                &rt.store,
+                &rt.evt_tx,
+                download_id,
+                DownloadFailure::TaskPanicked,
+            )
+            .await;
+        }
+        rt.diagnostics.end_run(download_id, false);
+        let _ = finished_tx
+            .send(FinishedActivity::Download(download_id, run, false))
+            .await;
+    }
+
+    async fn run(self) {
         let download_id = self.request.download_id;
         let mut request = self.request;
+        // A run that ends, however it ends, leaves its gate open: a stop
+        // never waits on a run that is gone.
+        let _release = ReleaseGate(Arc::clone(&self.runner.completion));
         // A run that lost parts it can fetch again starts over in place, in
         // the Download Set, from what still holds (ADR-0094).
         let result = loop {
@@ -213,8 +318,12 @@ where
                 break result;
             }
             match self.runner.rt.store.verified_parts(download_id) {
-                Err(_) => break Err(DownloadFailure::StoreFailed),
+                Err(error) => {
+                    break Err(store_failed("the verified parts could not be read")(error));
+                }
                 Ok(parts) => {
+                    request.recovered = None;
+                    request.part_check = None;
                     request.verified_part_indexes =
                         parts.iter().map(|part| part.part_index).collect();
                     tracing::info!(
@@ -225,7 +334,17 @@ where
                 }
             }
         };
+        if matches!(result, Err(DownloadFailure::Paused)) {
+            served::let_go(&self.runner).await;
+        }
         let completed = result.is_ok();
+        let volume_stop = self
+            .runner
+            .take_volume_stop()
+            .filter(|_| *self.runner.stop_rx.borrow() == StopReason::Active);
+        if let Some(stop) = volume_stop {
+            crate::download::persist::record_volume_stop(&self.runner, download_id, stop).await;
+        }
 
         if let Err(reason) = result
             && !matches!(reason, DownloadFailure::Cancelled | DownloadFailure::Paused)
@@ -242,15 +361,33 @@ where
         // The row outlives the run (ADR-0094): what the download holds is its
         // own fact, and only a cancel removes it.
         self.runner.rt.diagnostics.end_run(download_id, completed);
+        // Nobody reads the finished arm once Quit runs, and its queue is
+        // bounded.
+        if *self.runner.stop_rx.borrow() == StopReason::Quit {
+            return;
+        }
         let _ = self
             .finished_tx
-            .send(FinishedActivity::Download(download_id, self.run))
+            .send(FinishedActivity::Download(
+                download_id,
+                self.run,
+                volume_stop.is_some_and(VolumeStop::waits_for_space),
+            ))
             .await;
     }
 }
 
+/// Opens its gate when the run ends.
+struct ReleaseGate(Arc<CompletionGate>);
+
+impl Drop for ReleaseGate {
+    fn drop(&mut self) {
+        self.0.release();
+    }
+}
+
 async fn orchestrate_download<S, P>(
-    request: DownloadRequest,
+    mut request: DownloadRequest,
     runner: &RunnerContext<S, P>,
 ) -> Result<(), DownloadFailure>
 where
@@ -258,26 +395,41 @@ where
     P: PeerTransferService,
 {
     check_stop(&runner.stop_rx)?;
+    // A row attach found completing goes straight to the move (ADR-0115).
+    if let Some(recovered) = request.recovered {
+        return completion::recover(runner, request.download_id, &request.file, recovered).await;
+    }
+    // What the store records is proved before anything leans on it, and
+    // before the run takes the file (ADR-0094).
+    if let Some(check) = request.part_check.take() {
+        request.verified_part_indexes =
+            crate::download::part_check::first_stage(runner, request.download_id, check).await?;
+    }
     // The run holds its part file from its first act (ADR-0094).
     crate::download::persist::hold_part_file(runner, request.download_id).await?;
+    served::lease_started(runner, request.download_id).await;
+    // Every part already verified — a move a Pause stopped, a run that
+    // ended between its last part and its move: nothing to fetch.
+    let parts = rmule_primitives::part_count(request.file.size()) as usize;
+    if request.verified_part_indexes.len() >= parts {
+        return completion::complete(runner, request.download_id, &request.file, Vec::new()).await;
+    }
+    let file = request.file.clone();
     let target =
-        rmule_primitives::SourceLookupTarget::new(request.file.file_hash, request.file.size);
+        rmule_primitives::SourceLookupTarget::new(request.file.file_hash, request.file.size());
     // Subscribed before the first lookup: a session that comes up after it
     // is asked too.
     let server_leg = server_leg::ServerLeg::new(runner.rt.server_session.session_changes(), target);
     // The link's own sources come first (ADR-0089's amendment), and a
     // link that carries one can feed the run without a server, as Kad can.
-    let link_sources = {
-        let mut stop_rx = runner.stop_rx.clone();
-        let now = crate::server_list::unix_seconds(std::time::SystemTime::now());
-        tokio::select! {
-            biased;
-            _ = wait_until_stop(&mut stop_rx) => {
-                return Err(stop_reason(&stop_rx).unwrap_or(DownloadFailure::Cancelled));
-            }
-            sources = link_sources::link_sources(&request.file, &runner.rt.resolver, now) => sources,
-        }
-    };
+    let now = crate::server_list::unix_seconds(std::time::SystemTime::now());
+    let link_sources = runner
+        .until_stop(link_sources::link_sources(
+            &request.file,
+            &runner.rt.resolver,
+            now,
+        ))
+        .await?;
     // The seeds attach handed this run go first (ADR-0109, "Source Seeds");
     // every source of the start passes the same gate, inside the brain. A run
     // whose seeds can be dialed starts its fleet at once and makes its first
@@ -300,7 +452,7 @@ where
         .rt
         .store
         .set_lifecycle(request.download_id, DownloadLifecycle::Active)
-        .map_err(|_| DownloadFailure::StoreFailed)?;
+        .map_err(store_failed("the download could not be stored active"))?;
     check_stop(&runner.stop_rx)?;
     if let Some(outcome) = &source_outcome {
         send_download_event(
@@ -309,8 +461,7 @@ where
                 download_id: request.download_id,
                 client_id: outcome.client_id,
             },
-        )
-        .await;
+        );
     }
 
     // A degraded (serverless) start has no server sources: the book starts
@@ -329,7 +480,6 @@ where
     // punch a Rendezvous coordinator introduces (ADR-0091 rung 1).
     let callback_facts = CallbackFacts {
         reach: runner.rt.reach.clone(),
-        our_tcp_port: request.identity.tcp_port(),
     };
     let callback_capability = callback_facts.sample();
     let dial = runner.dial_position();
@@ -348,26 +498,20 @@ where
     };
     check_stop(&runner.stop_rx)?;
 
-    // The peers this download distrusts, as its durable record holds
-    // them: a resumed run does not dial again a peer that served it bad data.
-    let distrusted = runner
-        .rt
-        .store
-        .distrusted_peers(request.download_id)
-        .unwrap_or_else(|error| {
-            tracing::warn!(%error, "could not read the download's distrusted peers");
-            Vec::new()
-        })
-        .into_iter()
-        .collect();
+    // The peers this download distrusts, as its durable record holds them.
+    let distrusted = crate::download::persist::distrusted_at_start(runner, request.download_id)?;
+    // The Kad AICH root its record keeps, under the link's `h=` (ADR-0038).
+    let kad_aich_root =
+        crate::download::persist::kad_aich_root_at_start(runner, request.download_id)?;
 
-    apply_peer_workers_download(
+    let file_hash_only_parts = apply_peer_workers_download(
         FleetStart {
             download_id: request.download_id,
             file: request.file,
+            kad_aich_root,
             ctx,
-            peer_concurrency: request.peer_concurrency,
             verified_part_indexes: request.verified_part_indexes,
+            order: request.order,
             sources: StartSources {
                 seeds,
                 seeds_written: request.remembered.len(),
@@ -388,16 +532,8 @@ where
         },
         runner,
     )
-    .await
-}
-
-pub(crate) fn file_link_from_record(
-    record: &DurableDownloadRecord,
-) -> Result<Ed2kFileLink, DownloadFailure> {
-    match Ed2kLink::parse(record.canonical_link()) {
-        Ok(Ed2kLink::File(file)) => Ok(file),
-        _ => Err(DownloadFailure::PartVerificationFailed),
-    }
+    .await?;
+    completion::complete(runner, request.download_id, &file, file_hash_only_parts).await
 }
 
 fn check_stop(rx: &watch::Receiver<StopReason>) -> Result<(), DownloadFailure> {

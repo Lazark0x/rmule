@@ -12,20 +12,39 @@
 //!
 //! ## Layout
 //!
-//! One submodule per exchange: `sources` (0x9A/0x94/0x9B), `callback`
-//! (0x9C), `status` (0x96/0x97), `description` (0xA2/0xA3) and `search`
-//! (0x98/0x92/0x90 and 0x99). Every codec re-exports through here.
+//! One submodule per exchange: `sources` (0x9A/0x94/0x9B), `status`
+//! (0x96/0x97), `description` (0xA2/0xA3) and `search` (0x98/0x92/0x90 and
+//! 0x99). Every codec re-exports through here.
 
-mod callback;
 mod description;
 mod search;
 mod sources;
 mod status;
 
-pub use self::callback::GlobCallbackRequest;
+use rmule_primitives::{PacketProtocol, WrongFrame};
+
+use crate::Result;
+
 pub use self::description::{ServerDescReq, ServerDescRes, ServerDescTags};
 pub use self::search::{GlobSearchReq, GlobSearchRes, GlobSearchVariant};
 pub use self::sources::{GlobFoundSources, GlobGetSources, GlobGetSources2};
 pub use self::status::{
     GlobServStatReq, GlobServStatRes, crypt_ping_challenge, crypt_ping_padding_len,
 };
+
+/// A UDP datagram's body, once its `[protocol 0xE3][opcode]` head proves to be
+/// `opcode`'s.
+fn datagram_body(bytes: &[u8], opcode: u8) -> Result<&[u8]> {
+    match bytes {
+        [protocol, op, body @ ..]
+            if *protocol == PacketProtocol::Edonkey.as_byte() && *op == opcode =>
+        {
+            Ok(body)
+        }
+        _ => Err(WrongFrame {
+            protocol: PacketProtocol::Edonkey,
+            opcode,
+        }
+        .into()),
+    }
+}

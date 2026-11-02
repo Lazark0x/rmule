@@ -102,6 +102,7 @@ async fn callback_replay_drives_server_then_peer_dial() {
             obfuscated_port: None,
             advertised_ipv6: None,
             udp_ports: None,
+            offer_pace: false,
         },
     )
     .await

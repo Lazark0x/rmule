@@ -1,7 +1,7 @@
 //! The **Kad-seed leg** of the Join Sequence (ADR-0067 §Join Sequence, step 3): resolve
-//! what a starting Kad node has to go on, in aMule's recovery-route order —
-//! the routing table the running node persisted first, an opt-in one-shot
-//! acquisition second — and report which route served. A leg of its own
+//! what a starting Kad node has to go on — the routing table the running node
+//! persisted first, then the embedded seeds, then an opt-in one-shot
+//! acquisition behind them (ADR-0120) — and report which route served. A leg of its own
 //! because a front-end that drives `EnableKad` itself (the `rmule` TUI, whose
 //! durable store the core actor owns by then) has to resolve seeds the same
 //! way without running the rest of the sequence.
@@ -51,12 +51,20 @@ pub enum KadSeedOutcome {
         /// simply nothing to read.
         read_error: Option<SeedReadFault>,
     },
-    /// A one-shot acquisition installed these seeds (opt-in, default OFF —
-    /// [`should_auto_fetch_nodes_dat`]).
+    /// A cold start with embedded seeds: they open the dial list, with what
+    /// the opt-in acquisition gave behind them (ADR-0120).
+    Embedded {
+        /// The seeds dialed first.
+        seeds: usize,
+        /// The fetched addresses dialed after them.
+        fetched: usize,
+        /// Why the acquisition gave none, when it ran and failed.
+        fetch_failed: Option<NodesDatPipelineError>,
+    },
+    /// A one-shot acquisition gave these dial candidates (opt-in, default OFF
+    /// — [`should_auto_fetch_nodes_dat`]) with no embedded seed before them.
     Acquired {
-        /// Seeds that entered the routing table directly.
-        contacts: usize,
-        /// Bootstrap-edition dial candidates.
+        /// Addresses each of which must answer before it joins the table.
         candidates: usize,
     },
     /// The acquisition ran and failed. Kad starts stranded regardless: one-shot
@@ -82,8 +90,8 @@ pub enum SeedReadFault {
     Undecodable,
 }
 
-/// Resolve the Kad join's seeds into `kad_enable`, in aMule's recovery-route
-/// order — the Join Sequence's **Kad-seed leg** (step 3), split out so a
+/// Resolve the Kad join's seeds into `kad_enable` — the Join Sequence's
+/// **Kad-seed leg** (step 3), split out so a
 /// front-end that drives `EnableKad` itself (the `rmule` TUI, whose durable
 /// store is owned by the core actor by then) resolves seeds the same way.
 ///
@@ -94,28 +102,29 @@ pub enum SeedReadFault {
 ///    a v3 bootstrap-edition file's closest-50 land in
 ///    [`bootstrap`](KadEnableConfig::bootstrap) as dial candidates. A missing
 ///    file is a normal first run, not an error.
-/// 2. **A one-shot acquisition**, iff no route above produced a seed *and* the
-///    caller opted in ([`should_auto_fetch_nodes_dat`], default OFF). One GET,
-///    no retry.
+/// 2. **The embedded seeds** ([`BootstrapConfig::seeds`], ADR-0120), which open
+///    the dial list on a cold start.
+/// 3. **A one-shot acquisition**, iff the persisted route produced no seed
+///    *and* the caller opted in ([`should_auto_fetch_nodes_dat`], default OFF).
+///    One GET, no retry. What it gives dials behind the embedded seeds, each
+///    address answering before it joins the table, so a live seed leaves a
+///    forged file undialed and a stale binary still joins.
 ///
 /// Seeds already in `kad_enable` (operator-configured endpoints) count as
-/// route 0: they suppress the acquisition, exactly as a persisted server list
-/// suppresses the server.met fetch.
+/// route 0: they suppress the other routes, exactly as a persisted server
+/// list suppresses the server.met fetch.
 ///
 /// `own_id` is the node's Kad ID ([`Core::kad_id`](crate::Core::kad_id)): a
 /// bootstrap-edition file's closest-50 are closest to it.
 ///
 /// Never fails: every route's failure is reported in the returned
 /// [`KadSeedOutcome`] and the Kad join proceeds regardless.
-pub async fn acquire_kad_seeds<F>(
+pub async fn acquire_kad_seeds(
     kad_enable: &mut KadEnableConfig,
     own_id: rmule_kad::KadId,
     bootstrap: &BootstrapConfig,
-    fetcher: &F,
-) -> KadSeedOutcome
-where
-    F: Fetcher + Sync,
-{
+    fetcher: &dyn Fetcher,
+) -> KadSeedOutcome {
     let mut read_error = None;
 
     // 1. The persisted routing table.
@@ -156,29 +165,57 @@ where
         }
     }
 
-    // 2. The opt-in one-shot acquisition.
     let no_seeds = kad_enable.contacts.is_empty() && kad_enable.bootstrap.is_empty();
-    if !should_auto_fetch_nodes_dat(true, no_seeds, bootstrap.auto_fetch_nodes_dat) {
-        return KadSeedOutcome::Stranded { read_error };
-    }
-    let mut dial_list = BootstrapDialList::new();
-    match fetch_nodes_dat(
-        fetcher,
-        &bootstrap.nodes_dat_url,
-        bootstrap.max_nodes_dat_bytes,
-        own_id,
-        &mut dial_list,
-    )
-    .await
-    {
-        Ok(install) => {
-            let (contacts, candidates) = install_seeds(kad_enable, install);
-            KadSeedOutcome::Acquired {
-                contacts,
-                candidates,
-            }
-        }
-        Err(error) => KadSeedOutcome::AcquireFailed(error),
+
+    // 2. The embedded seeds: first in the dial list, before any fetch.
+    let seeds = if no_seeds {
+        bootstrap.seeds.kad_nodes()
+    } else {
+        &[]
+    };
+    kad_enable.bootstrap.extend_from_slice(seeds);
+
+    // 3. The opt-in one-shot acquisition, behind them.
+    let fetched = if should_auto_fetch_nodes_dat(true, no_seeds, bootstrap.auto_fetch_nodes_dat) {
+        Some(
+            fetch_nodes_dat(
+                fetcher,
+                &bootstrap.nodes_dat_url,
+                bootstrap.max_nodes_dat_bytes,
+                own_id,
+            )
+            .await,
+        )
+    } else {
+        None
+    };
+    let fetched = fetched.map(|outcome| {
+        outcome.map(|candidates| {
+            let count = candidates.len();
+            kad_enable.bootstrap.extend(candidates);
+            count
+        })
+    });
+
+    match (seeds.len(), fetched) {
+        (0, None) => KadSeedOutcome::Stranded { read_error },
+        (0, Some(Ok(candidates))) => KadSeedOutcome::Acquired { candidates },
+        (0, Some(Err(error))) => KadSeedOutcome::AcquireFailed(error),
+        (seeds, None) => KadSeedOutcome::Embedded {
+            seeds,
+            fetched: 0,
+            fetch_failed: None,
+        },
+        (seeds, Some(Ok(fetched))) => KadSeedOutcome::Embedded {
+            seeds,
+            fetched,
+            fetch_failed: None,
+        },
+        (seeds, Some(Err(error))) => KadSeedOutcome::Embedded {
+            seeds,
+            fetched: 0,
+            fetch_failed: Some(error),
+        },
     }
 }
 

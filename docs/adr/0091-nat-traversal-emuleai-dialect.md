@@ -72,11 +72,17 @@ exception, Port prediction, gated on our own observed mapping.**
   at the moment it is needed; a CAPS frame arriving before an identity exists
   (`CapsBeforeIdentity`) answers nothing. The QUIC proof gate refuses with `NoIdentity` the
   same way.
+  A CAPS body (54 bytes) and a KEY body (16) are read by their fixed prefix: a longer body is
+  eMuleAI's to extend, and it checks `>=` on both (`ClientUDPSocket.cpp:690`, `:1002-1003`).
+  Only a shorter one is malformed.
 - **Sharing the client-UDP socket.** Demux by protocol byte, then frame type. `0xB2` is on
   the never-obfuscated whitelist (ADR-0046). Transport frames are obfuscated when a key is
-  known; the KEY frame (`0xB2/0xFF`, our 16-byte hash, once per endpoint per 10 s on a uTP
-  `ST_SYN` or a QUIC long header) supplies it, offered with a zero hash before identity.
-  **Signalling under `0xC5` is unobfuscated on purpose**: a punch that fails to deobfuscate
+  known; the KEY frame (`0xB2/0xFF`, our 16-byte hash, once per endpoint per 10 s) supplies it,
+  offered with a zero hash before identity. It precedes an opening packet **we** send: our own
+  uTP `ST_SYN`, or any QUIC long header, a responder's included. An inbound `ST_SYN` draws
+  `ST_STATE` and no KEY, so an accepted uTP Tunnel asserts no hash of ours.
+  **Signalling under `0xC5` is unobfuscated on purpose** unless the peer's stance says
+  otherwise (security rule 13): a punch that fails to deobfuscate
   is indistinguishable from one that never arrived. Kad and NAT-T share the one client-UDP
   socket (ADR-0057), so the mapping a buddy observes at the recruit is the mapping a punch
   must reach.
@@ -94,18 +100,38 @@ exception, Port prediction, gated on our own observed mapping.**
 - **ed2k-server punch.** `CT_EMULE_UDPPORTS 0xF9` (`kadUDP << 16 | clientUDP`) rides the login
   only with an IPv4 client-UDP bind and its send half: its presence is the capability claim,
   and the server refuses to introduce a client that sent none. The login then carries five
-  tags, not aMule 2.3.3's four; Lugdunum accepts it with the same High ID and flags.
-  `OP_SERVER_NATT_KEEPALIVE 0x9F` (our hash) leaves the client-UDP socket every **60 s** —
+  tags, not aMule 2.3.3's four, or six beside `CT_MOD_IP_V6` (`0xAE`, ADR-0087), where `0xF9`
+  follows `0xAE`; Lugdunum accepts both with the same High ID and flags.
+  **A server that coordinates sets `0x20000` in `OP_IDCHANGE`'s TCP flags, and that bit is the
+  whole gate** (ed2k-server `opcodes.rs:220`, README *Is this server doing it?*): some servers
+  close the link on an opcode they do not know, so `0x60` goes only to a server that set it,
+  and a session without it is no coordinator: the chooser falls past it at once, with no
+  `0x60` and no keepalive. Servers before v0.9.84 coordinate without saying so and are treated
+  as servers that do not.
+  `OP_SERVER_NATT_KEEPALIVE 0x9F` (our hash) leaves the client-UDP socket every **60 s**;
   the server trusts an observed port for 600 s, so the cadence is a correctness invariant.
   `OP_LOWID_HOLEPUNCH_REQUEST 0x60 <target_id 4><our_udp 2>`, `OP_LOWID_HOLEPUNCH_INFO 0x61` to
   both sides, `0x62` failure with a reason. IPv4 sessions only. The server is
   transport-agnostic, so the punch and Tunnel are eMuleAI's. The target's NAT-T support is
-  not required (the server holds its `0xF9` and answers `TargetNoUdp`). Whether a server speaks
-  the punch is learned only by its silence: `INTRODUCTION_TIMEOUT` (15 s, polled by the
-  session's own loop), after which the attempt falls to the buddy. A session that ends reports
-  every request it still waited on. `0x61` names no target, so it settles a request only when
-  exactly one is outstanding; `0x62` names its target. Both sides fire at once; the role byte
-  says who asked.
+  not required (the server holds its `0xF9` and answers `TargetNoUdp`). Fields of `0x61` are
+  appended, never inserted: 25 bytes before v0.9.84, `peer_id 4` from 29, `peer_crypt 1` at
+  30 (every `0x61` since v0.9.86: the peer's support, request and require bits, a source's
+  crypt byte). The punch burst carries it as the crypt target, so a peer that requires the
+  layer is punched obfuscated and one that only supports it follows rmule's own stance; a
+  29-byte body keeps the plain punch. A longer body is read as far as rmule knows it. `peer_id` names the peer described,
+  so a `0x61` settles exactly the request that named it, however many are outstanding; one
+  from a server too old to carry it settles a request only when exactly one is outstanding. A
+  lost frame still costs `INTRODUCTION_TIMEOUT` (15 s, polled by the session's own loop), after
+  which the attempt falls to the buddy. A session that ends reports every request it still
+  waited on. `0x62` names its target. Both sides fire at once; the role byte says who asked.
+- **Lugdunum's NAT callback is not spoken, and not claimed.** `0x1000` in `CT_SERVER_FLAGS`
+  (`SRVCAP_NATTRAVERSAL`) earns an odd Low ID and four more `OP_IDCHANGE` bytes, and tells
+  every requester the callback is worth asking for: `0xA6` from them, `0x37` or `0xA7` to us.
+  No pinned client speaks that scheme (aMule 2.3.3, 3.1.0, kno's fork and emule-qt at their
+  pins carry none of the three opcodes), so its peer half has no oracle (ADR-0082) and rmule
+  leaves the bit clear (ADR-0047). ed2k-server's hole-punch extension (`0x100000`) needs
+  `0x1000` beside it, so rmule's pairs take the plain punch, byte for byte. Standing
+  keepalives give that punch the fresh port the extension exists to fetch.
 - **Kad serving buddy, eMuleAI's form.** rmule emits `OP_RENDEZVOUS` embedded in
   `OP_REASKCALLBACKUDP` toward the target's buddy and accepts both the embedded and the
   standalone `0xC5 0xA0` form. The buddy strips sixteen bytes and forwards inside
@@ -235,7 +261,7 @@ Invariants:
 The responder's expectation lives 120 s where eMuleAI's lives 30 s, because the requester
 re-dials for its whole 120 s budget and each `librqbit-utp` opener is sent once.
 
-### Security (the nine corrections, all adopted)
+### Security (the nine corrections, all adopted, and four of rmule's own)
 
 1. **Observed source > public claimed hint > hint as lookup key.** A claim is adopted only when
    the observed source is unusable and the claim is public. Arm 3 resolves nothing in core,
@@ -256,11 +282,94 @@ re-dials for its whole 120 s budget and each `librqbit-utp` opener is sent once.
 8. The 16-byte file-hash slot in the rendezvous body is always written, never inferred.
 9. No failure or reset frame exists in the dialect; stale tunnels are state, found by timeout,
    and an active transfer survives a caps change.
+10. **Tunnel admission is by expectation.** An opening packet (a uTP `ST_SYN`, a QUIC long
+    header) from an endpoint the Tunnel Registry holds no slot for opens one only when its
+    source IP is expected, and is otherwise dropped before the engine, unanswered. The key is
+    the IP because a hint, an introduction or an acted rendezvous names the
+    peer's address while a NAT, or a prediction leg, leaves its port open. Three facts expect an
+    IP: a **Punch Expectation** the NAT-T Front holds for it; a live relation in the **Peer
+    Roster** (ADR-0059) — kno dials uTP to every peer whose hello claims bit 1
+    (`UtpDialPolicy.h:103-139`, `BaseClient.cpp:2271`), so a peer we already deal with may come
+    back over uTP with no rendezvous; and, for any IPv4 address, a standing **Dial-Back Claim**
+    — eMuleAI answers a buddy callback with a uTP dial (`ListenSocket.cpp:2480-2494`) and a
+    Low-ID callback names no address for the dialer. eMuleAI gates the same way, on its
+    expected-peer table with an IP-only fallback (`eMuleAI/UtpSocket.cpp:683-1040`). An IPv6 source is never
+    expected: the dialect names IPv4 only and core adopts no IPv6 tunnel.
+
+    **One bound answers for what an unidentified source may cost the front: the Unidentified
+    Allowance**, 4 endpoints per IP and 64 per node, held in the Tunnel Registry. An endpoint is
+    unidentified from the first frame that would leave state, an opening packet, a KEY frame or
+    a CAPS frame addressed to us, and that frame passes the same gate: an unexpected IP or a
+    spent allowance drops it before any table, unanswered. The charge is not an `Opening` slot's
+    alone. `librqbit-utp` hands a stream over at the `ST_SYN`, so a slot that turned `Held` at
+    the accept has proved nothing and keeps its charge. A charge ends at the hello of the Tunnel
+    on that endpoint, at `OPENING_TTL` for a slot that raised none, or when the unidentified
+    Tunnel drops, which the 40 s hello wait bounds. The endpoint's key row and CAPS Negotiation
+    row leave with the charge, so those tables hold at most 64 rows an unidentified source made,
+    and the registry owns all three under one lock so no local cap can drift from it. Rows age
+    on the front's one-second tick, never per frame. A CAPS answer is also due once per endpoint
+    per 10 s, the KEY frame's window, because an admitted endpoint is still a claimed address.
+    Our own dial and a Tunnel whose hello read spend no allowance. What the bound leaves open: a
+    standing Dial-Back Claim lets 64 spoofed addresses hold the allowance through one hello
+    wait, so inbound strangers wait that long while identified Tunnels and our own dials are
+    untouched.
+11. **A held endpoint keeps its key.** The learned key of an endpoint that holds a Tunnel does
+    not age: the peer's KEY only follows its opener, so nothing would ever restate it, and the
+    10-minute TTL bounds a mapping nothing is riding. A KEY frame whose hash differs from it is
+    refused. A NAT rebinding moves the endpoint, never the hash at one endpoint, so only a spoof
+    loses anything. The hash an endpoint is **named** by outranks any KEY, key or no key yet: the
+    hash our dial aimed at, then the hello's. A first KEY that contradicts the name is refused;
+    a KEY that landed before the name is replaced by it, and an endpoint that sent no KEY stays
+    unkeyed, because a name is no request for obfuscation. The name leaves with the slot.
+    **An endpoint the Unidentified Allowance charges keys no send.** An accepted Tunnel has no
+    name before its hello, so a KEY on it is a claim the hello settles, and our frames leave
+    plain until then. Plain costs nothing: `0xB2` passes every peer's receive unobfuscated
+    (`EncryptedDatagramSocket.cpp:141-147`, eMuleAI's `:183-190`), an accepted uTP Tunnel sends
+    only `ST_STATE` and the stream's own cipher before the hello, and its dialer, which we
+    asserted no hash to, stays plain toward us for the Tunnel's whole life. Keying on the
+    first KEY, as eMuleAI does (`ClientUDPSocket.cpp:316-333`), hands that Tunnel to whoever
+    spoofs one frame: the dialer cannot open what we send, for up to the 40 s hello wait. The
+    hello's hash replaces whatever KEY landed, and sends key from there.
+12. **A Tunnel names nobody until its hello does.** An accepted Tunnel exists at the `ST_SYN`,
+    so an address, however lone its pending peer, attributes nothing: a forged opener or a CGNAT
+    neighbour must not end a traversal. A dialed Tunnel proves only that something answered at
+    the address aimed at. The attempt, its dials, its holds and the expectation stand until the
+    hello, whose hash and endpoint the serve triage reports to the front for every Tunnel, either
+    direction, whichever road then takes it. That one report ends the charge and the attempt of
+    the peer the hello named, so a dial-back lands as before. A dial stays in flight while its
+    Tunnel waits for that hello. A Tunnel that closes unidentified gives the dial back to its
+    schedule and leaves the expectation and the holds as it found them. **A hello naming
+    somebody else at the endpoint a schedule aims at ends that schedule at once:** that host is
+    known now, no opener can leave while its Tunnel stands, and a re-dial after it would find
+    the same host. The attempt fails as a spent budget does, so a `Mismatch` leaves a claim the
+    ladder or the retirement answers in a round trip, not 120 s of bursts at a host that said
+    no. A punch that already corrected the endpoint keeps the schedule, because the hello
+    refuted an endpoint the next dial no longer aims at. Only a dial's Tunnel can do this: an
+    accepted one aimed at nothing.
+13. **A punch takes one crypt target.** The server's burst obfuscates from `0x61` byte 29, and
+    the front's own punches, a released burst, a re-dial's burst, a keepalive, a prediction leg,
+    go through the same client-UDP send gate. The front holds one stance per peer, written by whoever stated it: the
+    reach's source record, byte 29, the connect-options byte of a relayed rendezvous, then the
+    hello. The hello binds the target to the path, which is what a keepalive reads, because a
+    path outlives the attempt that opened it. A stance goes with the last ledger that could punch
+    that peer; a peer nobody stated a stance for is punched plain. A Prediction Plan's legs read
+    the stance as each attempt fires, and every leg is one send on the client-UDP drain, where
+    the gate stands: a Probe leg as it is, and a Fan leg naming the Fan socket it leaves by, the
+    only thing a Fan changes about a send. A Fan's answer to a hit is one such send, which the
+    route the hit installed carries out of the right socket. The drain is the one road.
 
 The acting path also keeps a sender gate eMuleAI lacks: a relayed rendezvous is acted on only
 when its carrier is our buddy — the held TCP link by address, or the buddy's exact UDP endpoint
 for a standalone frame — and its budget is bucketed on where the burst would land, not on the
-requester hash. The complement-XOR buddy lookup eMuleAI retries is not adopted. A null claim is
+requester hash. Every burst limiter here, the acting path's, the Server Coordinator's and the
+front's, keys the **endpoint**, IP and port: two targets behind one public address hold two
+mappings and are two traversals, and ed2k-server hands each its own observed port for that reason
+(`holepunch.rs:80-112`). Keyed on the IP alone, the second introduction read as a repeat, its burst
+never left and its request waited out the 15 s. The server's own re-sends of one INFO name the same
+endpoint and are still absorbed. What this gives up is a cap per address: a buddy or a server
+naming many ports at one address earns a burst per port, bounded by the 1 024 tracked destinations
+and by the carrier gate, or the session, it arrived on.
+The complement-XOR buddy lookup eMuleAI retries is not adopted. A null claim is
 legal and preferred to a guess; the hint's options byte is zero. The live paths enter below the
 public-address verdict: `is_public_punch_address` and the self-punch guard refuse loopback and
 our own interfaces, with no test bypass.
@@ -285,9 +394,13 @@ The one exception to "no NAT-type gate", gated only on our own mapping as our ow
 it.
 
 - **Own Mapping** is read from Address Learning (ADR-0084) for the `Udp` role, from the
-  `KadCheck` port reports of the current Extern Port Round: **Endpoint-Dependent** when two
-  distinct observers name different ports, **Endpoint-Independent** when at least two distinct
-  observers all name the same port, **Unknown** otherwise.
+  fresh `KadCheck` port reports of the current Extern Port Round, one per distinct observer.
+  The best-supported port is the one most observers name; the rest **dissent**.
+  **Endpoint-Dependent** when at least two observers dissent, **Endpoint-Independent** when at
+  least two observers name the best-supported port and at most one dissents, **Unknown**
+  otherwise. Dissent needs corroboration because the Fan is the costly role: one lying
+  contact must not pick it. A symmetric NAT still reads dependent within one round, since
+  aMule's round asks three observers (`EXTERNAL_PORT_ASKIPS`) and each sees its own port.
 - **Peer Mapping** can only veto: **Hard** when the coordinator-observed port differs from the
   peer's advertised client-UDP port, **Easy** when equal, **Unknown** when either half is missing
   (every target today). Nothing a peer claims can make rmule probe.
@@ -366,8 +479,8 @@ it.
 - New dependencies: `librqbit-utp` (Apache-2.0), `librqbit-dualstack-sockets` (Apache-2.0),
   `quinn` and `quinn-proto` (MIT OR Apache-2.0), `rcgen` (MIT OR Apache-2.0), `rustls`
   (Apache-2.0 OR ISC OR MIT); all compatible with GPL-3.0-or-later (ADR-0004).
-- ed2k-server keys `observed_udp_ports` by IPv4 address alone (`4da4774`), so two NAT-T clients
-  behind one NAT overwrite each other's observed port; that is the server's to fix.
+- A Low-ID pair on a server older than v0.9.84 takes the buddy road or none, though that server
+  would have coordinated. Its `0x20000` is the only safe question, and the pin stays current.
 
 ## Considered options
 

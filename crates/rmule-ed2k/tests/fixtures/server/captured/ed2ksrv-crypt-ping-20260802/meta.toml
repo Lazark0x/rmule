@@ -10,25 +10,17 @@
 #
 # ## What this fixture is evidence FOR
 #
-# Not a matrix row of its own: it ratifies an unratified **variant** inside
-# `server-udp.md`'s "UDP protocol obfuscation (server crypt layer)" row, which
-# is already capture-verified against eNode. The variant is
+# Not a matrix row of its own: it ratifies the **variant** inside
+# `server-udp.md`'s "UDP protocol obfuscation (server crypt layer)" row,
 # `rmule_core::server_udp::encode_crypt_ping` — aMule's `CryptPingReplyPending`
-# pre-key-learned form — still carrying a `[pending]` marker in its own doc
-# comment. The eNode verdict named the gap exactly: *"no independent server in
-# the bench implements a challenge-keyed server-UDP path"*. This server does
+# pre-key-learned form. This server has a challenge-keyed server-UDP path
 # (`udp.rs:296-341` + `reply_to_obf_ping` `:865-941`), and these are its bytes.
-# **`[pending]` retires to ratified.** Headline-neutral for the row count — the
-# row it sits in was already capture-verified — and the single most valuable
-# *interop* result in the slice regardless.
 #
-# ## How this differs from `enode-server-udp-crypt-20260727`
+# ## What it does not cover
 #
-# That fixture's crypt-pong is keyed on a **serverKey learned from a prior plain
-# advert**. This one is keyed on the **challenge rmule itself minted**, with no
-# prior knowledge of the server at all — which is the entire distinction the
-# `[pending]` marker was about. Both are RC4 with the same direction byte
-# discipline; only the base key's provenance differs.
+# The crypt-pong here is keyed on the **challenge rmule itself minted**, with no
+# prior knowledge of the server. A reply keyed on a **serverKey learned from an
+# earlier answer** has no frozen counterparty bytes; the row's Notes say so.
 #
 # ## Determinism: goldens are taken post-decrypt on purpose
 #
@@ -37,8 +29,7 @@
 # runs — a fresh capture would differ byte for byte while decrypting to the same
 # inner frame. `crypt_ping_0x97_raw.bin` is therefore kept as the proof that the
 # reply really was encrypted and really decrypts, not as a reproducible golden;
-# the stable content lives in `crypt_ping_0x97_plain.bin`. Same discipline as
-# `captured_enode_crypt.rs`.
+# the stable content lives in `crypt_ping_0x97_plain.bin`.
 #
 # The challenge itself is deliberately **not** written down as a bare number
 # anywhere. The decode test reads it back out of the decrypted reply's own echo

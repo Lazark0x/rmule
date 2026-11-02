@@ -7,8 +7,8 @@ use super::*;
 
 /// Bring up the server-UDP front on the one bound socket, shared by an `Arc`.
 /// Every send leaves through one **Server-UDP Seal** over it: the discovery
-/// channel's asks, the global-callback relay's `OP_GLOBCALLBACKREQUEST`, each
-/// search's sweep, the status probes and the engine's `0xA2`. The receive
+/// channel's asks, each search's sweep, the status probes and the engine's
+/// `0xA2`. The receive
 /// side has one owner (ADR-0051): the server-UDP
 /// engine demuxes each datagram by opcode — `0x9B` feeds the discovery
 /// channel's inbox, `0x99` the search forwarder's, and `0x97` plus the `0xA3`
@@ -23,13 +23,12 @@ pub(super) fn spawn_server_udp_front(
     obfuscation: &crate::obfuscation_policy::SharedObfuscationPolicy,
     server_facts: &ServerFacts,
     own_identity: &SharedOwnIdentity,
-    global_callback_rx: mpsc::Receiver<GlobCallbackSend>,
     global_source_servers: &SharedServerList,
     global_source_registry: &GlobalSourceRegistry,
     diagnostics: crate::diagnostics::DiagnosticsState,
     live_searches: &LiveSearches,
 ) -> ServerUdpFront {
-    let mut tasks = Vec::with_capacity(5);
+    let mut tasks = Vec::with_capacity(4);
     // The status chain's per-server state (ADR-0052): the sweep registers
     // outstanding challenges here, and a gated `0x97` populates the capability
     // store the `0x94` upgrade and search variant selection read — then
@@ -47,10 +46,6 @@ pub(super) fn spawn_server_udp_front(
         server_facts.clone(),
         crate::client_udp::os_datagram_nonce,
     );
-    tasks.push(tokio::spawn(relay_global_callbacks(
-        seal.clone(),
-        global_callback_rx,
-    )));
     let (server_udp_engine, inboxes) = ServerUdpEngine::new(
         Arc::clone(&transport),
         seal.clone(),
@@ -70,9 +65,10 @@ pub(super) fn spawn_server_udp_front(
             facts: server_facts.clone(),
             challenges: status_challenges,
             entropy: crate::server_udp::os_rand16,
-            first_contact_tick: config.status_ping_first_contact_tick,
+            first_contact_tick: crate::server_udp::FIRST_CONTACT_TICK,
             tick: config.status_ping_tick,
-            reask: config.status_ping_reask,
+            reask: crate::server_udp::REASK_WINDOW,
+            key_floor: crate::server_udp::KEY_FLOOR,
             crypt: crate::server_udp::CryptPingArm {
                 policy: obfuscation.clone(),
                 // The crypt-ping probe's public-IP precondition (ADR-0046,
@@ -80,7 +76,7 @@ pub(super) fn spawn_server_udp_front(
                 // High-ID IDCHANGE (ADR-0047 `public_ip`) through the shared
                 // self-facts cell.
                 own: own_identity.clone(),
-                grace: config.crypt_ping_grace,
+                grace: crate::server_udp::ANSWER_GRACE,
                 nonce: crate::server_udp::os_crypt_ping_nonce,
             },
             resolver: crate::name_resolver::system_resolver(),
@@ -107,12 +103,17 @@ pub(super) fn spawn_server_udp_front(
                 // The same store gates the ask form per server (the 0x94
                 // upgrade, ADR-0052).
                 server_capabilities,
+                crate::server_pace::UdpRounds::new(
+                    config.global_source_interval,
+                    config.global_source_tick,
+                ),
                 inboxes.sources,
             ),
             global_source_registry.clone(),
-            config.global_source_interval,
-            // Global cadence: re-ask every sweep (ADR-0051).
-            Duration::ZERO,
+            config.global_source_tick,
+            // The Server Pace paces this channel, not the engine (ADR-0051).
+            crate::source_discovery::AskClock::shared(Duration::ZERO),
+            crate::server_pace::UDP_SOURCE_GATE,
         )
         .run(),
     ));

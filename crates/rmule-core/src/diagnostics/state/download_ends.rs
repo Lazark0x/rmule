@@ -16,7 +16,7 @@ impl DiagnosticsState {
     /// download's row and kept as `peer`'s **Dial End** (ADR-0110) until a
     /// slot dials it again. A no-op when the row is gone.
     pub fn dial_ended(&self, download_id: DownloadId, peer: PeerEndpoint, cause: DialEnd) {
-        let mut inner = self.inner.lock().expect("diagnostics mutex poisoned");
+        let mut inner = self.inner.lock();
         let Some(row) = inner.downloads.get_mut(&download_id) else {
             return;
         };
@@ -47,7 +47,7 @@ impl DiagnosticsState {
     /// `slot` of `download_id` dials `peer`: the slot names it, connecting,
     /// and `peer`'s earlier **Dial End** leaves — the new dial speaks for it.
     pub fn attach_worker(&self, download_id: DownloadId, slot: WorkerSlot, peer: PeerEndpoint) {
-        let mut inner = self.inner.lock().expect("diagnostics mutex poisoned");
+        let mut inner = self.inner.lock();
         let Some(row) = inner.downloads.get_mut(&download_id) else {
             return;
         };
@@ -63,7 +63,7 @@ impl DiagnosticsState {
     /// A reask reply routed to `download_id` changed nothing. A no-op when
     /// the row is gone.
     pub fn count_reask_reply_ignored(&self, download_id: DownloadId) {
-        let mut inner = self.inner.lock().expect("diagnostics mutex poisoned");
+        let mut inner = self.inner.lock();
         if let Some(row) = inner.downloads.get_mut(&download_id) {
             row.reask_replies_ignored = row.reask_replies_ignored.saturating_add(1);
         }

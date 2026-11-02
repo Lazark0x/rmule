@@ -7,8 +7,8 @@ use std::time::Instant;
 
 use ratatui::crossterm::event::KeyCode;
 use rmule_core::{
-    CoreEvent, DirectoryOffer, DirectoryRole, DirectoryState, ScanEvent, ScanPhase,
-    SharedDirectoryDiagnostics,
+    CoreEvent, DirectoryOffer, DirectoryRefusal, DirectoryRole, DirectoryState, ScanEvent,
+    ScanPhase, SharedDirectoryDiagnostics,
 };
 use rmule_primitives::FileHash;
 
@@ -19,6 +19,7 @@ use crate::fixture::press;
 use crate::golden::assert_golden;
 use crate::state::{SharedRow, UiState};
 use crate::theme::Theme;
+use crate::views::View;
 use crate::views::ViewOutcome;
 
 const FILM: FileHash = FileHash::from_bytes([
@@ -95,13 +96,32 @@ fn a_typed_path_is_sent_for_core_to_guard_count_and_ask() {
     for _ in 0.."media".len() {
         view.handle_key(press(KeyCode::Backspace), &state);
     }
-    let books = crate::fixture::rooted("srv/books");
-    for c in books.display().to_string().chars() {
+    let missing = crate::fixture::rooted("srv/no-such-books");
+    for c in missing.display().to_string().chars() {
+        view.handle_key(press(KeyCode::Char(c)), &state);
+    }
+    assert!(matches!(
+        view.handle_key(press(KeyCode::Enter), &state),
+        ViewOutcome::Redraw
+    ));
+    assert_eq!(
+        view.form.error.as_deref(),
+        Some(crate::words::scan::ADD_MISSING),
+        "a path with nothing at it stays in the field, refused"
+    );
+    assert_eq!(
+        view.form.text(view.form.focus),
+        missing.display().to_string()
+    );
+    view.handle_key(crate::fixture::ctrl('u'), &state);
+    let books = tempfile::tempdir().expect("a directory");
+    let path = books.path().to_path_buf();
+    for c in path.display().to_string().chars() {
         view.handle_key(press(KeyCode::Char(c)), &state);
     }
     assert_eq!(
         command(view.handle_key(press(KeyCode::Enter), &state)),
-        Some(rmule_core::ScanCommand::AddSharedDirectory { path: books })
+        Some(rmule_core::ScanCommand::AddSharedDirectory { path })
     );
 }
 
@@ -209,4 +229,96 @@ fn golden_settings_remove_confirm_names_the_count() {
             Instant::now(),
         );
     });
+}
+
+#[test]
+fn golden_settings_remove_confirm_scrolls_in_a_short_frame() {
+    let state = listed();
+    let mut view = SettingsView::new();
+    focus(
+        &mut view,
+        &state,
+        &Slot::Dir {
+            dir: PathBuf::from("/srv/media"),
+            role: DirectoryRole::Added,
+        },
+    );
+    view.handle_key(press(KeyCode::Char('x')), &state);
+    let area = ratatui::layout::Rect::new(0, 0, 60, 6);
+    let shown = |view: &mut SettingsView| {
+        crate::golden::render_to_lines(area.width, area.height, |frame| {
+            view.draw(frame, area, &state, &Theme::default_dark(), Instant::now());
+        })
+    };
+    assert_golden(
+        "settings_remove_shared_directory_short",
+        area.width,
+        area.height,
+        |frame| {
+            view.draw(frame, area, &state, &Theme::default_dark(), Instant::now());
+        },
+    );
+    view.handle_key(press(KeyCode::Char('G')), &state);
+    assert!(shown(&mut view).contains("n no"), "{}", shown(&mut view));
+}
+
+/// Core's refusal of a path sent to be shared comes back after the field
+/// closed: the path returns to the row, the reason under it.
+#[test]
+fn a_directory_core_refuses_comes_back_to_its_row_with_the_reason() {
+    let mut state = UiState::default();
+    let mut view = SettingsView::new();
+    view.handle_key(press(KeyCode::Char('G')), &state);
+    while view.focused_slot() != Some(&Slot::AddDir) {
+        view.handle_key(press(KeyCode::Char('k')), &state);
+    }
+    view.handle_key(press(KeyCode::Enter), &state);
+    let dir = tempfile::tempdir().expect("a directory");
+    for c in dir.path().display().to_string().chars() {
+        view.handle_key(press(KeyCode::Char(c)), &state);
+    }
+    view.handle_key(press(KeyCode::Enter), &state);
+    assert!(!view.editing);
+    view.handle_key(press(KeyCode::Char('g')), &state);
+
+    crate::state::fold(
+        &mut state,
+        CoreEvent::Scan(ScanEvent::DirectoryRefused {
+            dir: dir.path().to_path_buf(),
+            reason: DirectoryRefusal::HomeDirectory,
+        }),
+    );
+    view.handle_key(press(KeyCode::Null), &state);
+    assert!(view.editing, "the row is open again");
+    assert_eq!(view.focused_slot(), Some(&Slot::AddDir));
+    assert_eq!(
+        view.form.text(view.form.focus),
+        dir.path().display().to_string()
+    );
+    assert!(view.form.error.is_some(), "with the reason under it");
+
+    // The same path sent again waits for a new answer.
+    view.handle_key(press(KeyCode::Enter), &state);
+    view.handle_key(press(KeyCode::Null), &state);
+    assert!(!view.editing, "the old refusal is not this one's");
+}
+
+/// A question that opens over a field answers to `y`, so the field's `Ctrl-Y`
+/// must not reach it.
+#[test]
+fn a_question_over_an_open_field_takes_the_keyboard_back() {
+    let mut state = UiState::default();
+    let mut view = SettingsView::new();
+    view.handle_key(press(KeyCode::Enter), &state);
+    assert!(view.text_open(&state));
+    crate::state::fold(
+        &mut state,
+        CoreEvent::Scan(ScanEvent::ConsentRequested {
+            dir: crate::fixture::rooted("srv/media"),
+            offer: DirectoryOffer::default(),
+            adding: true,
+            replaces: Vec::new(),
+        }),
+    );
+    assert!(!view.text_open(&state));
 }

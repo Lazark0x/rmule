@@ -14,6 +14,7 @@ use crate::fixture::{
 };
 use crate::state::{SearchStatus, UiState};
 use crate::theme::Theme;
+use crate::views::View;
 use crate::views::networks::NetworksView;
 use crate::views::searches::SearchesView;
 use crate::views::shared_files::SharedView;
@@ -47,11 +48,15 @@ struct Case {
 fn transfers(focus: usize, theme: &Theme) -> Buffer {
     let (mut view, state) = (TransfersView::new(), three_downloads());
     let now = Instant::now();
-    drawn(|frame| view.draw(frame, area(), &state, theme, now));
+    drawn(|frame| {
+        view.draw(frame, area(), &state, theme, now);
+    });
     for _ in 0..focus {
         view.handle_key(press(KeyCode::Tab), &state);
     }
-    drawn(|frame| view.draw(frame, area(), &state, theme, now))
+    drawn(|frame| {
+        view.draw(frame, area(), &state, theme, now);
+    })
 }
 
 fn shared(focus: usize, theme: &Theme) -> Buffer {
@@ -59,16 +64,20 @@ fn shared(focus: usize, theme: &Theme) -> Buffer {
     for _ in 0..focus {
         view.handle_key(press(KeyCode::Tab), &state);
     }
-    drawn(|frame| view.draw(frame, area(), &state, theme, Instant::now()))
+    drawn(|frame| {
+        view.draw(frame, area(), &state, theme, Instant::now());
+    })
 }
 
 fn searches(focus: usize, theme: &Theme) -> Buffer {
     let state = state_with(three_tier_results(), SearchStatus::Completed { total: 3 });
     let mut view = SearchesView::new().having_sent("ubuntu");
     if focus == 1 {
-        view.handle_key(press(KeyCode::Char('/')), &state);
+        view.handle_key(press(KeyCode::Char('i')), &state);
     }
-    drawn(|frame| view.draw(frame, area(), &state, theme, Instant::now()))
+    drawn(|frame| {
+        view.draw(frame, area(), &state, theme, Instant::now());
+    })
 }
 
 fn networks(focus: usize, theme: &Theme) -> Buffer {
@@ -76,7 +85,9 @@ fn networks(focus: usize, theme: &Theme) -> Buffer {
     for _ in 0..focus {
         view.handle_key(press(KeyCode::Tab), &state);
     }
-    drawn(|frame| view.draw(frame, area(), &state, theme, Instant::now()))
+    drawn(|frame| {
+        view.draw(frame, area(), &state, theme, Instant::now());
+    })
 }
 
 /// The cells of every `▸` on screen, top to bottom.
@@ -135,7 +146,10 @@ fn every_table_marks_its_selected_row_in_either_focus() {
                     assert!(word.modifier.contains(Modifier::BOLD), "{context}: bold");
                     assert!(!word.modifier.contains(Modifier::DIM), "{context}");
                 } else {
-                    assert!(word.modifier.contains(Modifier::DIM), "{context}: dimmed");
+                    assert!(
+                        !word.modifier.contains(Modifier::DIM),
+                        "{context}: not dimmed"
+                    );
                     assert!(!word.modifier.contains(Modifier::BOLD), "{context}");
                 }
             }

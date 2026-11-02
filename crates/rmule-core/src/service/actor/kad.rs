@@ -133,8 +133,7 @@ where
                 CoreEvent::CommandRejected {
                     reason: CoreCommandRejectReason::KadUnavailable(reason),
                 },
-            )
-            .await;
+            );
             return;
         };
         // The pair came up — but Kad rides its IPv4 half and no other
@@ -161,8 +160,7 @@ where
                         },
                     ),
                 },
-            )
-            .await;
+            );
             return;
         }
         // One lever: the activity always wires its own
@@ -190,8 +188,7 @@ where
                         KadUnavailableReason::TcpPortUnbound,
                     ),
                 },
-            )
-            .await;
+            );
             return;
         }
         let external = kad_config.kad_shutdown.take().and_then(|slot| slot.take());
@@ -230,6 +227,7 @@ where
                         Arc::clone(&channel),
                         Arc::clone(&self.wiring.registry),
                         self.registry_check.withheld.clone(),
+                        self.wiring.served_downloads.clone(),
                         share_changed_rx,
                     )
                     .run(),
@@ -256,7 +254,8 @@ where
                     KadDiscoveryChannel::new(channel),
                     self.kad_source_registry.clone(),
                     self.wiring.config.kad_sweep_interval,
-                    self.wiring.config.kad_reask_interval,
+                    self.kad_ask_clock.clone(),
+                    crate::server_pace::KAD_SOURCE_GATE,
                 );
                 let pump_handle = tokio::spawn(async move {
                     discovery.run().await;
@@ -351,8 +350,7 @@ where
                             KadUnavailableReason::StartFailed,
                         ),
                     },
-                )
-                .await;
+                );
             }
         }
     }
@@ -472,7 +470,7 @@ where
         };
         self.diagnostics
             .set_kad_state(crate::diagnostics::KadState::Off);
-        send_event(&self.evt_tx, CoreEvent::KadStopped { reason }).await;
+        send_event(&self.evt_tx, CoreEvent::KadStopped { reason });
     }
 }
 

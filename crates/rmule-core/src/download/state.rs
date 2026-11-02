@@ -1,9 +1,9 @@
 //! The synchronous, sans-I/O core of the multi-peer download runner.
 //!
 //! [`DownloadState`] owns every channel-free scheduling decision for one
-//! in-flight download: which part a peer works, how cross-peer blocks
-//! assemble (ADR-0029), when a raced part completes and clears its losers
-//! (ADR-0026), which candidate backfills a retired worker (ADR-0030), and
+//! in-flight download: which blocks a peer is handed and when the End Game
+//! duplicates a slower peer's (ADR-0117), how cross-peer blocks assemble
+//! (ADR-0029), which candidate backfills a retired worker (ADR-0030), and
 //! when a source's ask or reask falls due. It never touches a socket, the
 //! store, or an `mpsc` channel, and reads no clock: time arrives as the `now`
 //! every entry takes, [`DownloadState::on_tick`] runs what has fallen due, and
@@ -13,7 +13,7 @@
 //! the state emits [`Decision::PersistPart`] and resumes on
 //! [`DownloadState::on_persist_result`].
 //!
-//! This split is what makes the racing / mid-part-resume / retire-all /
+//! This split is what makes the handout / mid-part-resume / corrupt-part /
 //! backfill behaviours assertable as plain `Vec<Decision>` values instead of
 //! only through a live Tokio actor with `timeout`-polled events.
 //!
@@ -24,10 +24,13 @@ mod aich;
 mod candidate;
 mod candidates;
 mod capability;
+mod corruption;
 mod direct_ipv6;
+mod handout;
 mod remote_queued;
 mod seeds;
 mod sightings;
+mod slot_ask;
 mod slots;
 #[cfg(test)]
 mod tests;
@@ -35,14 +38,16 @@ mod tick;
 mod worker_event;
 
 use std::collections::{BTreeSet, HashMap, HashSet};
+use std::net::IpAddr;
 use std::time::{Duration, Instant};
 
-use rmule_peer::PartBitmap;
+use rmule_peer::{PartIndex, WireStatus};
 use rmule_primitives::{
     AichRootHash, ClientId, FileHash, Ipv4Endpoint, PartHash, PartHashSet, PeerCrypt, PeerEndpoint,
     UserHash,
 };
 
+pub(crate) use aich::{AichRootAuthority, qualified_kad_root};
 pub(crate) use candidate::LowIdCandidate;
 pub(crate) use capability::CallbackCapability;
 pub(super) use direct_ipv6::LowIdRoute;
@@ -50,15 +55,18 @@ use seeds::SeedDials;
 pub(crate) use sightings::{Channel, Taken, Tally};
 
 use crate::DownloadFailure;
-use crate::adapters::{CallbackKey, PeerWorkerCommand};
-use crate::assembly::PartAssembly;
+use crate::adapters::{CallbackKey, PeerWorkerCommand, WorkerOpening};
+use crate::assembly::{ArrivedPart, Attempt, CorruptionLedger, PartAssembly};
 use crate::callback::CallbackSilence;
+use crate::delivery_rate::DeliveryRate;
 use crate::diagnostics::{PartState, WorkerPhase, WorkerSlot};
 use crate::dialable::DialPosition;
+use crate::download::connection_budget::BudgetSeat;
+use crate::download::queue_standings::StandingSeat;
 use crate::download::source_book::SourceBook;
 use crate::download::source_seeds::SeedLedger;
 use crate::hashing::ResolvedHashSet;
-use crate::scheduler::DownloadScheduler;
+use crate::scheduler::{DownloadScheduler, PartOrder};
 use crate::service::{DownloadEvent, DownloadId, PartReleaseReason};
 
 /// One effect the async runner must enact, drained in order from a
@@ -87,33 +95,54 @@ pub(crate) enum Decision {
     },
     /// End the live worker on `peer`: the brain released it. Every
     /// retirement — whatever its reason — ends its worker through this one
-    /// decision (ADR-0090 "Source ownership"); the runner sends it
-    /// `PeerWorkerCommand::Shutdown { cancel: false }`.
-    EndWorker { peer: PeerEndpoint },
+    /// decision (ADR-0090 "A download holds each source under one owner"); the runner sends it
+    /// `PeerWorkerCommand::Shutdown { cancel }`. `cancel` is true for a
+    /// source that holds nothing we need, so a slot it granted is given back
+    /// with `OP_CANCELTRANSFER` (ADR-0056, ADR-0112).
+    EndWorker { peer: PeerEndpoint, cancel: bool },
+    /// Ban `peer`'s address across the node: it was proven to have sent this
+    /// download corrupt data.
+    BanSender { peer: PeerEndpoint },
     /// Credit `user_hash` for serving `bytes`; the runner holds the
     /// ledger lock.
-    RecordCredit { user_hash: UserHash, bytes: u64 },
-    /// Bind `public_key` as `user_hash`'s **Secured Identity** (ADR-0041).
-    /// The runner (ledger-holder) performs the store's atomic compare-and-set;
-    /// a `Mismatch` denies the claim (theft fact), never overwriting the key.
-    BindIdentity {
+    RecordCredit {
         user_hash: UserHash,
-        public_key: Vec<u8>,
+        at: IpAddr,
+        bytes: u64,
     },
-    /// Verify and persist the assembled bytes of `part_index` (contributed
-    /// by `peer`). A fallible effect: the runner reports the outcome back
-    /// through [`DownloadState::on_persist_result`].
+    /// Write `bytes`, new, at file offset `offset`: the run's lane takes them
+    /// through the Write Cache to the `.part` (ADR-0117 §4), and the brain
+    /// never sees them again.
+    WriteBytes { offset: u64, bytes: Vec<u8> },
+    /// Read `len` bytes of `part_index` back from the file behind every byte
+    /// written so far, verify them and record the part. `peer` completed it;
+    /// none did for a part a run starts with whole. `read_cells` asks for
+    /// each cell's hash whatever the outcome: a refetched part's verdict reads
+    /// them (ADR-0117 §1). A fallible effect: the runner reports the outcome
+    /// back through [`DownloadState::on_persist_result`].
     PersistPart {
-        part_index: u32,
-        peer: PeerEndpoint,
+        part_index: PartIndex,
+        peer: Option<PeerEndpoint>,
         offset: u64,
-        bytes: Vec<u8>,
+        len: u64,
+        read_cells: bool,
+    },
+    /// Judge `part_index`'s bytes in the file by a peer's `recovery_data`
+    /// against `root` (ADR-0038). The runner answers through
+    /// [`DownloadState::on_recovery_checked`].
+    CheckRecovery {
+        part_index: PartIndex,
+        root: AichRootHash,
+        recovery_data: Vec<u8>,
     },
     /// Persist a newly-adopted provisional peer hash set (ADR-0027 authority).
     PersistProvisionalHashes(Vec<PartHash>),
     /// Persist that this download distrusts `user_hash`: it served this file
-    /// bad data (ADR-0090 "Source ownership").
+    /// bad data (ADR-0090 "A download holds each source under one owner").
     DistrustPeer { user_hash: UserHash },
+    /// Persist that the peers' vote contested this download's Kad root, so a
+    /// resumed run trusts neither (ADR-0038).
+    ContestKadAichRoot,
     /// Backfill a retired worker: connect `peer` into the freed `slot`
     /// (ADR-0030).
     Spawn {
@@ -122,6 +151,10 @@ pub(crate) enum Decision {
         /// Whether the connection carries a source ask (ADR-0108): the
         /// peer's ask facts, read at the decision.
         want_sources: bool,
+        /// What the worker sends once its link is up: the probe, or nothing
+        /// for a grant the link carries and the record's parts serve
+        /// (ADR-0107).
+        opening: WorkerOpening,
     },
     /// Ask the connected server to call back a Low-ID source it assigned
     /// (ADR-0039). The runner enacts it via the server session and files the
@@ -137,19 +170,10 @@ pub(crate) enum Decision {
         /// Whether the connection carries a source ask (ADR-0108): the
         /// peer's ask facts, read at the decision.
         want_sources: bool,
-    },
-    /// Ask a Low-ID **global** source's own `source_server` — over UDP, with no
-    /// TCP session — to relay a callback (ADR-0051, ADR-0039 generalized
-    /// per-server). The runner enacts it via the discovery UDP socket and
-    /// files the server-relayed road under `{ server: Some(source_server), low_id }`;
-    /// the called-back peer dials in (`connected_server = source_server`) and is
-    /// adopted. The held slot's deadline sits on the candidate's record.
-    RequestGlobalCallback {
-        low_id: ClientId,
-        source_server: Ipv4Endpoint,
-        /// Whether the connection carries a source ask (ADR-0108): the
-        /// peer's ask facts, read at the decision.
-        want_sources: bool,
+        /// Whether the road may only ride a link that stands (ADR-0090):
+        /// finding none, it asks no server and [`DownloadState::on_no_link`]
+        /// holds it back.
+        on_a_link: bool,
     },
     /// Ask `candidate`'s Kad buddy to relay a callback (ADR-0061 route 4).
     /// The runner registers a **dial-back** claim under the
@@ -179,8 +203,8 @@ pub(crate) enum Decision {
     /// the `0x95` to the Kad UDP endpoint its own row carried —
     /// no server and no buddy involved. The runner claims the same
     /// **dial-back** entry a buddy callback claims, keyed by the candidate's
-    /// User Hash, because a Kad candidate's [`CallbackKey`] is a synthetic id
-    /// (its own address read as one) that no hello will ever report — and
+    /// User Hash, because a Kad candidate's [`CallbackKey`] is an observed address
+    /// no hello will ever report — and
     /// asks the core actor to emit the `0x95`. The held slot's deadline sits on
     /// the candidate's record.
     RequestDirectUdpCallback {
@@ -225,17 +249,29 @@ pub(crate) enum Decision {
     /// Resolving a connected-server `None` to the live server it was filed
     /// under is the runner's concern.
     EndCallback { key: CallbackKey },
-    /// Send `ping`, a source's `OP_REASKFILEPING` (`0x90`), out the shared
+    /// Send `ping`, a source's `OP_REASKFILEPING` (`0x90`) or the
+    /// `OP_REASKCALLBACKUDP` (`0x94`) its buddy relays, out the shared
     /// client-UDP socket (ADR-0057). The brain framed it for the source
     /// standing at `peer` and set its one-in-flight latch; the runner claims
-    /// the endpoint in the **Reask Routes** first (ADR-0107) and, when another
-    /// download's ping holds it, hands it back through
+    /// `answered_from` in the **Reask Routes** first (ADR-0107) and, when
+    /// another download's ping holds it, hands it back through
     /// [`DownloadState::on_ping_held`].
     SendReaskPing {
         /// The endpoint the source's record stands at.
         peer: PeerEndpoint,
         /// The datagram, its client-UDP destination and crypt target.
         ping: crate::client_udp::ClientUdpSend,
+        /// The source's client-UDP endpoint its answer comes from: the
+        /// ping's destination, or past a buddy, the source's own.
+        answered_from: PeerEndpoint,
+    },
+    /// The worker at `peer` holds a granted slot: call every other
+    /// download's record waiting on the peer's **Queue Standing** to this
+    /// link, where each waits as a Link Rider and the swap rule hands the link
+    /// on (ADR-0107).
+    CallStandingWaiters {
+        /// The granted worker's endpoint.
+        peer: PeerEndpoint,
     },
     /// Every part is verified — assemble and finalize the file.
     Finalize,
@@ -257,11 +293,19 @@ pub(crate) struct ContentFacts {
     /// The verification authority in force. The link-vs-persisted-provisional
     /// read is an async store effect, so the caller resolves it and injects it.
     pub(crate) resolved: ResolvedHashSet,
-    /// The trusted AICH master root from the link `h=`; `None` leaves the
-    /// root to the trusted-set vote.
-    pub(crate) trusted_aich_root: Option<AichRootHash>,
+    /// The AICH root authority the run starts under: the link's `h=`, the
+    /// Kad root its record keeps, or none, leaving the root to the vote
+    /// (ADR-0038).
+    pub(crate) aich_root: AichRootAuthority,
     /// Parts an earlier run already verified; they are never re-fetched.
     pub(crate) verified_parts: Vec<u32>,
+    /// The **Arrived Checkpoint**, cut to the file the run holds: the parts it
+    /// resumes in flight (ADR-0117 §4).
+    pub(crate) arrived: Vec<ArrivedPart>,
+    /// How its parts are ranked: with the Preview Band and the Streaming
+    /// Window when it is Streaming Priority (`DownloadMetadata::
+    /// is_streaming_priority`, ADR-0112 §5).
+    pub(crate) order: PartOrder,
 }
 
 /// How a Low-ID candidate is to be reached — the three callback roads and the
@@ -339,15 +383,16 @@ impl LowIdRoad {
         // to the next one unchanged.
         if callable
             && candidate.direct_udp_callback
-            && candidate.kad_udp.is_some()
+            && candidate.kad_udp().is_some()
             && candidate.user_hash.is_some()
         {
             Some(Self::DirectUdp)
-        // A Kad-row candidate has no *server* callback however capable we are:
-        // it is in no server's namespace (`LowIdCandidate::from_kad`).
-        // Its buddy relays one instead — when the dial-back can be matched to
+        // Only our own server relays: aMule's `IsLocalServer` branch
+        // (`BaseClient.cpp:1533`), and no client asks another server to. A
+        // Kad-row candidate is in no server's namespace, so it has no server
+        // callback however capable we are. Its buddy relays one instead — when the dial-back can be matched to
         // this download, which only the target's User Hash can do.
-        } else if capability.server_relays() && !candidate.from_kad {
+        } else if capability.server_relays() && candidate.on_server(capability.server()) {
             Some(Self::Callback)
         } else if callable && candidate.buddy.is_some() && candidate.user_hash.is_some() {
             Some(Self::BuddyCallback)
@@ -401,53 +446,88 @@ pub(crate) struct DownloadState {
     file_hash: FileHash,
     file_size: u64,
     scheduler: DownloadScheduler,
-    /// One shared contiguous-prefix buffer per in-flight part (ADR-0029),
+    /// One assembly per part holding an arrived byte (ADR-0029, ADR-0117),
     /// keyed by part index. Blocks from every contributing peer feed the
-    /// same buffer, so a mid-part drop preserves the prefix.
-    assembly: HashMap<u32, PartAssembly>,
+    /// same Arrived Ranges, so a mid-part drop keeps every arrived byte.
+    assembly: HashMap<PartIndex, PartAssembly>,
+    /// Each granted worker's room it reported and the brain has not yet
+    /// answered (`BlocksWanted`, ADR-0117).
+    wants: HashMap<PeerEndpoint, handout::Want>,
+    /// The number of the last handout sent each worker: a want naming an
+    /// earlier one was sent before that handout reached it.
+    handouts: HashMap<PeerEndpoint, u32>,
+    /// The part each worker last delivered bytes of and how many: its
+    /// `ReceivingPart` row (ADR-0117 "What the operator reads").
+    delivered: HashMap<PeerEndpoint, (PartIndex, u64)>,
     /// Assemblies removed from `assembly` when their `PersistPart` was
     /// emitted, held until `on_persist_result` so a verification failure can
-    /// retire every contributor (ADR-0029's retire-all).
-    pending_persist: HashMap<u32, PartAssembly>,
+    /// attribute its cells (ADR-0117 §1).
+    pending_persist: HashMap<PartIndex, PartAssembly>,
     /// Completed-but-MD4-failed assemblies awaiting an AICH recovery answer
-    /// (ADR-0038). Held here (with their per-block provenance) between the
-    /// `OP_AICHREQUEST` and `on_aich_answer`, where the corruption is localized.
-    awaiting_recovery: HashMap<u32, PartAssembly>,
+    /// (ADR-0038), with the worker asked. Held here (with their per-block
+    /// provenance) between the `OP_AICHREQUEST` and `on_aich_answer`, where the
+    /// corruption is localized; the part stays verifying meanwhile, and the
+    /// asked worker's end stands for an empty answer.
+    awaiting_recovery: HashMap<PartIndex, (PeerEndpoint, PartAssembly)>,
+    /// The **Failed Cells** of each part refetched after failing its check
+    /// with no root (ADR-0117 §1): its latest failed attempts, oldest first,
+    /// until it verifies.
+    failed_cells: HashMap<PartIndex, Vec<Attempt>>,
+    /// The sources **Set Aside** from each part, until it verifies.
+    set_aside: HashMap<PartIndex, corruption::SetAside>,
+    /// The **Corruption Ledger**: the bytes each sender proved good and bad.
+    ledger: CorruptionLedger,
+    /// The parts whose ranges or provenance moved since the last checkpoint.
+    moved: BTreeSet<PartIndex>,
     /// Peer → the diagnostics slot its worker occupies. The live command
     /// channel for each peer stays in the runner, whether it has completed its
     /// handshake in the **Source Book**; the brain owns only the slot number.
     worker_slots: HashMap<PeerEndpoint, WorkerSlot>,
+    /// Each live worker's **Delivery Rate**, from its block arrivals: what the
+    /// End Game reads (ADR-0117).
+    delivery: HashMap<PeerEndpoint, DeliveryRate>,
+    /// Where each worker's slot ask stands at its uploader, and the download's
+    /// one hash-set ask in flight (ADR-0026).
+    slot_asks: slot_ask::SlotAsks,
     /// The link's own part hash set, if the ed2k link carried one. Held so a
     /// peer-supplied hash set can be re-resolved against it (ADR-0027).
     link_part_hash_set: Option<PartHashSet>,
     /// The verification authority in force (ADR-0027), resolved up front and
     /// possibly upgraded by a peer hash set.
     resolved: ResolvedHashSet,
-    /// The trusted AICH master root for this download (ADR-0038). Set up front
-    /// from the link `h=`, or committed by the trusted-set vote
-    /// (`aich_root_votes`) when the link carried none. Its presence enables
-    /// block-level recovery on an MD4 failure; `None` keeps the failure path at
-    /// ADR-0029's retire-all.
-    trusted_aich_root: Option<AichRootHash>,
-    /// Trusted-set tally for a rootless download: each proposed AICH master root
-    /// → the set of distinct masked peer IPs that proposed it (ADR-0038, eMule
-    /// secure-AICH). A root is committed to `trusted_aich_root` once it clears
-    /// the agreement thresholds. Empty (and unused) when the link carried `h=`.
-    aich_root_votes: HashMap<AichRootHash, HashSet<aich::AichVoter>>,
+    /// Where this download's AICH root stands (ADR-0038): set up front from
+    /// the link `h=` or the record's Kad root, moved by the trusted-set vote
+    /// (`aich_root_votes`). A trusted root enables block-level recovery on an
+    /// MD4 failure; without one a failed part goes to its refetch (ADR-0117
+    /// §1).
+    aich_root: AichRootAuthority,
+    /// Trusted-set tally for a rootless download (ADR-0038, eMule secure-AICH).
+    /// A root is committed to `aich_root` once it clears the agreement
+    /// thresholds. Empty (and unused) once the vote is closed.
+    aich_root_votes: aich::AichVote,
+    /// The AICH root each connected worker's peer stated: a recovery ask goes
+    /// only to one stating the trusted root.
+    aich_stated: HashMap<PeerEndpoint, AichRootHash>,
     retired_peers: u32,
     /// The download's sources, one record per source, and who owns each
     /// (ADR-0090). Every pooling seam, every slot fill and every worker's end
     /// asks it; the brain keeps what the book does not — slot numbers, the
     /// callbacks' deadlines and the part scheduler.
     sources: SourceBook,
-    /// Free diagnostics slots (`0..peer_concurrency`); a backfilled worker
-    /// reuses a slot freed by a retired one.
+    /// Diagnostics slot numbers a retired worker or road freed; a new one
+    /// takes the lowest of them before a number past every one in use, so the
+    /// rows stay as many as the most held at once (ADR-0116).
     free_slots: BTreeSet<usize>,
-    /// Caps active + connecting workers (one socket-use knob, ADR-0030).
-    peer_concurrency: usize,
+    /// This run's seat in the node's **Connection Budget** (ADR-0116): every
+    /// road a fill opens is admitted by it first; a grant never asks it.
+    budget: BudgetSeat,
+    /// When a fill the budget refused fills again: the Dial Window's turn.
+    budget_wake: Option<Instant>,
+    /// This run's seat in the node's **Queue Standings** (ADR-0107): which of
+    /// the downloads queued at a peer re-asks it, and the peer's clock.
+    standings: StandingSeat,
     /// The diagnostics slot every callback in flight holds (ADR-0039 /
-    /// ADR-0051) — connected-server (`CallbackKey.server` = `None`) and
-    /// per-server global alike — until the inbound peer is adopted
+    /// ADR-0051) until the inbound peer is adopted
     /// ([`Self::on_callback_connected`]) or its road ends. How far the road has
     /// run and its deadlines ride the candidate's **Source Book** record; the
     /// runner's **Awaited Inbound** registrations key on the same
@@ -495,29 +575,32 @@ pub(crate) struct DownloadState {
 impl DownloadState {
     /// Build the scheduling state from what the run knows up front — the
     /// content, the candidate sources and rmule's own sourcing posture — plus
-    /// the slot economy: how many workers or pending callbacks may hold a slot
-    /// at once, and how long a callback holds one before it lapses.
+    /// the slot economy: the run's seat in the node's **Connection Budget**,
+    /// and how long a callback holds a slot before it lapses.
     pub(crate) fn new(
         download_id: DownloadId,
         content: ContentFacts,
         facts: StartingFacts,
         posture: SourcingPosture,
         callback_timeout: Duration,
-        peer_concurrency: usize,
+        budget: BudgetSeat,
     ) -> Self {
         let ContentFacts {
             file_hash,
             file_size,
             link_part_hash_set,
             resolved,
-            trusted_aich_root,
+            aich_root,
             verified_parts,
+            arrived,
+            order,
         } = content;
         let StartingFacts {
             distrusted,
             seeds_written,
         } = facts;
-        let mut sources = SourceBook::new(distrusted);
+        let verified: HashSet<u32> = verified_parts.iter().copied().collect();
+        let mut sources = SourceBook::new(distrusted, rmule_primitives::part_count(file_size));
         sources.logged_into(posture.callback_capability.server());
         let seeds = SeedLedger::default();
         let our_udp_version = if posture.client_udp {
@@ -530,19 +613,43 @@ impl DownloadState {
             download_id,
             file_hash,
             file_size,
-            scheduler: DownloadScheduler::new(file_size, verified_parts),
-            assembly: HashMap::new(),
+            scheduler: DownloadScheduler::new(
+                file_size,
+                verified_parts.into_iter().map(PartIndex::new),
+                order,
+            ),
+            assembly: arrived
+                .iter()
+                .filter(|row| !verified.contains(&row.part_index.value()))
+                .map(|row| {
+                    let plan = crate::planning::part_plan(file_size, row.part_index);
+                    (row.part_index, PartAssembly::resumed(plan, row))
+                })
+                .filter(|(_, assembled)| !assembled.arrived().is_empty())
+                .collect(),
+            wants: HashMap::new(),
+            handouts: HashMap::new(),
+            delivered: HashMap::new(),
             pending_persist: HashMap::new(),
             awaiting_recovery: HashMap::new(),
+            failed_cells: HashMap::new(),
+            set_aside: HashMap::new(),
+            ledger: CorruptionLedger::default(),
+            moved: BTreeSet::new(),
             worker_slots: HashMap::new(),
+            delivery: HashMap::new(),
+            slot_asks: slot_ask::SlotAsks::default(),
             link_part_hash_set,
             resolved,
-            trusted_aich_root,
-            aich_root_votes: HashMap::new(),
+            aich_root,
+            aich_root_votes: aich::AichVote::default(),
+            aich_stated: HashMap::new(),
             retired_peers: 0,
             sources,
-            free_slots: (0..peer_concurrency).collect(),
-            peer_concurrency,
+            free_slots: BTreeSet::new(),
+            budget,
+            budget_wake: None,
+            standings: StandingSeat::alone(download_id, file_hash),
             callback_slots: HashMap::new(),
             callback_capability: posture.callback_capability,
             dial: posture.dial,
@@ -556,10 +663,24 @@ impl DownloadState {
         }
     }
 
-    /// Spawn the initial fleet of workers from the candidate pool, up to
-    /// `peer_concurrency`. The runner enacts each [`Decision::Spawn`] by
-    /// putting that peer on the wire; the worker is assigned its first part on
-    /// its own `Connected` event (ADR-0030).
+    /// Seat the run in the node's shared **Queue Standings** (ADR-0107) rather
+    /// than in a registry of its own.
+    #[must_use]
+    pub(crate) fn with_standings(mut self, seat: StandingSeat) -> Self {
+        self.standings = seat;
+        self
+    }
+
+    /// Read and write spent names in the node's registry through `seat`.
+    pub(crate) fn with_spent(mut self, seat: crate::download::spent_names::SpentSeat) -> Self {
+        self.sources.share_spent(seat);
+        self
+    }
+
+    /// Spawn the initial fleet of workers from the candidate pool, as the
+    /// **Connection Budget** admits them (ADR-0116). The runner enacts each [`Decision::Spawn`] by
+    /// putting that peer on the wire; the worker asks its slot on its probe's
+    /// answer and is handed its first part at the grant (ADR-0030, ADR-0026).
     pub(crate) fn start(&mut self, now: Instant) -> Vec<Decision> {
         self.started = true;
         self.sources.turn_spent(now);
@@ -567,6 +688,7 @@ impl DownloadState {
             .sources
             .purge(now, &self.callback_capability, self.dial);
         let mut out = Vec::new();
+        self.check_whole_parts(&mut out);
         self.fill(now, &mut out);
         self.settle_seed_dials(&mut out);
         out
@@ -582,7 +704,7 @@ impl DownloadState {
 
     /// ADR-0026's terminal condition (ADR-0030): nothing holds a slot,
     /// nothing can reach one, and the file is not complete.
-    fn out_of_sources(&self) -> bool {
+    pub(crate) fn out_of_sources(&self) -> bool {
         self.sources.slots_in_use() == 0
             && self.no_usable_candidate()
             && !self.scheduler.is_complete()
@@ -600,14 +722,36 @@ impl DownloadState {
     }
 
     /// Our current availability for the file as aMule's `WritePartStatus` writes
-    /// it ([`PartBitmap::downloader`]) — the parts we have verified — for a
+    /// it ([`WireStatus::downloader`]) — the parts we have verified — for a
     /// source-reask ping's body (ADR-0057: rides the `0x90` when the source's
     /// UDP version is `> 3`) and a new worker's connect-time name ask,
     /// telling the uploader which parts we still need.
-    pub(crate) fn our_part_status(&self) -> PartBitmap {
-        PartBitmap::downloader(self.file_size, |part| {
-            self.scheduler.is_part_verified(part.value())
+    ///
+    /// A part verified while no whole part hash set was held is left out until
+    /// one is: it is outside the Verified Range, which the serve side reads
+    /// (ADR-0113 rule 2), and aMule never holds such a part. A file of one part
+    /// has no set; its file hash proves its part.
+    pub(crate) fn our_part_status(&self) -> WireStatus {
+        let set_held = match PartHashSet::expected_hash_count(self.file_size) {
+            Ok(0) => true,
+            Ok(expected) => self.resolved.hashes.len() == expected,
+            Err(_) => false,
+        };
+        WireStatus::downloader(self.file_size, |part| {
+            set_held && self.scheduler.is_part_verified(part)
         })
+    }
+
+    /// The pool a source-exchange answer for this file is drawn from while it
+    /// downloads (ADR-0113): the sources we download from or wait at that are
+    /// not queue-full, and how many sources the book knows.
+    pub(crate) fn exchange_pool(&self) -> crate::served_downloads::ExchangePool {
+        crate::served_downloads::ExchangePool {
+            sources: self
+                .sources
+                .exchange_pool(|endpoint| self.slot_asks.granted(endpoint)),
+            known: self.sources.counts().known,
+        }
     }
 
     /// The live facts behind our **Callback Capability** moved:
@@ -662,19 +806,19 @@ impl DownloadState {
         out
     }
 
-    /// Whether `peer` currently holds an in-flight part. A test affordance for
+    /// Whether `peer` currently holds a Claimed Block. A test affordance for
     /// asserting scheduling outcomes; the runner drives off `is_complete` and
     /// the decisions, never this read.
     #[cfg(test)]
     pub(crate) fn is_working(&self, peer: PeerEndpoint) -> bool {
-        self.scheduler.is_working(peer)
+        self.scheduler.holds_claims(peer)
     }
 
     /// The trusted AICH root in force (test affordance for asserting the
     /// trusted-set vote outcome).
     #[cfg(test)]
     pub(crate) fn trusted_aich_root(&self) -> Option<AichRootHash> {
-        self.trusted_aich_root
+        self.aich_root.trusted()
     }
 
     /// Whether every part is verified.
@@ -706,13 +850,11 @@ impl DownloadState {
             DownloadFailure::Paused => PartReleaseReason::Paused,
             _ => PartReleaseReason::Cancelled,
         };
-        let mut released = self.scheduler.take_in_flight();
-        released.sort_unstable_by_key(|(_, plan)| plan.part_index);
-        for (peer, plan) in released {
+        for (peer, part_index) in self.scheduler.take_in_flight() {
             out.push(Decision::Emit(DownloadEvent::PartReleased {
                 download_id: self.download_id,
                 peer,
-                part_index: plan.part_index,
+                part_index: part_index.value(),
                 reason: release_reason,
             }));
         }

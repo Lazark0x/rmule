@@ -25,13 +25,13 @@
 //! than lost among strangers — a server's and a Kad helper's alike, the helper's on the event bus
 //! the core installs here, since it names no server to report through.
 
+use parking_lot::Mutex;
 use std::net::{IpAddr, Ipv4Addr};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use rmule_net::peer::AwaitedTesters;
 use rmule_primitives::ServerEndpoint;
-use tokio::sync::mpsc::WeakSender;
 
 use crate::server_list::ServerFacts;
 use crate::service::{CoreEvent, LoginStep, PortTestLateAdmission};
@@ -84,22 +84,24 @@ impl AwaitedServer {
 pub(crate) struct LateKadHelper {
     helper: Ipv4Addr,
     late_by: Duration,
-    events: Option<WeakSender<CoreEvent>>,
+    events: Option<crate::service::WeakOutbox>,
 }
 
 impl LateKadHelper {
     /// Report the late test and what became of it.
     pub(crate) async fn report(self, admission: PortTestLateAdmission) {
-        let Some(events) = self.events.as_ref().and_then(WeakSender::upgrade) else {
+        let Some(events) = self
+            .events
+            .as_ref()
+            .and_then(crate::service::WeakOutbox::upgrade)
+        else {
             return;
         };
-        let _ = events
-            .send(CoreEvent::KadHelperTestLate {
-                helper: self.helper,
-                late_by: self.late_by,
-                admission,
-            })
-            .await;
+        events.send(CoreEvent::KadHelperTestLate {
+            helper: self.helper,
+            late_by: self.late_by,
+            admission,
+        });
     }
 }
 
@@ -120,7 +122,7 @@ struct Awaited {
     /// Where a late Kad helper test is reported; `None` until the core
     /// installs its bus, and on an adapter-level test cell. Weak, so this
     /// cell never holds the event channel open.
-    events: Option<WeakSender<CoreEvent>>,
+    events: Option<crate::service::WeakOutbox>,
 }
 
 impl Awaited {
@@ -147,7 +149,7 @@ impl Awaited {
 
 /// The cell itself — held by the session self-facts ([`SharedOwnIdentity`](crate::own_identity::SharedOwnIdentity)),
 /// so establishment, the Kad pump and the serve adapter reach the one set.
-/// A plain `std::sync::Mutex`: no section crosses an `.await`.
+/// A plain `parking_lot::Mutex`: no section crosses an `.await`.
 #[derive(Clone, Default)]
 pub(crate) struct SharedAwaitedTesters(Arc<Mutex<Awaited>>);
 
@@ -189,8 +191,8 @@ impl Drop for AwaitingLogin {
 }
 
 impl SharedAwaitedTesters {
-    fn lock(&self) -> std::sync::MutexGuard<'_, Awaited> {
-        self.0.lock().expect("awaited-testers mutex")
+    fn lock(&self) -> parking_lot::MutexGuard<'_, Awaited> {
+        self.0.lock()
     }
 
     /// A login to `endpoint`, reached at `server`, is sent and its answer
@@ -243,7 +245,7 @@ impl SharedAwaitedTesters {
     }
 
     /// Where a late Kad helper test is reported: the core's event bus.
-    pub(crate) fn install_events(&self, events: WeakSender<CoreEvent>) {
+    pub(crate) fn install_events(&self, events: crate::service::WeakOutbox) {
         self.lock().events = Some(events);
     }
 
@@ -504,7 +506,7 @@ mod tests {
     #[tokio::test]
     async fn a_late_helper_test_is_reported_on_the_installed_bus() {
         let cell = SharedAwaitedTesters::default();
-        let (events_tx, mut events) = tokio::sync::mpsc::channel(4);
+        let (events_tx, mut events) = crate::service::outbox(Default::default());
         cell.install_events(events_tx.downgrade());
         let lapsed = Instant::now();
         cell.kad_check_asked(HELPER, lapsed);

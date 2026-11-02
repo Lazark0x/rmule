@@ -20,11 +20,21 @@ use crate::words::{Sentence, server as words};
 /// server it is stays on the level (`diagnostics.connected_server`), so this
 /// carries only what the level cannot: the assigned id, which no snapshot
 /// reports.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub enum Ed2kConnection {
-    /// No session — the startup state, and every close.
+    /// No session, and none wanted: the startup state, and every close the
+    /// operator chose.
     #[default]
     Disconnected,
+    /// No session, and the operator wanted one: a connect failed, or core
+    /// gave up re-making a lost session.
+    Lost,
+    /// A dial to this server is out. No session stands: a connect ends the
+    /// live one first (ADR-0080 amendment).
+    Connecting {
+        /// The server being dialled.
+        server: ServerEndpoint,
+    },
     /// A login was accepted.
     Connected {
         /// The id the server assigned, which decides High ID vs Low ID and
@@ -62,12 +72,21 @@ pub(super) fn fold_list(state: &mut UiState, event: rmule_core::ServerListEvent)
         E::ServerAdded { .. } => receipt(state, words::ADDED),
         E::ServerUpdated { .. } => receipt(state, words::UPDATED),
         E::ServerRemoved { .. } => receipt(state, words::REMOVED),
+        // No keystroke asked for it: the log line is the whole report.
+        E::ReservedServerDropped { .. } => false,
         E::ServerPriorityChanged { priority, .. } => receipt(state, words::priority_set(priority)),
         E::ServerStaticChanged { is_static, .. } => receipt(state, words::static_set(is_static)),
         E::ServerListUpdateStarted { .. } => {
             state.server_list_updating = true;
             note(state, words::LIST_UPDATE_STARTED)
         }
+        // A walk with no address fetches nothing, so no update runs.
+        E::ServerListAutoUpdateStarted { urls } => {
+            state.server_list_updating = !urls.is_empty();
+            note(state, words::auto_update_started(urls.len()))
+        }
+        // Each address is a line in the log; the walk's total is the note.
+        E::ServerListAutoUpdateFetched { .. } => false,
         E::ServerListUpdated {
             added,
             updated,
@@ -116,12 +135,12 @@ pub(super) fn count_down(state: &mut UiState, now: std::time::Instant) {
     let Some(reconnect) = state.reconnect.as_mut() else {
         return;
     };
-    if state.notable.as_ref() != Some(&reconnect.said) {
+    if state.notable.as_deref() != Some(reconnect.said.as_str()) {
         return;
     }
     let line = reconnect.line(now);
     reconnect.said = line.clone();
-    state.notable = Some(line);
+    state.notable = Some(line.into());
 }
 
 /// Fold a server-session edge (ADR-0080 amendment).
@@ -136,7 +155,10 @@ pub(super) fn count_down(state: &mut UiState, now: std::time::Instant) {
 pub(super) fn fold_connection(state: &mut UiState, event: ServerConnectionEvent) -> bool {
     match event {
         ServerConnectionEvent::Connecting { server, leaving } => {
-            note(state, words::connecting(&server, leaving.as_ref()))
+            let text = words::connecting(&server, leaving.as_ref());
+            state.ed2k = Ed2kConnection::Connecting { server };
+            state.connected_server = None;
+            note(state, text)
         }
         ServerConnectionEvent::Connected { server, client_id } => {
             state.ed2k = Ed2kConnection::Connected { client_id };
@@ -152,12 +174,18 @@ pub(super) fn fold_connection(state: &mut UiState, event: ServerConnectionEvent)
         // amendment), so by the time a failure lands there is no session:
         // the marker going down is the fact, not a guess.
         ServerConnectionEvent::ConnectFailed { server, reason } => {
-            state.ed2k = Ed2kConnection::Disconnected;
+            state.ed2k = Ed2kConnection::Lost;
             state.connected_server = None;
             note(state, words::connect_failed(&server, reason))
         }
+        // The session a connect switched away from ends after that connect
+        // was announced: its close does not touch the dial. A cancelled dial
+        // closes as its own server.
         ServerConnectionEvent::Disconnected { server } => {
-            state.ed2k = Ed2kConnection::Disconnected;
+            if !matches!(&state.ed2k, Ed2kConnection::Connecting { server: dialled } if dialled != &server)
+            {
+                state.ed2k = Ed2kConnection::Disconnected;
+            }
             state.connected_server = None;
             note(state, words::disconnected(&server))
         }
@@ -176,6 +204,7 @@ pub(super) fn fold_connection(state: &mut UiState, event: ServerConnectionEvent)
                 steady,
             };
             let text = words::reconnecting(&server, step, next_in);
+            state.ed2k = Ed2kConnection::Disconnected;
             state.reconnect = Some(Reconnect {
                 server,
                 step,
@@ -186,6 +215,12 @@ pub(super) fn fold_connection(state: &mut UiState, event: ServerConnectionEvent)
         }
         ServerConnectionEvent::ReconnectEnded { server, reason } => {
             state.reconnect = None;
+            if matches!(
+                reason,
+                rmule_core::ReconnectEnd::AttemptsSpent { .. } | rmule_core::ReconnectEnd::Unlisted
+            ) {
+                state.ed2k = Ed2kConnection::Lost;
+            }
             note(state, words::reconnect_ended(&server, reason))
         }
     }
@@ -235,7 +270,7 @@ mod tests {
         // Another note took the slot: the tick leaves it alone.
         note(&mut state, words::ADDED);
         count_down(&mut state, t0 + std::time::Duration::from_secs(62));
-        assert_eq!(state.notable, Some(words::ADDED));
+        assert_eq!(state.notable, Some(words::ADDED.into()));
 
         fold(
             &mut state,
@@ -299,16 +334,73 @@ mod tests {
         );
         let frame_at = t0 + std::time::Duration::from_millis(37_400);
         state.apply(
-            Action::Snapshot(BridgeSnapshot {
+            Action::Snapshot(Box::new(BridgeSnapshot {
                 diagnostics: rmule_core::diagnostics::DiagnosticsSnapshot::default(),
                 rates: crate::rates::TransferRates::default(),
                 taken_at: frame_at,
-            }),
+            })),
             frame_at,
         );
         assert_eq!(
             state.notable.as_deref(),
             Some("reconnecting to 10.0.0.1:4661 · attempt 3 · next in 83 s")
+        );
+    }
+
+    /// The session a connect switched away from closes behind the dial: the
+    /// dial stands. A cancelled dial closes as its own server: off, by choice.
+    #[test]
+    fn a_dial_outlives_the_session_it_replaced_and_ends_with_its_own_close() {
+        let other = rmule_primitives::ServerEndpoint::new("10.0.0.2", 4661).expect("endpoint");
+        let mut state = UiState::default();
+        let connecting = |server, leaving| {
+            server_connection_event(ServerConnectionEvent::Connecting { server, leaving })
+        };
+        fold(
+            &mut state,
+            connecting(server_endpoint(), Some(other.clone())),
+        );
+        fold(
+            &mut state,
+            server_connection_event(ServerConnectionEvent::Disconnected { server: other }),
+        );
+        assert_eq!(
+            state.ed2k,
+            Ed2kConnection::Connecting {
+                server: server_endpoint()
+            }
+        );
+        fold(
+            &mut state,
+            server_connection_event(ServerConnectionEvent::Disconnected {
+                server: server_endpoint(),
+            }),
+        );
+        assert_eq!(state.ed2k, Ed2kConnection::Disconnected);
+    }
+
+    /// Core giving up on a session the operator wanted leaves it lost; the
+    /// operator ending the tries leaves it off.
+    #[test]
+    fn a_reconnect_that_gave_up_is_lost_and_one_the_operator_ended_is_off() {
+        let ended = |reason| {
+            let mut state = UiState::default();
+            fold(
+                &mut state,
+                server_connection_event(ServerConnectionEvent::ReconnectEnded {
+                    server: server_endpoint(),
+                    reason,
+                }),
+            );
+            state.ed2k
+        };
+        assert_eq!(
+            ended(rmule_core::ReconnectEnd::AttemptsSpent { attempts: 3 }),
+            Ed2kConnection::Lost
+        );
+        assert_eq!(
+            ended(rmule_core::ReconnectEnd::OperatorDisconnected),
+            Ed2kConnection::Disconnected
         );
     }
 
@@ -326,7 +418,9 @@ mod tests {
         );
         assert_eq!(
             state.ed2k,
-            Ed2kConnection::Disconnected,
+            Ed2kConnection::Connecting {
+                server: server_endpoint()
+            },
             "a dial is not a session"
         );
         assert_eq!(
@@ -383,7 +477,7 @@ mod tests {
                 reason: rmule_core::ServerConnectFailure::Unreachable,
             }),
         );
-        assert_eq!(state.ed2k, Ed2kConnection::Disconnected);
+        assert_eq!(state.ed2k, Ed2kConnection::Lost);
         assert_eq!(
             state.notable.as_deref(),
             Some(

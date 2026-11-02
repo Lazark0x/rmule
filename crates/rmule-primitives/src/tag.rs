@@ -3,7 +3,7 @@
 //! spelling, values in the integer and string types the wire defines, and
 //! decoding is byte-faithful so a round trip re-emits what arrived.
 
-use crate::{Ed2kText, PrimitiveError, Result, WireReader};
+use crate::{Ed2kText, PrimitiveError, Result, WireReader, write_wire_string};
 
 /// `TAGTYPE_HASH` — 16 raw bytes with no length prefix. The IPv6 dialect's
 /// four address tags all ride it (ADR-0087), and writing one of them as
@@ -139,36 +139,7 @@ impl Tag {
     /// a name that is not UTF-8.
     pub fn decode_prefix(bytes: &[u8]) -> Result<(Self, usize)> {
         let mut reader = WireReader::new(bytes);
-        let encoded_type = reader.read_u8("tag type")?;
-        let (tag_type, name) = if encoded_type & NUMERIC_NAME_FLAG != 0 {
-            (
-                encoded_type & !NUMERIC_NAME_FLAG,
-                TagName::compact_id(reader.read_u8("tag name id")?),
-            )
-        } else {
-            let name_len = reader.read_u16_le("tag name length")? as usize;
-            let name_bytes = reader.take(name_len, "tag name")?;
-            // Per `docs/reference/notes/tags.md`, a length-prefixed
-            // name with `name_len == 1` is *always* a numeric ID, never
-            // a 1-character text name (the latter has no use in
-            // practice). Route to `length_prefixed_id` so round-trips
-            // re-emit the same wire bytes. A caller that hands
-            // `TagName::text("X")` to `encode` would NOT round-trip
-            // here — `text` accepting 1-byte input is a deliberate
-            // permissive constructor for fixture authoring but a
-            // by-construction asymmetry; documented for future readers.
-            if name_len == 1 {
-                (encoded_type, TagName::length_prefixed_id(name_bytes[0]))
-            } else {
-                // `name_len` came from a `u16` on the wire, so the
-                // resulting string is bounded by construction and the
-                // `text` validation can't fail here.
-                (
-                    encoded_type,
-                    TagName::text(decode_utf8(name_bytes, "tag name")?)?,
-                )
-            }
-        };
+        let (tag_type, name) = read_type_and_name(&mut reader)?;
 
         let value = match tag_type {
             TAGTYPE_STRING => {
@@ -194,6 +165,46 @@ impl Tag {
         };
 
         Ok((Self { name, value }, reader.position()))
+    }
+
+    /// Read the first entry of a tag list, by the rule every tolerant tag-list
+    /// reader shares (ADR-0053): the tag when [`TagValue`] models its type, or
+    /// `None` when eD2k defines the type but rmule never reads it (`FLOAT32`,
+    /// `BOOL`, `BOOLARRAY`, `BLOB`, `BSOB`, `STR17`..`STR22`) or its name is not
+    /// UTF-8 — eMule's and aMule's readers parse such a tag and ignore it.
+    /// Either way the second value is how many bytes the entry took, so the
+    /// walk goes on at the next entry.
+    ///
+    /// # Errors
+    /// [`PrimitiveError::TruncatedTag`] when the buffer stops short, and
+    /// [`PrimitiveError::UnsupportedTagType`] on a type byte eD2k does not
+    /// define: the two cases that leave the next entry's offset unknowable.
+    pub fn decode_or_step_prefix(bytes: &[u8]) -> Result<(Option<Self>, usize)> {
+        match Self::decode_prefix(bytes) {
+            Ok((tag, used)) => Ok((Some(tag), used)),
+            Err(PrimitiveError::UnsupportedTagType { .. } | PrimitiveError::InvalidTag { .. }) => {
+                Ok((None, Self::skip_prefix(bytes)?))
+            }
+            Err(other) => Err(other),
+        }
+    }
+
+    /// The name and value of the first tag in `bytes` when its type is
+    /// `BSOB` — a byte count, then that many bytes — the one stepped type a
+    /// reader may still want the value of (`TAG_KADAICHHASHRESULT`, ADR-0053).
+    /// [`Self::decode_or_step_prefix`] still says how far the walk moves.
+    /// `None` for any other type, a name that is not UTF-8, or an entry cut
+    /// short.
+    #[must_use]
+    pub fn bsob_prefix(bytes: &[u8]) -> Option<(TagName, &[u8])> {
+        let mut reader = WireReader::new(bytes);
+        let (tag_type, name) = read_type_and_name(&mut reader).ok()?;
+        if tag_type != TAGTYPE_BSOB {
+            return None;
+        }
+        let len = usize::from(reader.read_u8("bsob length").ok()?);
+        let value = reader.take(len, "bsob value").ok()?;
+        Some((name, value))
     }
 
     /// How many bytes the first tag in `bytes` occupies, for every eD2k tag
@@ -267,12 +278,10 @@ impl Tag {
     /// name id and a one-byte value (`UINT8`, `BOOL`, an empty `BSOB`, `STR1`).
     pub const MIN_WIRE_LEN: usize = 3;
 
-    /// Serialize the tag, reproducing the name spelling it carries.
-    ///
-    /// # Panics
-    /// If a text name or string value exceeds 65535 bytes. [`TagName::text`]
-    /// rejects over-long names at construction, so only a value built past
-    /// that bound can reach it.
+    /// Serialize the tag, reproducing the name spelling it carries. A string
+    /// past 65535 bytes is cut at that length (aMule `SafeFile.cpp:361-372`):
+    /// text a counterparty sent can outgrow the sixteen-bit length once it is
+    /// rendered as UTF-8, so the length is a wire limit, never an invariant.
     #[must_use]
     pub fn encode(&self) -> Vec<u8> {
         let tag_type = self.value.tag_type();
@@ -292,13 +301,13 @@ impl Tag {
             },
             TagNameKind::Text(name) => {
                 encoded.push(tag_type);
-                write_len_prefixed_bytes(&mut encoded, name.as_bytes(), "tag name");
+                write_wire_string(&mut encoded, name.as_bytes());
             }
         }
 
         match &self.value {
             TagValue::String(value) => {
-                write_len_prefixed_bytes(&mut encoded, value.as_bytes(), "string tag value");
+                write_wire_string(&mut encoded, value.as_bytes());
             }
             TagValue::U64(value) => encoded.extend_from_slice(&value.to_le_bytes()),
             TagValue::U32(value) => encoded.extend_from_slice(&value.to_le_bytes()),
@@ -402,9 +411,7 @@ impl TagName {
 
     /// Construct a length-prefixed text tag name. Rejects names longer
     /// than `u16::MAX` bytes — the wire `name_length` is a `u16`, so
-    /// anything longer would silently truncate on encode (the previous
-    /// implementation `unwrap`-ped at the encode boundary, panicking
-    /// inside `write_len_prefixed_bytes`).
+    /// anything longer would silently truncate on encode.
     ///
     /// # Errors
     /// [`PrimitiveError::InvalidTag`] if the name exceeds 65535 bytes.
@@ -449,14 +456,37 @@ impl TagName {
     }
 }
 
+/// A tag's type byte, less the compact-name flag, and its name.
+fn read_type_and_name(reader: &mut WireReader<'_>) -> Result<(u8, TagName)> {
+    let encoded_type = reader.read_u8("tag type")?;
+    if encoded_type & NUMERIC_NAME_FLAG != 0 {
+        return Ok((
+            encoded_type & !NUMERIC_NAME_FLAG,
+            TagName::compact_id(reader.read_u8("tag name id")?),
+        ));
+    }
+    let name_len = reader.read_u16_le("tag name length")? as usize;
+    let name_bytes = reader.take(name_len, "tag name")?;
+    // Per `docs/reference/notes/tags.md`, a length-prefixed name with
+    // `name_len == 1` is *always* a numeric ID, never a 1-character text name
+    // (the latter has no use in practice). Route to `length_prefixed_id` so
+    // round-trips re-emit the same wire bytes. A caller that hands
+    // `TagName::text("X")` to `encode` would NOT round-trip here — `text`
+    // accepting 1-byte input is a deliberate permissive constructor for
+    // fixture authoring but a by-construction asymmetry.
+    if name_len == 1 {
+        return Ok((encoded_type, TagName::length_prefixed_id(name_bytes[0])));
+    }
+    // `name_len` came from a `u16` on the wire, so the resulting string is
+    // bounded by construction and the `text` validation can't fail here.
+    Ok((
+        encoded_type,
+        TagName::text(decode_utf8(name_bytes, "tag name")?)?,
+    ))
+}
+
 fn decode_utf8(bytes: &[u8], reason: &'static str) -> Result<String> {
     std::str::from_utf8(bytes)
         .map(str::to_owned)
         .map_err(|_| PrimitiveError::InvalidTag { reason })
-}
-
-fn write_len_prefixed_bytes(encoded: &mut Vec<u8>, bytes: &[u8], field: &'static str) {
-    let len = u16::try_from(bytes.len()).unwrap_or_else(|_| panic!("{field} is too long"));
-    encoded.extend_from_slice(&len.to_le_bytes());
-    encoded.extend_from_slice(bytes);
 }

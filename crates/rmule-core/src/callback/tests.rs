@@ -7,6 +7,7 @@
 use std::net::Ipv4Addr;
 
 use super::*;
+use crate::service::ReachAddress;
 
 fn endpoint(a: u8, b: u8, c: u8, d: u8, port: u16) -> Ipv4Endpoint {
     Ipv4Endpoint::new(Ipv4Addr::new(a, b, c, d), port)
@@ -14,11 +15,6 @@ fn endpoint(a: u8, b: u8, c: u8, d: u8, port: u16) -> Ipv4Endpoint {
 
 fn peer(a: u8, b: u8, c: u8, d: u8, port: u16) -> PeerEndpoint {
     PeerEndpoint::V4(endpoint(a, b, c, d, port))
-}
-
-/// A HighID client id (above the LowID threshold).
-fn high_id() -> ClientId {
-    ClientId::from_u32(0x0102_0304)
 }
 
 /// A LowID client id (a server-assigned id below `16_777_216`).
@@ -34,8 +30,7 @@ fn buddy() -> KadId {
 /// exactly the fact its branch needs, so no other branch can fire first.
 fn bare_low_id_target() -> CallbackTarget {
     CallbackTarget {
-        id: low_id(),
-        tcp: peer(10, 0, 0, 9, 4662),
+        address: ReachAddress::LowId(low_id()),
         supports_direct_udp_callback: false,
         kad_udp: None,
         on_our_server: false,
@@ -78,8 +73,7 @@ fn open_self() -> RoutePosition {
 #[test]
 fn a_high_id_peer_is_dialed_directly_never_the_callback_tree() {
     let target = CallbackTarget {
-        id: high_id(),
-        tcp: peer(203, 0, 113, 4, 4662),
+        address: ReachAddress::Dial(peer(203, 0, 113, 4, 4662)),
         // Even with a buddy and direct-callback advert, a HighID peer skips
         // the whole tree — a plain dial reaches it.
         supports_direct_udp_callback: true,
@@ -465,7 +459,7 @@ fn a_silent_callback_falls_back_to_nat_traversal_after_twelve_seconds() {
     assert_eq!(select_natt_fallback(&legacy, &ours, &taken, long), None);
     for not_a_callback in [
         PeerReachRoute::Direct {
-            endpoint: target.tcp,
+            endpoint: peer(10, 0, 0, 9, 4662),
         },
         natt_via_buddy(None),
         PeerReachRoute::Dropped {
@@ -550,13 +544,12 @@ fn no_buddy_or_kad_down_drops_an_otherwise_off_server_low_id_target() {
 
 #[test]
 fn the_low_id_grant_dial_back_routes_through_the_same_selector() {
-    // ADR-0057's parked grant dial-back (ADR-0061 "one selector, every
-    // caller"): promoting a *disconnected* upload waiter asks this chooser
+    // ADR-0057's parked grant dial-back (ADR-0061): promoting a *disconnected* upload waiter asks
+    // this chooser
     // how to reach it. A HighID waiter is dialed straight back — a
     // `DialBackGrant`.
     let high_waiter = CallbackTarget {
-        id: high_id(),
-        tcp: peer(203, 0, 113, 20, 4662),
+        address: ReachAddress::Dial(peer(203, 0, 113, 20, 4662)),
         supports_direct_udp_callback: false,
         kad_udp: None,
         on_our_server: false,
@@ -575,7 +568,7 @@ fn the_low_id_grant_dial_back_routes_through_the_same_selector() {
     // dial-back could never reach it, so it takes the server callback route
     // instead (the fix for ADR-0057's parked LowID grant dial-back).
     let low_waiter = CallbackTarget {
-        id: low_id(),
+        address: ReachAddress::LowId(low_id()),
         on_our_server: true,
         ..bare_low_id_target()
     };
@@ -587,7 +580,7 @@ fn the_low_id_grant_dial_back_routes_through_the_same_selector() {
     // A LowID waiter off our server, reachable only through its buddy —
     // the grant dial-back still finds the route, never a dead dial.
     let buddy_waiter = CallbackTarget {
-        id: low_id(),
+        address: ReachAddress::LowId(low_id()),
         on_our_server: false,
         buddy: Some(BuddyContact {
             buddy_id: buddy(),
@@ -660,8 +653,7 @@ fn rung_zero_needs_both_halves_or_the_ordinary_tree_stands() {
 #[test]
 fn rung_zero_precedes_the_plain_high_id_dial() {
     let dual_stack = CallbackTarget {
-        id: high_id(),
-        tcp: peer(203, 0, 113, 4, 4662),
+        address: ReachAddress::Dial(peer(203, 0, 113, 4, 4662)),
         ipv6: Some(v6()),
         ..bare_low_id_target()
     };

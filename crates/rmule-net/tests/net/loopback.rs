@@ -15,7 +15,8 @@ use rmule_kad::{KadCommand, KadEvent, KadId, KadNodeConfig, KadNodeEndpoint};
 use rmule_net::ed2k::ClientUdpSocket;
 use rmule_net::family::FamilySelection;
 use rmule_net::kad::{
-    KAD_INLET_CAPACITY, KadInlet, KadNetConfig, KadNetHandle, KadTraffic, spawn, spawn_over,
+    KAD_INLET_CAPACITY, KadDatagram, KadInlet, KadNetConfig, KadNetHandle, KadTraffic, spawn,
+    spawn_over,
 };
 use rmule_primitives::{Ipv4Endpoint, PeerEndpoint};
 
@@ -73,7 +74,12 @@ async fn start(transport: Transport, id_byte: u8) -> KadNetHandle {
                     let PeerEndpoint::V4(from) = from else {
                         continue;
                     };
-                    if tx.send((from, bytes)).await.is_err() {
+                    let datagram = KadDatagram {
+                        from,
+                        bytes,
+                        hushed: false,
+                    };
+                    if tx.send(datagram).await.is_err() {
                         return;
                     }
                 }
@@ -257,10 +263,11 @@ async fn an_injected_datagram_reaches_the_node_unaltered() {
     // inside the bytes — so naming the probe here is what brings the answer
     // back to it. That is the front's contract: it names the source, the node
     // trusts it.
-    tx.send((
-        Ipv4Endpoint::new(Ipv4Addr::LOCALHOST, probe_port),
-        bytes.clone(),
-    ))
+    tx.send(KadDatagram {
+        from: Ipv4Endpoint::new(Ipv4Addr::LOCALHOST, probe_port),
+        bytes: bytes.clone(),
+        hushed: false,
+    })
     .await
     .expect("the inlet takes it");
 

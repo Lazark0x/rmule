@@ -1,0 +1,21 @@
+┌ Downloads (3) ─── p pause  m menu  / filter  L add  Tab sources  Space tag ┐
+│  File ▲                              Size Progress        Speed Status     │
+│▸ bunny.mp4                        87.7 MB ██████████   0.0 KB/s Completing │
+│  ABABABABAB┌ File details ────────────────────────────────────┐ Paused     │
+│  5C5C5C5C5C│ name    bunny.mp4                                │ Completed  │
+│            │ hash    07070707070707070707070707070707         │            │
+│            │ size    87.7 MB                                  │            │
+│            │ origin  link                                     │            │
+│            │ done    100%  (10/10 parts)                      │            │
+│            │ speed   0.0 KB/s                                 │            │
+│            │ sources 0 known: 1 asking, 3 queued, 1           │            │
+│            │         transferring                             │            │
+│            │ on disk unknown                                  │            │
+│            │ move    waiting for rmule's store to record the  │            │
+│            │         finished file                            │            │
+│            │                                                  │            │
+│Off-screen: │██████████████████████████████████████████████████│            │
+└ too narrow └─────────────────────────────────────── Esc close ┘───── 1 / 3 ┘
+┌ Sources · bunny.mp4 ───────────────────────────────────────────────────────┐
+│                              no active sources                             │
+└────────────────────────────────────────────────────────────────────────────┘

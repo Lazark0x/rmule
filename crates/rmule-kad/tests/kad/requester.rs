@@ -7,7 +7,7 @@
 //! pinned by `captured_source_result`.
 
 use rmule_kad::KadNodeStart;
-use std::net::Ipv4Addr;
+use std::time::Duration;
 
 use rmule_kad::{
     Kad2Message, KadCommand, KadContact, KadEvent, KadId, KadInstant, KadNode, KadNodeConfig,
@@ -15,7 +15,9 @@ use rmule_kad::{
 };
 use rmule_primitives::{ClientId, FileHash, PeerSource, SourceLookupTarget};
 use rmule_testkit::drain_split;
-use rmule_testkit::kad_node::{diagnostics_of, hello_req_from, lookup_res_bytes};
+use rmule_testkit::kad_node::{
+    diagnostics_of, endpoint, hello_req_from, host_ip, lookup_res_bytes,
+};
 
 /// The captured `0x34` pair (docs/reference/notes/kad-source-lookup.md): the
 /// synthetic file hash and the wire target aMule searched for it.
@@ -117,7 +119,7 @@ pub(super) fn id_near(target: KadId, d: u8) -> KadId {
 }
 
 pub(super) fn endpoint_for(d: u8) -> KadNodeEndpoint {
-    KadNodeEndpoint::new(Ipv4Addr::new(203, 0, 113, d), 4_000 + u16::from(d))
+    KadNodeEndpoint::new(host_ip(d), 4_000 + u16::from(d))
 }
 
 pub(super) fn contact_near(target: KadId, d: u8) -> KadContact {
@@ -229,7 +231,7 @@ fn search_command_launches_alpha_queries_to_the_closest_seeds() {
 }
 
 #[test]
-fn search_command_with_an_empty_table_completes_immediately() {
+fn a_search_waits_for_a_joined_node() {
     let now = KadInstant::EPOCH;
     let mut node = requester_node();
 
@@ -237,15 +239,103 @@ fn search_command_with_an_empty_table_completes_immediately() {
     let (datagrams, events) = drain_split(&mut node);
 
     assert_eq!(datagrams, vec![]);
+    assert_eq!(events, vec![], "no walk ends on an empty table");
+    assert_eq!(node.next_wake(), None, "what opens the gate wakes the node");
+}
+
+#[test]
+fn a_queue_starts_one_search_a_second_and_five_at_once() {
+    let now = KadInstant::EPOCH;
+    let mut node = requester_node();
+    for d in [10_u8, 20, 30] {
+        node.handle_datagram(
+            now,
+            endpoint(d, 4000 + u16::from(d)),
+            &hello_req_from(KadId::from_bytes([d; 16]), endpoint(d, 4000 + u16::from(d))),
+        );
+    }
+    let _ = drain_split(&mut node);
+    for file in 0..8_u8 {
+        node.handle_command(
+            now,
+            KadCommand::SearchSources {
+                request: request_for([file; 16]),
+            },
+        );
+    }
+    let started_at = |node: &mut KadNode, at: KadInstant| {
+        node.tick(at);
+        let (datagrams, _) = drain_split(node);
+        datagrams.len()
+    };
+    let (datagrams, _) = drain_split(&mut node);
+    assert_eq!(datagrams.len(), 3, "one walk at the first instant");
+    assert_eq!(node.next_wake(), Some(now + Duration::from_secs(1)));
+    assert_eq!(started_at(&mut node, now + Duration::from_millis(999)), 0);
+    assert_eq!(started_at(&mut node, now + Duration::from_secs(1)), 3);
+    assert_eq!(started_at(&mut node, now + Duration::from_secs(2)), 3);
+    // The fourth: its first queries' deadlines have not come yet.
+    assert!(started_at(&mut node, now + Duration::from_millis(2500)) == 0);
+}
+
+/// A `0x34` over its opcode's budget waits, and the walk's answer window waits
+/// with it: stock would drop the datagram and count it.
+#[test]
+fn a_search_over_the_storers_budget_waits_and_keeps_its_answer_window() {
+    let start = KadInstant::EPOCH;
+    let mut node = requester_node();
+    let storer = endpoint(10, 4010);
+    let storer_id = KadId::from_bytes([10; 16]);
+    node.handle_datagram(start, storer, &hello_req_from(storer_id, storer));
+    let _ = drain_split(&mut node);
+    let mut now = start;
+    let mut search_sends = Vec::new();
+    for file in 0..3_u8 {
+        let request = request_for([file; 16]);
+        node.handle_command(now, KadCommand::SearchSources { request });
+        let (sent, _) = drain_split(&mut node);
+        assert_eq!(sent.len(), 1, "the lookup of file {file}");
+        node.handle_datagram(now, storer, &lookup_res_bytes(request.kad_target(), &[]));
+        let (sent, _) = drain_split(&mut node);
+        search_sends.push(sent.iter().filter(|(_, bytes)| bytes[1] == 0x34).count());
+        now = now + Duration::from_secs(1);
+    }
+    assert_eq!(search_sends, vec![1, 1, 0], "the third is held");
+
+    // The hold ends one spacing past the first send of the burst's second.
+    let leaves = start + Duration::from_millis(21_666);
+    node.tick(leaves);
+    let (sent, _) = drain_split(&mut node);
+    assert_eq!(sent.iter().filter(|(_, bytes)| bytes[1] == 0x34).count(), 1);
+
+    node.tick(leaves + Duration::from_secs(14));
+    let (_, events) = drain_split(&mut node);
+    assert_eq!(completed(&events), 0, "the window opened when it left");
+    node.tick(leaves + KadNode::SOURCE_SEARCH_WINDOW);
+    let (_, events) = drain_split(&mut node);
+    assert_eq!(completed(&events), 1);
+}
+
+fn completed(events: &[KadEvent]) -> usize {
+    events
+        .iter()
+        .filter(|event| matches!(event, KadEvent::SourceSearchComplete { .. }))
+        .count()
+}
+
+#[test]
+fn a_held_ask_is_a_duplicate_of_itself() {
+    let now = KadInstant::EPOCH;
+    let mut node = requester_node();
+    node.handle_command(now, KadCommand::SearchSources { request: request() });
+    node.handle_command(now, KadCommand::SearchSources { request: request() });
+    let (_, events) = drain_split(&mut node);
     assert_eq!(
         events,
-        vec![KadEvent::SourceSearchComplete {
-            target: target(),
-            result_rows: 0,
-            ended_by: KadSearchEnd::NoSearchableContacts,
-        }]
+        vec![KadEvent::Diagnostic(
+            KadNodeDiagnostic::DuplicateSourceSearch { target: target() }
+        )]
     );
-    assert!(node.next_wake().is_none(), "nothing left to time out");
 }
 
 #[test]
@@ -288,7 +378,17 @@ fn walk_queries_closer_contacts_learned_from_responses() {
         )],
         "one slot freed, one launch: the closest unqueried candidate"
     );
-    assert_eq!(events, vec![]);
+    // Both rows enter the table unverified (ADR-0064).
+    assert_eq!(
+        events,
+        closer
+            .iter()
+            .map(|row| KadEvent::ContactAdded {
+                id: row.id(),
+                endpoint: row.endpoint(),
+            })
+            .collect::<Vec<_>>()
+    );
 
     // The next answer frees the next slot for the remaining learned contact.
     node.handle_datagram(now, endpoint_for(110), &lookup_res_bytes(target(), &[]));
@@ -439,7 +539,10 @@ fn solicited_fixture_search_res_projects_through_the_sealed_boundary() {
 
     assert_eq!(datagrams, vec![]);
     assert_eq!(events.len(), 1);
-    let KadEvent::SourcesFound { target, candidates } = &events[0] else {
+    let KadEvent::SourcesFound {
+        target, candidates, ..
+    } = &events[0]
+    else {
         panic!("expected SourcesFound, got {events:?}");
     };
     assert_eq!(*target, fixture_request().target());

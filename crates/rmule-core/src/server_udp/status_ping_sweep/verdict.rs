@@ -78,6 +78,9 @@ pub(super) struct Judgement {
     pub(super) dropped: bool,
     /// A ping was answered since the last pass.
     pub(super) heard: bool,
+    /// The plain probes this pass found silent, with when each left: their
+    /// pings went unanswered, whatever the offline guard makes of the tally.
+    pub(super) silenced: Vec<(ServerEndpoint, Instant)>,
     /// Lone silences await a vouching ping that is not yet out: the servers
     /// that went silent, none of which may vouch.
     pub(super) wants_vouch: Option<Vec<ServerEndpoint>>,
@@ -169,7 +172,12 @@ impl Verdicts {
                 judgement.heard = true;
             } else if now.duration_since(probe.sent_at) >= self.grace {
                 probe.fate = match probe.kind {
-                    ProbeKind::Plain => Fate::Silent,
+                    ProbeKind::Plain => {
+                        judgement
+                            .silenced
+                            .push((probe.server.clone(), probe.sent_at));
+                        Fate::Silent
+                    }
                     ProbeKind::Crypt => Fate::Superseded,
                 };
             }

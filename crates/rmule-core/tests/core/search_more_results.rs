@@ -86,21 +86,21 @@ async fn the_next_page_joins_the_same_result_set() {
     .await;
     server.wait_for_client_opcode(Opcode::QueryMoreResult).await;
     server.send_page(vec![row(2, "linux-2.iso")], false).await;
-    let whole = next_expected(&mut core, "the page joining the set", |event| {
+    let page = next_expected(&mut core, "the page joining the set", |event| {
         matches!(
             event,
             CoreEvent::Search(SearchEvent::SearchResultsReceived { search_id: id, .. }) if *id == search_id
         )
     })
     .await;
-    let CoreEvent::Search(SearchEvent::SearchResultsReceived { results, .. }) = whole else {
+    let CoreEvent::Search(SearchEvent::SearchResultsReceived { results, .. }) = page else {
         unreachable!()
     };
     let names: Vec<String> = results
         .iter()
         .map(|row| row.primary_name().to_display_string())
         .collect();
-    assert_eq!(names, ["linux-1.iso", "linux-2.iso"]);
+    assert_eq!(names, ["linux-2.iso"], "the page's row, the first one kept");
     completed_with(&mut core, search_id, 2).await;
     assert_eq!(core.diagnostics_snapshot().search_more_results, None);
 

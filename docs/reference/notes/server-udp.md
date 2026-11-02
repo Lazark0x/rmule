@@ -18,7 +18,7 @@ Cite-and-rewrite only (ADR-0004); never port GPLv2.
 | `OP_GLOBSEARCHRES` | `0x99` | server → client | one result row per packet (ADR-0051) |
 | `OP_GLOBGETSOURCES` | `0x9A` | client → server | basic source query |
 | `OP_GLOBFOUNDSOURCES` | `0x9B` | server → client | sources answer |
-| `OP_GLOBCALLBACKREQ` | `0x9C` | client → server | per-server callback (payload below) |
+| `OP_GLOBCALLBACKREQ` | `0x9C` | client → server | declared in every header, sent by no client, not implemented |
 | `OP_INVALID_LOWID` | `0x9E` | server → client | UDP callback-fail, `[id 4]` (deferred) |
 | `OP_SERVER_DESC_REQ` | `0xA2` | client → server | description request, `[challenge 4]` (ADR-0068) |
 | `OP_SERVER_DESC_RES` | `0xA3` | server → client | description reply, two formats (ADR-0068) |
@@ -146,20 +146,25 @@ The steps of one tick:
 5. Send the `0x96` packet.
 
 - **Per-server re-ask window**: `UDPSERVSTATREASKTIME` = `HR2MS(4.5)` — a server
-  pinged within 4.5 h is walked past without consuming the tick.
+  pinged within 4.5 h is walked past without consuming the tick. A server whose UDP key
+  was learned under another public address of ours is due early, no sooner than
+  `UDPSERVSTATMINREASKTIME` (20 min) after its last ping (`CheckForExpiredUDPKeys`).
 - **Fire-and-forget**: the failed count a non-answer leaves behind only matters
   to aMule's dead-server removal (failed count at or above the `DeadserverRetries` preference),
   which rmule does **not** transplant — its list has no health-based eviction
   (ADR-0052: a non-answer just leaves the server capability-less, retried next
   pass). Any accepted UDP reply resets the failed count.
+- **Ping jitter**: `rand() % HR2S(1)` is an hour's worth of seconds mixed into a
+  millisecond clock, a ≤ 3.6 s no-op as 2.3.3 computes it. 3.1.0 moved the clock to
+  seconds, and rmule models that intent: 4.5 h less up to 1 h.
 - **Not transplanted**: the "connected to an eD2k server" gate (rmule's capability store
-  feeds UDP-only consumers), and the random ping jitter (an hour's worth of
-  seconds mixed into a millisecond clock — a ≤ 3.6 s no-op as aMule computes it).
+  feeds UDP-only consumers).
 
 rmule: `rmule-core::server_udp::StatusPingSweep` — `status_ping_tick` = 5 s,
-`status_ping_reask` = 4.5 h (`CoreConfig`), challenge minted from caller-supplied
-entropy (`GlobServStatReq::mint`), registered via `StatusChallenges::expect`
-**before** the send, DNS-named servers walked past (no `Ipv4Endpoint` key).
+`REASK_WINDOW` = 4.5 h, `KEY_FLOOR` = 20 min, challenge
+minted from caller-supplied entropy (`GlobServStatReq::mint`), registered via
+`StatusChallenges::expect` **before** the send. A row listed by name is resolved when its
+ping is due.
 
 ## Crypt-ping arm — ADR-0046 breakdown 4
 
@@ -190,7 +195,7 @@ enabled. Then:
   A valid `0x97` within the grace clears it; a timeout with the flag still set falls
   to the plain arm, which sends a plain `0x96`. aMule's `+ 20` on its **millisecond**
   tick clock is a unit slip (the comment says "20 seconds"); rmule models the intended
-  **20 s** (`CoreConfig::crypt_ping_grace`), an ADR-0045 cite-and-correct beside
+  **20 s** (`ANSWER_GRACE`), an ADR-0045 cite-and-correct beside
   the jitter one.
 - **Reply mapping** (`GetServerByIPUDP(ip, port, bObfuscationPorts=true)`,
   `src/ServerList.cpp#L639`): a `0x97` maps back to its server three ways —
@@ -246,7 +251,7 @@ send one crypt-ping with a logged challenge to the container's TCP + 12, record 
 encrypted reply datagram, and confirm it decrypts under the challenge to the golden
 progressive `0x97` body — pinned beside the datagram primitive KATs. **Blocked**:
 Lugdunum 17.15 crypt support is **unverified** (ADR-0046); the documented-attempt
-path (image configuration, alternative build, eNode) applies if it can't advertise
+path (image configuration, alternative build) applies if it can't advertise
 `SRV_UDPFLG_UDPOBFUSCATION`. Do not run unattended.
 
 ## Server description pair: `OP_SERVER_DESC_REQ` (0xA2) / `OP_SERVER_DESC_RES` (0xA3) — ADR-0068
@@ -317,9 +322,9 @@ is the count.
   support, under either opcode (aMule logs "UDP Request for sources on a large file
   ignored").
 - **Packing** (`GetMaxFilesPerUDPServerPacket`): `SRV_UDPFLG_EXT_GETSOURCES` → up to
-  `MAX_FILES_PER_UDP_PACKET` (31); without it → **1 file per datagram**. (aMule additionally
-  caps lifetime requests per server via `MAX_REQUESTS_PER_SERVER`; rmule's sweep cadence is
-  ADR-0051's — re-ask per sweep — so that cap does not transplant.)
+  `MAX_FILES_PER_UDP_PACKET` (31); without it → **1 file per datagram**. A round gives one
+  server at most `MAX_REQUESTS_PER_SERVER` (35) files, so a datagram holds the smaller of
+  the two; the file walk carries over to the next server (`rmule-core::server_pace`).
 
 ## Receive: `OP_GLOBFOUNDSOURCES` (0x9B)
 
@@ -361,8 +366,8 @@ packet's `[0xE3][0x9B]` header would begin — so aMule read `0x3f` (the first b
 The control run — the same two-packet datagram with no sentinel — had **both** bodies read.
 That run's TCP `OP_FOUNDSOURCES` leg (aMule read every record) was also taken on the trailing
 layout and says nothing about the inline one, which *does* shift a stock reader's records —
-the reason the spec lets a server send sentinels only to a session that advertised
-`SRVCAP_IPV6`. rmule has no `0x9B` **encoder** (`GlobFoundSources` decodes only), so this is
+the reason a server sends sentinels only to a session that sent `CT_MOD_IP_V6` or arrived
+over IPv6. rmule has no `0x9B` **encoder** (`GlobFoundSources` decodes only), so this is
 a constraint on any future emitter and on the harness's stimulus, not a bug in shipped code.
 
 ## Source IP == client_id
@@ -370,53 +375,7 @@ a constraint on any future emitter and on the harness's stimulus, not a bug in s
 Each 6-byte source is `[u32 LE][u16 LE]`. For a High-ID source the `u32` is its IPv4
 (High-ID *is* the IP); for Low-ID it is `< ClientId::LOW_ID_THRESHOLD`. So `PeerSource::new
 (ClientId::from_u32(u32), port)` + `as_peer_endpoint()` (Some ⇔ High-ID) classifies them
-exactly as `FoundSources` does. The first global-source step pooled the High-ID ones and
-dropped the Low-ID ones (no per-server callback until the send below).
-
-## Send: `OP_GLOBCALLBACKREQ` (0x9C)
-
-rmule (High-ID, with a bound inbound listener) asks a Low-ID global source's **own
-source-server**, over UDP, to relay a callback so that Low-ID peer dials rmule back. The
-source-server is one rmule is *not* logged into (global source discovery found the source there), so unlike
-the connected-server TCP `OP_CALLBACKREQUEST` (0x1C, `<low_id u32>` only), the global UDP
-request must **self-report rmule's own contact** — the server has no TCP session to learn it
-from.
-
-**Payload** = `[ip u32][port u16 LE][client_id u32 LE]` — pinned three ways:
-
-- aMule `src/include/protocol/ed2k/Client2Server/UDP.h`: the header's own comment on
-  the `0x9C` opcode gives the layout as a 4-byte IP, a 2-byte port and a 4-byte client
-  id. aMule *defines* the opcode but has **no send site** — it is not in
-  `DownloadQueue.cpp`, `ServerSocket.cpp`, or `amule.cpp`; eMule originates these, aMule
-  only receives the inbound side. Cite-and-rewrite only (ADR-0004).
-- Wireshark `epan/dissectors/packet-edonkey.c`: the UDP callback-request case reads an
-  "Address" (4-byte IP plus 2-byte LE port, via `dissect_edonkey_address`) and then the
-  4-byte client ID.
-- The IP-plus-port Address is the same shape as the `0xA0` `OP_SERVER_LIST_REQ` payload in
-  the same header, and matches rmule's `Ipv4Endpoint` (`[oct0..3][port_lo][port_hi]`,
-  `WIRE_LEN = 6`).
-
-So the wire body is exactly `Ipv4Endpoint::encode(rmule's own ip+listen-port)` ++
-`target_low_id.as_u32().to_le_bytes()`:
-
-- `[ip u32]` — rmule's **own** public IP. For a High-ID client this equals its connected-
-  server-assigned client-id rendered as the 4 IP octets in order (the same ip-as-u32 the
-  `OP_GLOBFOUNDSOURCES` decoder reads back); on the wire it is the 4 octets `a.b.c.d`.
-- `[port u16 LE]` — rmule's **own** advertised TCP listen port (the bound inbound listener).
-- `[client_id u32 LE]` — the **target** Low-ID source's server-assigned id (the one E1 decoded
-  from this server's `OP_GLOBFOUNDSOURCES`).
-
-**Loopback fidelity:** because the port rides in the payload (not inferred from the datagram
-source), a deterministic fake source-server learns rmule's exact listener endpoint and triggers
-the Low-ID peer to dial it — no port guessing, high fidelity (the Correctness-Tier loopback).
-The runner enacting the send must therefore thread rmule's own `(ip, listen_port)` into the
-request (the Low-ID callback spike's connected-server callback never needed this — the server filled it from the
-TCP session).
-
-**Failure path:** the UDP callback-fail is `OP_INVALID_LOWID` (`0x9E`, body `[id 4]`) — it *carries*
-the failed low-id (unlike the TCP `OP_CALLBACK_FAIL` 0x36, which is id-less). Decoding `0x9E`
-for precise slot release is available but **deferred**: as in the Low-ID callback spike, the per-callback timeout
-(ADR-0039) is the slot-release workhorse; the request is fire-and-forget.
+exactly as `FoundSources` does.
 
 ## Deferred
 

@@ -27,8 +27,7 @@ pub fn version_line(build: Build) -> String {
 }
 
 /// The two shapes of an invocation.
-pub const USAGE: &str =
-    "Usage: rmule [--data-dir <path>] [--log-level lean|detailed]\n       rmule --help | --version";
+pub const USAGE: &str = "Usage: rmule [--data-dir <path>] [--log-level lean|detailed] [--no-mouse]\n       rmule --help | --version";
 
 /// The pointer a refusal ends with.
 const MORE: &str = "Run rmule --help for the options, where the data lives, and the environment.";
@@ -78,6 +77,9 @@ pub const fn no_terminal(missing: MissingTerminal) -> &'static str {
         }
         MissingTerminal::Both => {
             "rmule needs a terminal, and neither its input nor its output is one; nothing was started."
+        }
+        MissingTerminal::NoCursor => {
+            "rmule needs a terminal that can draw a full screen, and TERM=dumb cannot; nothing was started. Run it in a terminal emulator, or use rmule-cli."
         }
     }
 }
@@ -172,6 +174,10 @@ Options:
                        Beats the Settings choice \"Full run log\" for this run
                        and is not stored. Without it, that choice decides; it is
                        lean until changed.
+  --no-mouse           Leave the mouse to the terminal this run: a drag selects
+                       text, and clicks and the wheel do nothing. Beats the
+                       Settings choice \"Mouse\" and is not stored. With the mouse
+                       on, Shift, or Option on macOS, selects text.
   -h, --help           Print this help and exit.
   -V, --version        Print the version, the commit and its date, and exit;
                        -dirty on the commit means the binary was built from
@@ -204,10 +210,12 @@ Options:
         "  RMULE_LOG       the filter on what the Run Log writes, in tracing-subscriber's
                   EnvFilter syntax (default info); it does not choose lean or
                   detailed
-  RMULE_THEME     the colours: dark, light or 256; beats COLORTERM, and a theme
-                  chosen in Settings beats it
+  RMULE_THEME     the colours: dark, light, 256, 16 or mono; beats NO_COLOR
+                  and COLORTERM, and a theme chosen in Settings beats it
+  NO_COLOR        set and not empty: no colour at all
   COLORTERM       truecolor or 24bit selects the full-colour theme; otherwise
-                  the 256-colour one
+                  the 256-colour one, sixteen colours on a console with TERM
+                  linux, none with vt100 and the like
 
 rmule draws on the terminal it is started from: its input and output must both
 be a terminal, or it exits without starting.

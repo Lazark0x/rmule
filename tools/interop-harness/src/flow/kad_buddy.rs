@@ -12,9 +12,9 @@ use anyhow::Result;
 use crate::docker::Docker;
 use crate::flow::evidence::count_pcap_rows;
 use crate::flow::wire_filter::WireFilter;
-use crate::rmule::RMULE_SERVE_TCP_PORT;
 
 pub(crate) mod amule_requester;
+pub(crate) mod buddy_reask;
 pub(crate) mod callback;
 pub(crate) mod callback_walk;
 pub(crate) mod core;
@@ -30,10 +30,12 @@ pub(crate) mod firewalled_verdict;
 pub(crate) mod id_only_row;
 pub(crate) mod requester_datagrams;
 pub(crate) mod required_check;
+pub(crate) mod shared_files;
+pub(crate) mod stock_buddy;
 pub(crate) mod third_party;
 pub(crate) mod verify_keys;
 
-pub use self::core::{KadCoreBuddyOptions, run_kad_core_buddy};
+pub use self::core::{BuddyReaskServer, KadCoreBuddyOptions, run_kad_core_buddy};
 pub use self::dialed_link::{DialedLinkVerdict, KadDialedLinkOptions, run_kad_dialed_link};
 pub use self::direct_callback::{KadDirectCallbackOptions, run_kad_direct_callback};
 pub use self::firewalled::{KadFirewalledBuddyOptions, run_kad_firewalled_buddy};
@@ -48,28 +50,28 @@ pub(crate) struct BuddyWireRow {
     /// Human label (the aMule/eMule opcode name).
     pub(crate) label: &'static str,
     /// What the row selects; `{a}` in its BPF is substituted with the aMule's
-    /// IP and `{p}` with [`RMULE_SERVE_TCP_PORT`], the port a counterparty
-    /// dials rmule on.
+    /// IP and `{p}` with the port the counterparty dials its buddy on.
     pub(crate) filter: WireFilter,
 }
 
 /// Count each `rows` filter against `pcap`, inside the capture container (the
 /// only place tcpdump and the file are both present). `{a}` in a filter is
-/// substituted with the counterparty's IP and `{p}` with the serve port; `flow`
-/// prefixes the progress lines.
+/// substituted with the counterparty's IP and `{p}` with `buddy_tcp_port`;
+/// `flow` prefixes the progress lines.
 pub(crate) fn harvest_wire_rows(
     docker: &Docker,
     capture_container: &str,
     pcap: &str,
     rows: &'static [BuddyWireRow],
     amule_ip: &str,
+    buddy_tcp_port: u16,
     flow: &str,
 ) -> Result<Vec<(&'static BuddyWireRow, u64)>> {
     let mut counted_rows = Vec::with_capacity(rows.len());
     for row in rows {
         let filter = row.filter.map_bpf(|bpf| {
             bpf.replace("{a}", amule_ip)
-                .replace("{p}", &RMULE_SERVE_TCP_PORT.to_string())
+                .replace("{p}", &buddy_tcp_port.to_string())
         });
         let count = count_pcap_rows(docker, capture_container, pcap, filter)?;
         println!("{flow} row {} ({}) = {count}", row.key, row.label);

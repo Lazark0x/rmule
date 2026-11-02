@@ -1,9 +1,6 @@
 //! The AICH legs: requesting a part's recovery hash from a peer, and
-//! answering a peer's request for a file's AICH root.
-//!
-//! `OP_AICHFILEHASHANS` carries no file hash of its own — the file is "the
-//! connection's requested file" — so the pending request is routed by the
-//! hash the session recorded when the ask arrived.
+//! answering a peer's request for a file's AICH root, which core may do long
+//! after the ask (ADR-0038): the answer names its own file.
 
 use rmule_primitives::{AichRootHash, FileHash};
 
@@ -20,6 +17,7 @@ impl PeerSession {
         root: AichRootHash,
     ) {
         if self.require_identified() {
+            self.asked_aich.push((file_hash, part));
             self.write_packet(
                 crate::aich::AichRequest {
                     file_hash,
@@ -28,6 +26,38 @@ impl PeerSession {
                 }
                 .encode_packet(),
             );
+        }
+    }
+
+    /// An answer about `file_hash` and `part` landed: its ask, or the oldest
+    /// one out when it names neither, is settled. Whether it was the ask's own.
+    pub(super) fn settle_aich_ask(&mut self, file_hash: FileHash, part: u16) -> bool {
+        match self
+            .asked_aich
+            .iter()
+            .position(|ask| *ask == (file_hash, part))
+        {
+            Some(at) => {
+                self.asked_aich.remove(at);
+                true
+            }
+            None => {
+                self.settle_any_aich_ask(Some(file_hash));
+                false
+            }
+        }
+    }
+
+    /// A refusal landed: the ask about `file_hash` is settled, or the oldest
+    /// one out when no ask names it.
+    pub(super) fn settle_any_aich_ask(&mut self, file_hash: Option<FileHash>) {
+        let at = self
+            .asked_aich
+            .iter()
+            .position(|(asked, _)| Some(*asked) == file_hash)
+            .unwrap_or(0);
+        if at < self.asked_aich.len() {
+            self.asked_aich.remove(at);
         }
     }
 
@@ -41,36 +71,28 @@ impl PeerSession {
     }
 
     pub(super) fn on_aich_file_hash_requested(&mut self, file_hash: FileHash) {
-        // `OP_AICHFILEHASHANS` carries no file hash of its own, so remember
-        // which file this request named — `answer_aich_file_hash` reads it
-        // back to route the eventual answer, standalone or bundled alike.
-        self.served_aich_request = Some(file_hash);
         self.core
             .push_event(PeerEvent::Server(ServerEvent::AichFileHashRequested {
                 file_hash,
             }));
     }
 
-    /// Server Capability — answer the connection's outstanding AICH-root
-    /// request. Routes into a pending `OP_MULTIPACKETANSWER` (ADR-0054) when
-    /// `served_aich_request` names a file with a bundle still open; otherwise
-    /// (the bundle already flushed on `Name`/`SetReqId` alone, or none was ever
-    /// opened) the answer rides as a standalone `AichFileHashAns`. Either way the
-    /// bundle is never blocked waiting on an AICH answer that may not come.
-    pub(super) fn answer_aich_file_hash(&mut self, root: AichRootHash) {
-        let Some(file_hash) = self.served_aich_request.take() else {
-            // No request context to name the file, so a standalone answer would
-            // be unroutable (its wire form leads with the file hash). Nothing
-            // asked, nothing answered.
-            return;
+    /// Server Capability — answer an AICH-root ask for `file_hash`. Routes into
+    /// a pending `OP_MULTIPACKETANSWER` (ADR-0054) when that file has a bundle
+    /// still open that asked for one; otherwise (the bundle already flushed on
+    /// `Name`/`SetReqId` alone, never asked, or none was ever opened) it rides
+    /// as a standalone `AichFileHashAns`. Either way the bundle is never
+    /// blocked waiting on an AICH answer that may not come.
+    pub(super) fn answer_aich_file_hash(&mut self, file_hash: FileHash, root: AichRootHash) {
+        let root = match self.served_multipacket.get_mut(&file_hash) {
+            Some(pending) => pending.take_aich(root),
+            None => Some(root),
         };
-        if let Some(pending) = self.served_multipacket.get_mut(&file_hash) {
-            pending.aich = Some(root);
-            self.try_flush_multipacket_answer(file_hash);
-            return;
+        match root {
+            Some(root) => {
+                self.write_packet(crate::aich::AichFileHashAns { file_hash, root }.encode_packet());
+            }
+            None => self.try_flush_multipacket_answer(file_hash),
         }
-        // Standalone (the bundle already flushed on name/status, or none was
-        // opened): carries `[file_hash][root]`, the non-bundled wire form.
-        self.write_packet(crate::aich::AichFileHashAns { file_hash, root }.encode_packet());
     }
 }

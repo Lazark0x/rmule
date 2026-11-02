@@ -17,11 +17,12 @@
 
 use std::collections::HashMap;
 
-use rmule_peer::PartBitmap;
+use rmule_peer::WireStatus;
 use rmule_primitives::Ed2kFileLink;
 
 use crate::adapters::{
-    AdoptSender, AdoptionBrief, AwaitedInbound, AwaitedInboundHandle, CallbackKey, RetireSender,
+    AdoptSender, AdoptionBrief, AwaitedInbound, AwaitedInboundHandle, CallbackKey, HeldSender,
+    PeerWorker, RetireSender,
 };
 use crate::download::state::LowIdCandidate;
 
@@ -30,9 +31,9 @@ use super::CallbackFacts;
 /// The runner-side Low-ID callback enactment state (ADR-0039 / ADR-0051 /
 /// ADR-0091), owned by `apply_peer_workers_download` for the download's life:
 /// - `facts`: the live facts behind the **Callback Capability** — sampled
-///   for the brain on the loop's tick, the source of rmule's own contact
-///   for a per-server global callback's `OP_GLOBCALLBACKREQUEST` payload, and
-///   the live session a key minted with no server resolves against.
+///   for the brain on the loop's tick, and the live session a key minted
+///   with no server resolves against.
+/// - `held_tx`: where the Callback Pace says it holds a road's `0x52`.
 /// - `retire_tx`: the road not taken — where the NAT-T front reports that the
 ///   **Traversal Attempt** beside a callback retired, tagged with its key
 ///   (ADR-0091).
@@ -43,6 +44,7 @@ use super::CallbackFacts;
 pub(super) struct CallbackContext {
     pub(super) facts: CallbackFacts,
     pub(super) retire_tx: RetireSender,
+    pub(super) held_tx: HeldSender,
     adopt_tx: AdoptSender,
     registry: AwaitedInbound,
     awaiting: HashMap<CallbackKey, AwaitedInboundHandle>,
@@ -56,11 +58,13 @@ impl CallbackContext {
         facts: CallbackFacts,
         adopt_tx: AdoptSender,
         retire_tx: RetireSender,
+        held_tx: HeldSender,
         registry: AwaitedInbound,
     ) -> Self {
         Self {
             facts,
             retire_tx,
+            held_tx,
             adopt_tx,
             registry,
             awaiting: HashMap::new(),
@@ -73,9 +77,15 @@ impl CallbackContext {
     /// relays its `OP_CALLBACKREQUEST`. A key naming its server is already
     /// concrete and passes through.
     pub(super) fn routing_key(&self, key: CallbackKey) -> CallbackKey {
-        CallbackKey {
-            server: key.server.or_else(|| self.facts.server()),
-            low_id: key.low_id,
+        match key {
+            CallbackKey::Server {
+                server: None,
+                low_id,
+            } => CallbackKey::Server {
+                server: self.facts.server(),
+                low_id,
+            },
+            other => other,
         }
     }
 
@@ -85,6 +95,20 @@ impl CallbackContext {
     pub(super) fn await_callback(&mut self, key: CallbackKey, brief: AdoptionBrief) {
         let routing = self.routing_key(key);
         self.registration(key).await_callback(routing, brief);
+    }
+
+    /// Hand `worker`, which reaches `key`'s peer over its Peer Link
+    /// (ADR-0107), to the fleet's adopt arm under the key the peer would
+    /// report, as a callback's connection would be; `Err` gives it back when
+    /// the arm is full, and the callback is asked for as before.
+    pub(super) fn hand_ridden(
+        &self,
+        key: CallbackKey,
+        worker: PeerWorker,
+    ) -> Result<(), PeerWorker> {
+        self.adopt_tx
+            .try_send((self.routing_key(key), worker))
+            .map_err(|refused| refused.into_inner().1)
     }
 
     /// Claim the **Dialer Tunnel** `candidate`'s punch may raise, so it comes
@@ -100,7 +124,7 @@ impl CallbackContext {
         &mut self,
         candidate: &LowIdCandidate,
         file: &Ed2kFileLink,
-        own_status: PartBitmap,
+        own_status: WireStatus,
         want_sources: bool,
     ) -> bool {
         self.claim(candidate, file, own_status, want_sources, false)
@@ -115,7 +139,7 @@ impl CallbackContext {
         &mut self,
         candidate: &LowIdCandidate,
         file: &Ed2kFileLink,
-        own_status: PartBitmap,
+        own_status: WireStatus,
         want_sources: bool,
     ) -> bool {
         self.claim(candidate, file, own_status, want_sources, true)
@@ -125,7 +149,7 @@ impl CallbackContext {
         &mut self,
         candidate: &LowIdCandidate,
         file: &Ed2kFileLink,
-        own_status: PartBitmap,
+        own_status: WireStatus,
         want_sources: bool,
         dial_back: bool,
     ) -> bool {

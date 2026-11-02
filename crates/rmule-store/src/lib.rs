@@ -7,8 +7,7 @@
 //! index cannot rot. A [`Store`] is one file — or the engine's in-memory
 //! backend — opened against a [`Schema`] and a [`Ladder`]: every registered
 //! table exists once the open returns, a write commits with immediate
-//! durability unless the caller asked for [`Store::begin_write_deferred`],
-//! and the version ladder runs before any table is touched.
+//! durability, and the version ladder runs before any table is touched.
 #![warn(missing_docs)]
 
 mod children;
@@ -23,14 +22,14 @@ mod store;
 mod txn;
 
 pub use children::Children;
-pub use error::StoreError;
+pub use error::{OpenRefusal, StoreError};
 pub use index::{Extractor, Index, IndexKey, MultimapIndex, UniqueIndex};
 pub use indexed::{Indexed, OwnedKey};
-pub use ladder::{Ladder, UpgradeStep};
+pub use ladder::{Ladder, UpgradeStep, climbing_home};
 pub use record::{Packed, PackedBytes, Record};
 pub use schema::Schema;
 pub use sequence::Sequence;
-pub use store::Store;
+pub use store::{Opening, OpeningWatch, Store};
 pub use txn::Readable;
 
 pub use redb::{

@@ -1,4 +1,4 @@
-FROM --platform=linux/amd64 debian:bookworm-slim
+FROM --platform=linux/amd64 debian:bookworm-slim@sha256:99c0b25c46d0214d5a2091092e7908907dcaecd6a962cde0ac700acee222b6f3
 # `org.rmule.bench=1` scopes the bench-image cleanup to harness images
 # Every harness final stage carries it.
 LABEL org.rmule.bench=1

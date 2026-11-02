@@ -27,16 +27,7 @@ impl Level {
     /// `"true"`, lean for anything else and for nothing stored.
     #[must_use]
     pub fn from_preference(stored: Option<&str>) -> Self {
-        Self::from_full(stored == Some("true"))
-    }
-
-    /// The value a choice of this level is stored as.
-    #[must_use]
-    pub const fn preference(self) -> &'static str {
-        match self {
-            Self::Lean => "false",
-            Self::Full => "true",
-        }
+        Self::from_full(crate::settings::flag_reads(stored, false))
     }
 }
 

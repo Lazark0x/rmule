@@ -1,5 +1,5 @@
-//! A row whose folder is reached through a symlink (ADR-0100, "One look,
-//! five answers"): the folder is there when its path leads to a directory.
+//! A row whose folder is reached through a symlink (ADR-0106, "One look, five answers"): the
+//! folder is there when its path leads to a directory.
 
 use super::*;
 

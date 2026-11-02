@@ -45,7 +45,7 @@ async fn a_new_row_silent_while_nobody_else_is_due() -> (
 /// Where each status ping so far went, in order (the engine's own sends,
 /// such as a description request after an answer, left out).
 fn sent_to(sweep: &StatusPingSweep<Arc<ScriptedTransport>>) -> Vec<Ipv4Endpoint> {
-    let sends = sweep.seal.transport().sends.lock().unwrap();
+    let sends = sweep.seal.transport().sends.lock();
     sends
         .iter()
         .filter(|(_, datagram)| datagram.get(1) == Some(&0x96))

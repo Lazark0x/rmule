@@ -93,7 +93,7 @@ impl ServerHealth {
     }
 }
 
-/// When a **Dead Server** died, as the surfaced row carries it (ADR-0052,
+/// When a **Dead Server** died, as the surfaced row carries it (ADR-0080,
 /// "Dead since when"): a run-time fact, never stored.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum DeadSince {

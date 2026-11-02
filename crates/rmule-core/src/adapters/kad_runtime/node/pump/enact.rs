@@ -6,9 +6,9 @@ use std::net::IpAddr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use rmule_primitives::FileHash;
 use tokio::sync::mpsc;
 
+use super::buddy_service::FindBuddyAsk;
 use super::{BuddyService, DialBack};
 use crate::adapters::kad_runtime::KadPumpCommand;
 use crate::adapters::kad_runtime::pump_state::{
@@ -31,7 +31,7 @@ pub(super) enum Enacted {
 /// sources its samples read.
 pub(crate) struct Enactor {
     /// The discovery task's answers.
-    pub(crate) sources_tx: mpsc::Sender<(FileHash, crate::kad_sources::KadAnswer)>,
+    pub(crate) sources: super::SourcesOut,
     pub(crate) dial_back: DialBack,
     pub(crate) buddy_service: BuddyService,
     pub(crate) ban_store: crate::ban_store::SharedBanStore,
@@ -115,7 +115,7 @@ impl Enactor {
                 return Enacted::Answer(KadPumpInput::Delivered(command, delivery));
             }
             KadPumpEffect::Sources { file_hash, answer } => {
-                if self.sources_tx.send((file_hash, answer)).await.is_err() {
+                if self.sources.offer((file_hash, answer)).is_err() {
                     return Enacted::SourcesClosed;
                 }
             }
@@ -125,6 +125,9 @@ impl Enactor {
             },
             KadPumpEffect::CallbackWalkRetired { reply, reason } => {
                 let _ = reply.retire_tx.try_send((reply.key, reason));
+            }
+            KadPumpEffect::CallbackHeld { reply, leaves_in } => {
+                let _ = reply.held_tx.try_send((reply.key, leaves_in));
             }
             KadPumpEffect::Address(write) => {
                 match write {
@@ -138,6 +141,7 @@ impl Enactor {
                 return Enacted::Answer(KadPumpInput::Sampled(self.sample()));
             }
             KadPumpEffect::Ban { ip, at } => self.ban_store.lock().await.ban(IpAddr::V4(ip), at),
+            KadPumpEffect::Hush { ip, at } => self.ban_store.lock().await.hush(IpAddr::V4(ip), at),
             KadPumpEffect::Verdict(write) => match write {
                 VerdictWrite::Tcp(tcp) => self.published.set_tcp(tcp),
                 VerdictWrite::Udp(udp) => self.published.set_udp(udp),
@@ -189,6 +193,7 @@ impl Enactor {
             DiagnosticsWrite::UndecodableEnvelope => {
                 self.diagnostics.count_kad_undecodable_envelope();
             }
+            DiagnosticsWrite::HushedDatagram => self.diagnostics.count_hushed_datagram(),
         }
     }
 
@@ -224,14 +229,19 @@ impl Enactor {
                 buddy_id,
                 requester_hash,
                 requester_tcp_port,
+                check_collision,
             } => {
                 return self
                     .buddy_service
                     .find_buddy_requested(
-                        requester,
-                        buddy_id,
-                        requester_hash,
-                        requester_tcp_port,
+                        FindBuddyAsk {
+                            requester,
+                            buddy_id,
+                            requester_hash,
+                            requester_tcp_port,
+                            requester_known: self.peer_roster.knows(requester.ip),
+                            check_collision,
+                        },
                         &self.reach,
                     )
                     .map(|(requester, buddy_id)| {

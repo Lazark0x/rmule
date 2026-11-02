@@ -1,9 +1,7 @@
 //! `OP_SERVERIDENT` (0x41): the server naming itself — its hash, the endpoint
 //! it advertises, and the identity tags that carry its name and description.
 
-use rmule_primitives::{
-    Ipv4Endpoint, Packet, PacketProtocol, ServerHash, ServerIdentSource, ServerIdentity, Tag,
-};
+use rmule_primitives::{Ipv4Endpoint, Packet, PacketProtocol, ServerHash, ServerIdentity, Tag};
 
 use crate::{Ed2kError, Opcode, Result};
 
@@ -44,7 +42,7 @@ impl ServerIdent {
     /// every other tag kept verbatim.
     #[must_use]
     pub fn identity(&self) -> ServerIdentity {
-        ServerIdentity::from_serverident_source(self)
+        ServerIdentity::from_parts(self.server_hash, &self.identity_tags)
     }
 
     /// Decode this packet's payload.
@@ -54,20 +52,7 @@ impl ServerIdent {
     /// body layout is not this packet's.
     pub fn decode_packet(packet: &Packet) -> Result<Self> {
         let opcode = Opcode::ServerIdent.as_u8();
-        if packet.protocol() != PacketProtocol::Edonkey {
-            return Err(Ed2kError::InvalidPayload {
-                opcode,
-                reason: "unsupported packet protocol",
-            });
-        }
-        if packet.opcode() != opcode {
-            return Err(Ed2kError::InvalidPayload {
-                opcode,
-                reason: "wrong opcode for OP_SERVERIDENT",
-            });
-        }
-
-        let payload = packet.payload();
+        let payload = packet.body_of(PacketProtocol::Edonkey, opcode)?;
         if payload.len() < FIXED_PREFIX_LEN {
             return Err(Ed2kError::InvalidPayload {
                 opcode,
@@ -128,16 +113,6 @@ impl ServerIdent {
             Opcode::ServerIdent.as_u8(),
             payload,
         )
-    }
-}
-
-impl ServerIdentSource for ServerIdent {
-    fn server_hash(&self) -> ServerHash {
-        self.server_hash
-    }
-
-    fn identity_tags(&self) -> &[Tag] {
-        &self.identity_tags
     }
 }
 

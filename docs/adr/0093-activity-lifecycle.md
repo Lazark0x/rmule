@@ -43,13 +43,13 @@ Invariants:
 |---|---|---|
 | **Kad node** | start (`EnableKad`); disable (`DisableKad`: fire its lever, wait ≤ 5 s, abort, retire); death (the pump ends, panics or is aborted — a `kad_ended` watch and a watchdog on the `AbortHandle` both wake the reaper); quit | discovery pump task and watchdog, `KadPublisher` task and share-changed sender, the ed2k→Kad handoff forwarder, its shutdown lever, the keyword-search channel, the node id, the `CT_EMULE_UDPPORTS` Kad half, and the one lease on Self Reach's Kad half (**Kad Presence** and the Kad verdicts) |
 | **Serve** | start (`StartServing`); stop (`StopServing`: join within 5 s, abort past it); death (listener closed, task failed); quit | the serve adapter, the TCP listener Family Pair and accept pump, the TCP bind in Address Learning (and so a Desired Mapping Set row and its lease), tunnel admit, handshake cell, dialed-serve sink, the `serve_listener` cell, the `CT_EMULE_UDPPORTS` client half, the `0x90` reask inbox, upload diagnostics rows, and every Upload roster relation |
-| **Download** | start (`StartDownload`, `ResumeDownload`); stop (`CancelDownload`, `PauseDownload`); death (complete or failed); quit (abort and join, no lifecycle write) | the runner task and stop watch, the file-known "downloading" entry, store lifecycle `Active`, its diagnostics rows; inside the run, each Pending Callback routing entry and Pending Tunnel Claim, the Download and Queued roster relations, the reask reply sink — all dropped on every road the run ends by |
+| **Download** | start (`StartDownload`, `ResumeDownload`); stop (`CancelDownload`, `PauseDownload`); death (complete or failed); quit (told to quit, its checkpoint out, abort past the grace, no lifecycle write) | the runner task and stop watch, the file-known "downloading" entry, store lifecycle `Active`, its diagnostics rows; inside the run, each Pending Callback routing entry and Pending Tunnel Claim, the Download and Queued roster relations, the reask reply sink — all dropped on every road the run ends by |
 | **Search** | start (`StartSearch`; one asked with neither a session nor Kad waits whole until either comes); stop (`CancelSearch`: stop its sweep, signal it, join within `JOIN_GRACE`, abort past it); death (failed, panicked, or completed with nothing more to ask its server); quit — one retire on every road, which says `SearchFailed` for a search whose task panicked and `SearchCancelled` for any other whose task did not say its own end | the task and its stop lever, the global-UDP sweep, the live-search registration the task holds; while it waits whole, only its place in line |
 | **Port-mapping lease** | acquire; release when its row departs (before the replacement's `Map`); quit (`release_on_exit` within `RELEASE_BUDGET`) | one lease per Desired Mapping Set row and its diagnostics row |
 | **Server-UDP front** | core start; quit (abort, then join each task) | the server-UDP Family Pair and its five tasks (engine, status-ping sweep, global-callback relay, `0x99` answer forwarder, global source discovery) and, through the status chain, the server list's store view |
 | **Registry Check** | core start; quit (raise the flag, join the thread off the executor within `JOIN_GRACE`) | its worker thread, input channel, the folder watch it owns, the Withheld Rows it rules into; no death transition |
 | **Directory Scan**, one per scanned Shared Directory (ADR-0102) | start, an entry removed, replaced or covered, its worker's end, quit (raise every flag, join each within the grace) | a blocking-pool task per directory, its stop flag, its progress cell, the consent reply half |
-| **Client-UDP socket and NAT-T front** | core start; dropped with the actor | the one UDP Family Pair, its front, the NAT-T demux and accept pump, the `0x90` inbox; no stop and no death transition; traversal attempts belong to ADR-0091 |
+| **Client-UDP socket and NAT-T front** | core start; dropped with the actor | the one UDP Family Pair, its front, the NAT-T demux and accept pump, the `0x90` inbox; no stop; a death is told as `CoreEvent::TaskDied` (ADR-0118); traversal attempts belong to ADR-0091 |
 
 Consequences of the ledger, stated as rules:
 
@@ -66,16 +66,19 @@ Consequences of the ledger, stated as rules:
 ### Quit order
 
 Every directory scan, then the Registry Check, then search, then download, then serve, then
-Kad, then the server-UDP front, then port mapping, then the credit checkpoint. Searches and
-downloads consume the server session and the Kad source channel, so they stop first. Serve
-closes the listener and Kad's retire clears the advert half every later hello would read. Port
-mapping comes last among the network activities because it releases the ports those sockets
-held, as aMule deletes its UPnP mappings only after closing the listen socket
-(`amule.cpp:1407-1423`); no retire depends on another being alive, so the order between serve
-and Kad does not matter. `Core::quit` owns quit, and no front end sends a stop before it. Each
+Kad, then the server-UDP front, then the server session, then port mapping, then the credit
+checkpoint, which also opens the quit ahead of every step that can be slow (ADR-0118). Searches and downloads consume the server session and the Kad source channel, so
+they stop first. Serve closes the listener and Kad's retire clears the advert half every later
+hello would read. The server session is hung up by Quit itself, its socket closed before the
+step ends, and is not left to the process's exit: the server hears the end before the ports go,
+as aMule calls `serverconnect->Disconnect()` in `ShutDown` before anything is saved
+(`amule.cpp:1412-1414`). Port mapping comes last among the network activities because it
+releases the ports those sockets held, as aMule deletes its UPnP mappings only after closing the
+listen socket and the server connection (`amule.cpp:1407-1423`); no retire depends on another
+being alive, so the order between serve and Kad does not matter. `Core::quit` owns quit, and no front end sends a stop before it. Each
 step with something to stop is announced as `CoreEvent::Quitting { step }` before it runs, so a
 front end shows quit's progress from the quit itself. `Core::shutdown` stops every activity and
-awaits the mapping runtime's release pass. A quit aborts the download task, so its diagnostics
+awaits the mapping runtime's release pass. A quit ends the download task without its stop, so its diagnostics
 row ends with the core rather than being put to rest.
 
 ## Consequences

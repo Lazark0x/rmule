@@ -16,6 +16,7 @@ use crate::flow::evidence::{
     KAD2_SEARCH_RES, KAD2_SEARCH_SOURCE_REQ, TapRow, read_capture_frame, read_tap_rows,
 };
 use crate::flow::identity::{ParseHex16, hex_lower, ipv4_string};
+use crate::verdict::Verdict;
 
 /// Judge the source capture from rmule's datagram tap, using only
 /// aMule-emitted datagrams (Kad Stimulus Node doctrine). The acceptance
@@ -122,11 +123,14 @@ pub(crate) fn assert_kad_source_capture(
     ));
     report.push_str(&format!(
         "verdict = \"{}\"\n",
-        if verdict_pass { "PASS" } else { "FAIL" }
+        if verdict_pass {
+            Verdict::Pass
+        } else {
+            Verdict::Fail
+        }
     ));
-    let verdict_path = layout.kad_dir().join("kad-source-capture-verdict.txt");
-    fs::write(&verdict_path, &report)
-        .with_context(|| format!("write {}", verdict_path.display()))?;
+    let verdict_path = layout.kad_dir().join("kad-source-capture-verdict.toml");
+    crate::verdict::write(&verdict_path, &report)?;
     println!("{report}");
     println!("verdict written to {}", verdict_path.display());
 
@@ -211,16 +215,17 @@ pub(crate) fn assert_kad_keyword_capture(
         "amule_answered_search_0x3b = {}\n",
         search_res_seq.is_some()
     ));
-    for path in &wrote {
-        report.push_str(&format!("promoted = \"{path}\"\n"));
-    }
+    report.push_str(&format!("promoted = {wrote:?}\n"));
     report.push_str(&format!(
         "verdict = \"{}\"\n",
-        if verdict_pass { "PASS" } else { "FAIL" }
+        if verdict_pass {
+            Verdict::Pass
+        } else {
+            Verdict::Fail
+        }
     ));
-    let verdict_path = layout.kad_dir().join("kad-keyword-capture-verdict.txt");
-    fs::write(&verdict_path, &report)
-        .with_context(|| format!("write {}", verdict_path.display()))?;
+    let verdict_path = layout.kad_dir().join("kad-keyword-capture-verdict.toml");
+    crate::verdict::write(&verdict_path, &report)?;
     println!("{report}");
     println!("verdict written to {}", verdict_path.display());
 

@@ -4,13 +4,14 @@
 //! everything that offers: the serve snapshot, the Kad publisher and the file
 //! history. Until the Registry Check's start look is done nothing is offered.
 
+use parking_lot::Mutex;
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::SystemTime;
 
 use rmule_primitives::FileHash;
 
-use crate::registry::SharedFileEntry;
+use crate::registry::ShareSetRow;
 
 /// Why a registry row is not offered now.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -32,6 +33,9 @@ pub enum WithheldReason {
     /// under no listed entry nearer to it that they pass. It stays until the
     /// entry passes them again or the operator removes it.
     Refused,
+    /// A stored row of a size eD2k does not address, written before the gate
+    /// that refuses one. It stays until the operator unshares it.
+    PastSizeLimit,
 }
 
 /// One withheld row's state.
@@ -65,8 +69,8 @@ impl WithheldRows {
         })))
     }
 
-    fn lock(&self) -> std::sync::MutexGuard<'_, State> {
-        self.0.lock().expect("withheld rows")
+    fn lock(&self) -> parking_lot::MutexGuard<'_, State> {
+        self.0.lock()
     }
 
     /// The start look is done: every row not withheld is offered.
@@ -129,13 +133,13 @@ impl WithheldRows {
 
     /// The rows of `rows` that are offered: none before the start look, and
     /// never a withheld one.
-    pub(crate) fn offered(&self, rows: Vec<SharedFileEntry>) -> Vec<SharedFileEntry> {
+    pub(crate) fn offered<R: ShareSetRow>(&self, rows: Vec<R>) -> Vec<R> {
         let state = self.lock();
         if state.before_look {
             return Vec::new();
         }
         rows.into_iter()
-            .filter(|row| !state.rows.contains_key(&row.file_hash))
+            .filter(|row| !state.rows.contains_key(&row.file_hash()))
             .collect()
     }
 }

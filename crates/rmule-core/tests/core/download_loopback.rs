@@ -41,6 +41,7 @@ async fn core_download_completes_against_loopback_server_and_peer() {
         source_hint: Some(server.endpoint()),
         name: rmule_testkit::file_name("download-loopback.bin"),
         if_taken: rmule_core::NameTaken::Refuse,
+        kad_aich_root: None,
     }))
     .await
     .unwrap();
@@ -129,6 +130,7 @@ async fn a_link_naming_its_source_downloads_with_no_server() {
         source_hint: None,
         name: rmule_testkit::file_name("linked.bin"),
         if_taken: rmule_core::NameTaken::Refuse,
+        kad_aich_root: None,
     }))
     .await
     .unwrap();
@@ -188,6 +190,7 @@ async fn core_download_completes_from_a_real_serving_core() {
         source_hint: Some(server.endpoint()),
         name: rmule_testkit::file_name("from-real-serve.bin"),
         if_taken: rmule_core::NameTaken::Refuse,
+        kad_aich_root: None,
     }))
     .await
     .unwrap();
@@ -251,6 +254,7 @@ async fn global_discovery_rescues_a_download_with_no_connected_server_source() {
     // Short sweep interval so discovery fires promptly in the test.
     let config = CoreConfig {
         global_source_interval: Duration::from_millis(50),
+        global_source_tick: Duration::from_millis(50),
         ..CoreConfig::default()
     };
     let mut core = Core::builder(config, rmule_testkit::memory_store())
@@ -278,6 +282,7 @@ async fn global_discovery_rescues_a_download_with_no_connected_server_source() {
         source_hint: Some(server.endpoint()),
         name: rmule_testkit::file_name("rescue.bin"),
         if_taken: rmule_core::NameTaken::Refuse,
+        kad_aich_root: None,
     }))
     .await
     .unwrap();
@@ -353,6 +358,7 @@ async fn core_completes_two_part_download_across_two_loopback_peers() {
         source_hint: Some(server.endpoint()),
         name: rmule_testkit::file_name("two-peer.bin"),
         if_taken: rmule_core::NameTaken::Refuse,
+        kad_aich_root: None,
     }))
     .await
     .unwrap();
@@ -485,6 +491,7 @@ async fn core_download_fetches_single_part_in_multiple_blocks() {
         source_hint: Some(server.endpoint()),
         name: rmule_testkit::file_name("multiblock.bin"),
         if_taken: rmule_core::NameTaken::Refuse,
+        kad_aich_root: None,
     }))
     .await
     .unwrap();

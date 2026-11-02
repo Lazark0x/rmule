@@ -37,7 +37,18 @@ pub(crate) enum Channel {
     /// (ADR-0055); the answer is reported as an event naming it, and each
     /// Low-ID row is read in the server it names.
     Exchanged(PeerEndpoint),
+    /// A peer that asked us about the file, from its hello's source
+    /// coordinate (ADR-0113), as aMule's `CheckAndAddKnownSource` is reached
+    /// (`ClientTCPSocket.cpp:449-455`).
+    Prober,
 }
+
+/// The **Source Limit** (ADR-0116): aMule's default `MaxSourcesPerFile`
+/// (stock 2.3.3 `Preferences.cpp:1027`). A file holding this many sources
+/// takes no sighting from any channel, as every aMule intake reads it
+/// (`DownloadQueue.cpp:1556`, `ClientTCPSocket.cpp:452`, `:1095`,
+/// `PartFile.cpp:1677`, `:2814`).
+pub(crate) const SOURCE_LIMIT: u32 = 300;
 
 impl Channel {
     /// The server whose namespace `sighting`, a Low-ID row of this channel,
@@ -64,8 +75,8 @@ impl Channel {
 pub(crate) struct Tally {
     /// Sightings handed in.
     pub(crate) received: usize,
-    /// Those that passed the gate: neither filtered nor of an unreachable
-    /// family.
+    /// Those that passed the gate: naming not us, neither filtered nor of an
+    /// unreachable family.
     pub(crate) admitted: usize,
     /// Admitted sightings with a dialable address — a High ID or an IPv6 one.
     pub(crate) dialable: usize,
@@ -77,6 +88,8 @@ pub(crate) struct Tally {
     merged_dialable: usize,
     /// Sightings dropped for an address family this node cannot dial from.
     pub(crate) family_unreachable: usize,
+    /// Those a third party aimed past the Source Quota (ADR-0116).
+    pub(crate) over_quota: usize,
 }
 
 impl Tally {
@@ -104,6 +117,7 @@ impl Add for Tally {
             merged: self.merged + other.merged,
             merged_dialable: self.merged_dialable + other.merged_dialable,
             family_unreachable: self.family_unreachable + other.family_unreachable,
+            over_quota: self.over_quota + other.over_quota,
         }
     }
 }
@@ -135,6 +149,7 @@ impl DownloadState {
         sightings: impl IntoIterator<Item = SourceSighting>,
         gate: &Gate<'_>,
     ) -> Taken {
+        self.sources.turn_spent(now);
         // aMule stamps both clocks on any answer, empty or not (stock 2.3.3
         // `ClientTCPSocket.cpp:1513-1515`, ADR-0108).
         if let Channel::Exchanged(peer) = channel {
@@ -144,13 +159,20 @@ impl DownloadState {
         let mut tally = Tally::default();
         let mut seeded = Vec::new();
         for sighting in sightings {
+            if self.sources.counts().known >= SOURCE_LIMIT {
+                tally.received += 1;
+                continue;
+            }
             let dialable = sighting.as_peer_endpoint();
             let namespace = channel.source_server(&sighting, self.callback_capability.server());
             let sighted = self.sources.sight(sighting, namespace, gate);
             tally.received += 1;
             match sighted {
                 Sighted::Blocked(Blocked::FamilyUnreachable) => tally.family_unreachable += 1,
-                Sighted::Blocked(Blocked::IpFiltered) => {}
+                Sighted::Blocked(Blocked::PrivilegedPort | Blocked::OverQuota) => {
+                    tally.over_quota += 1;
+                }
+                Sighted::Blocked(Blocked::Ourselves | Blocked::IpFiltered | Blocked::Reserved) => {}
                 _ => {
                     tally.admitted += 1;
                     tally.dialable += usize::from(dialable.is_some());
@@ -199,7 +221,12 @@ impl DownloadState {
     }
 
     /// End what the record that gave way in a merge had in flight.
-    fn end_merged(&mut self, now: Instant, ended: Option<MergeEnd>, out: &mut Vec<Decision>) {
+    pub(super) fn end_merged(
+        &mut self,
+        now: Instant,
+        ended: Option<MergeEnd>,
+        out: &mut Vec<Decision>,
+    ) {
         match ended {
             Some(MergeEnd::Worker(peer)) => {
                 out.push(Decision::Emit(DownloadEvent::PeerRetired {

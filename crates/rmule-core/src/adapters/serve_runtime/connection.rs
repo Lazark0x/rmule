@@ -9,20 +9,20 @@
 //! core says — a connection was readopted, or it is to be closed.
 
 use rmule_peer::{ConnectionCommand, ConnectionEvent, PeerCommand, ServerCommand, ServerEvent};
-use rmule_primitives::PeerEndpoint;
+use rmule_primitives::{PeerEndpoint, UserHash};
 use tokio::sync::mpsc;
 
-use crate::CoreError;
+use crate::{CoreError, GoneService};
 
 /// What one connection hands the **Serve State**: the peer's Server
 /// Capability requests and its connection facts, exactly as its session
-/// reported them, plus the one fact that exists only in core.
+/// reported them, plus the two facts that exist only in core.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ServeInput {
     /// The peer asked something of our Server Capability.
     Server(ServerEvent),
     /// A fact about the link: the peer's identification and its revisions,
-    /// the Secure User Identification verdict, the close. `Identified`
+    /// the close. `Identified`
     /// arrives once, before any request on the connection; its
     /// `(connected_server, client_id)` is the Low-ID callback correlation key
     /// the accept-router read first (ADR-0039).
@@ -32,6 +32,30 @@ pub enum ServeInput {
     /// serve task just drops it from the serve set — distinct from
     /// `Disconnected`, which would release a slot it never held.
     Readopted,
+    /// The link bound the Secure User Identification its session verified,
+    /// proving `user_hash` (ADR-0041): the client its hello names is
+    /// identified while the link carries that hash.
+    IdentityBound {
+        /// The User Hash the verification proved.
+        user_hash: UserHash,
+    },
+    /// The link's session proved a key that is not the one the ledger binds
+    /// to `user_hash` (ADR-0041, ADR-0107).
+    KeyMismatch {
+        /// The User Hash the proof was made under.
+        user_hash: UserHash,
+    },
+    /// Nothing moved on this link either way for stock's 40 s, and no download
+    /// or buddy slot holds it (ADR-0031).
+    LinkSilent,
+    /// The peer's hello on this link was held: a dial of ours to it has its
+    /// hello out unanswered (ADR-0107 invariant 7).
+    CrossedHelloHeld,
+    /// The far end closed this link with its hello held: it kept that dial.
+    CrossedDialKept,
+    /// The far end answered that dial and left this link open past the close
+    /// bound: it refused the attach, and this link is answered.
+    CrossedDialRefused,
 }
 
 impl ServeInput {
@@ -43,6 +67,12 @@ impl ServeInput {
         Self::Connection(ConnectionEvent::Disconnected {
             reason: rmule_peer::PeerCloseReason::Local,
         })
+    }
+
+    /// Whether this says a block's last byte is in the kernel.
+    #[must_use]
+    pub(crate) const fn is_block_left(&self) -> bool {
+        matches!(self, Self::Server(ServerEvent::BlockLeft { .. }))
     }
 
     /// Whether this is the connection's close — the last input it sends.
@@ -106,13 +136,18 @@ impl ServeConnection {
         self.peer
     }
 
+    /// The two channel ends, for the one task that races them.
+    pub(crate) fn into_halves(self) -> (mpsc::Sender<ServeOutput>, mpsc::Receiver<ServeInput>) {
+        (self.command_tx, self.event_rx)
+    }
+
     /// Push one output down the connection. Fails once the peer's task is
     /// gone, which is not an error worth retrying — the connection is over.
     pub async fn send(&self, command: ServeOutput) -> Result<(), CoreError> {
         self.command_tx
             .send(command)
             .await
-            .map_err(|_| CoreError::Repository("serve connection closed".into()))
+            .map_err(|_| GoneService::ServeConnection.into())
     }
 
     /// The next input, or `None` once the connection is gone. A `None` is the

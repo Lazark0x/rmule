@@ -34,15 +34,14 @@
 //! ## Documented divergences
 //!
 //! - **ipfilter.dat**: aMule additionally drops a contact whose IP is
-//!   ipfilter.dat-blocked. rmule has no ipfilter.dat equivalent (ADR-0066:
-//!   "out-of-scope") — not implemented.
+//!   ipfilter.dat-blocked. rmule has no ipfilter.dat equivalent (ADR-0066) — not implemented.
 //!
 //! The v2 UDP key (`CKadUDPKey`) round-trips onto [`KadContact::udp_key`] (the
 //! sink ADR-0066 left to the ADR-0046 keys): a restarted node keeps the
 //! sender keys it earned, and the binding IP keeps them honest — a key learned
 //! under a different public address reads back as no key at all.
 
-use rmule_primitives::WireReader;
+use rmule_primitives::{KadIp, WireReader};
 
 use crate::net::is_good_ip_port;
 use crate::udp_key::KadUdpKey;
@@ -112,8 +111,7 @@ impl NodesDat {
     ///
     /// Truncation anywhere after the leading marker keeps every contact
     /// parsed so far and is never an error — matching aMule's own
-    /// exception-swallowed-at-`ReadFile` posture (ADR-0066: "truncation
-    /// keeps rows parsed so far"). aMule's loose `count × 25` whole-row
+    /// exception-swallowed-at-`ReadFile` posture (ADR-0066). aMule's loose `count × 25` whole-row
     /// pre-check is deliberately not replicated (it does not account for
     /// the v2 extension bytes); this streams row by row instead, for the
     /// same observable partial-load-on-truncation outcome.
@@ -285,10 +283,7 @@ impl NodesDat {
 
         for contact in contacts.iter().take(written) {
             out.extend_from_slice(contact.id().as_bytes());
-            // The reader takes the IP "low octet first" (a.b.c.d on disk as
-            // [d,c,b,a]); the writer is its exact inverse.
-            let octets = contact.endpoint().ip().octets();
-            out.extend_from_slice(&[octets[3], octets[2], octets[1], octets[0]]);
+            out.extend_from_slice(&KadIp::new(contact.endpoint().ip()).wire().to_le_bytes());
             out.extend_from_slice(&contact.endpoint().udp_port().to_le_bytes());
             out.extend_from_slice(&contact.tcp_port().to_le_bytes());
             out.push(contact.version());

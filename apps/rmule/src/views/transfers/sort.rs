@@ -7,7 +7,11 @@
 //! size in bytes, a share as an exact ratio, a rate in bytes per second. A
 //! cell that renders a dash has no value and sorts last either way.
 
+use crate::stored_keys as column_keys;
+use crate::words::columns;
 use std::borrow::Cow;
+use std::sync::Arc;
+use std::time::Instant;
 
 use rmule_core::DownloadId;
 use rmule_primitives::ED2K_PART_SIZE;
@@ -16,8 +20,9 @@ use super::TransfersView;
 use super::downloads::{
     Eta, diag_counts, display_name, done_fraction, row_eta, source_counts, status_text,
 };
+use crate::row_filter::keeps_row;
 use crate::state::{DownloadStatus, UiState};
-use crate::table_sort::{ColumnKind, ColumnSpec, SortValue, SortedTable};
+use crate::table_sort::{ColumnKind, ColumnSpec, SortValue, SortedTable, TableSort};
 use crate::views::ViewOutcome;
 
 /// The downloads table, as the sort sees it.
@@ -59,7 +64,9 @@ pub(super) struct DownloadLine {
     pub(super) sources: Option<(u32, u32)>,
     pub(super) status: DownloadStatus,
     /// The status as the cell words it; the same rank as [`Self::status`].
-    pub(super) status_text: &'static str,
+    pub(super) status_text: String,
+    /// A Downloading row with nothing moving ([`UiState::download_stalled`]).
+    pub(super) stalled: bool,
 }
 
 impl DownloadLine {
@@ -73,6 +80,7 @@ impl DownloadLine {
             .and_then(|row| row.part_count)
             .map(|parts| (parts as u64).saturating_mul(ED2K_PART_SIZE));
         let status = row.map_or(DownloadStatus::Waiting, |row| row.status);
+        let stalled = status == DownloadStatus::Downloading && state.download_stalled(id);
         Self {
             id,
             name,
@@ -90,7 +98,8 @@ impl DownloadLine {
             eta: row_eta(row, diag, state.download_eta_speed(id)),
             sources: source_counts(diag),
             status,
-            status_text: status_text(status, row.and_then(|row| row.source_wait), state),
+            status_text: status_text(status, row, diag, stalled, state),
+            stalled,
         }
     }
 
@@ -102,7 +111,8 @@ impl DownloadLine {
 
 /// A status's place in aMule's download-status order
 /// (`CPartFile::getPartfileStatusRang`, `amule-kno/src/PartFile.cpp:4638`):
-/// moving bytes, then waiting for them, paused, complete, failed. The first
+/// moving bytes, then waiting for them, paused, completing (`PS_COMPLETING`,
+/// `:4649`), complete, failed. The first
 /// in that order ranks lowest, so the column's Natural Direction (ascending, a
 /// rank's) opens on aMule's first click: the downloads moving bytes at the
 /// top.
@@ -113,23 +123,29 @@ const fn status_rank(status: DownloadStatus) -> u64 {
         // of its waiting files, `getPartfileStatusRang`'s `1`.
         DownloadStatus::Waiting | DownloadStatus::NoConnection => 1,
         DownloadStatus::Paused => 2,
-        DownloadStatus::Completed => 3,
-        DownloadStatus::Failed => 4,
+        DownloadStatus::Completing => 3,
+        DownloadStatus::Completed => 4,
+        DownloadStatus::Failed => 5,
     }
 }
 
 /// The group a download falls in under Progress and Done, ahead of its share
 /// (ADR-0070, "A column's order may be a rank"): the downloads moving bytes,
-/// then the completed ones, then the rest — led by those whose run is alive
+/// then those moving their finished file into place, then the completed
+/// ones, then the rest — led by those whose run is alive
 /// but moves no bytes (waiting for a source, a slot or a network), then
 /// those with no run (paused, failed). The operator's reading of aMule: what
-/// is happening now, what just finished, what waits on them.
-const fn activity_rank(status: DownloadStatus) -> u8 {
+/// is happening now, what just finished, what waits on them. A stalled row
+/// moves no bytes, so it ranks with the waiting ones, by the fact and never by
+/// its word.
+const fn activity_rank(status: DownloadStatus, stalled: bool) -> u8 {
     match status {
+        DownloadStatus::Downloading if stalled => 3,
         DownloadStatus::Downloading => 0,
-        DownloadStatus::Completed => 1,
-        DownloadStatus::Waiting | DownloadStatus::NoConnection => 2,
-        DownloadStatus::Paused | DownloadStatus::Failed => 3,
+        DownloadStatus::Completing => 1,
+        DownloadStatus::Completed => 2,
+        DownloadStatus::Waiting | DownloadStatus::NoConnection => 3,
+        DownloadStatus::Paused | DownloadStatus::Failed => 4,
     }
 }
 
@@ -137,33 +153,60 @@ impl SortedTable for DownloadsTable {
     type Row = DownloadLine;
     type Column = DownloadColumn;
     type Identity = DownloadId;
-    const TABLE: &'static str = "transfers";
+    const TABLE: &'static str = column_keys::TABLE_TRANSFERS;
     const COLUMNS: &'static [ColumnSpec<DownloadColumn>] = &[
-        ColumnSpec::new(DownloadColumn::File, "name", "File", ColumnKind::Text),
-        ColumnSpec::new(DownloadColumn::Size, "size", "Size", ColumnKind::Quantity),
-        ColumnSpec::new(DownloadColumn::Done, "done", "Done", ColumnKind::Quantity),
+        ColumnSpec::new(
+            DownloadColumn::File,
+            column_keys::NAME,
+            columns::FILE,
+            ColumnKind::Text,
+        ),
+        ColumnSpec::new(
+            DownloadColumn::Size,
+            column_keys::SIZE,
+            columns::SIZE,
+            ColumnKind::Quantity,
+        ),
+        ColumnSpec::new(
+            DownloadColumn::Done,
+            column_keys::DONE,
+            columns::DONE,
+            ColumnKind::Quantity,
+        ),
         ColumnSpec::new(
             DownloadColumn::Progress,
-            "progress",
-            "Progress",
+            column_keys::PROGRESS,
+            columns::PROGRESS,
             ColumnKind::Quantity,
         ),
         ColumnSpec::new(
             DownloadColumn::Speed,
-            "speed",
-            "Speed",
+            column_keys::SPEED,
+            columns::SPEED,
             ColumnKind::Quantity,
         ),
-        ColumnSpec::new(DownloadColumn::Eta, "eta", "ETA", ColumnKind::Quantity),
+        ColumnSpec::new(
+            DownloadColumn::Eta,
+            column_keys::ETA,
+            columns::ETA,
+            ColumnKind::Quantity,
+        ),
         ColumnSpec::new(
             DownloadColumn::Sources,
-            "sources",
-            "Src",
+            column_keys::SOURCES,
+            columns::SRC,
             ColumnKind::Quantity,
         ),
-        ColumnSpec::new(DownloadColumn::Status, "status", "Status", ColumnKind::Rank),
+        ColumnSpec::new(
+            DownloadColumn::Status,
+            column_keys::STATUS,
+            columns::STATUS,
+            ColumnKind::Rank,
+        ),
     ];
     const NAME: DownloadColumn = DownloadColumn::File;
+    /// Transfers is watched: what is moving first, by share within its group.
+    const OPENS_BY: DownloadColumn = DownloadColumn::Progress;
 
     fn value(column: DownloadColumn, row: &DownloadLine) -> Option<SortValue<'_>> {
         let fraction = |(part, whole)| SortValue::Fraction { part, whole };
@@ -188,7 +231,9 @@ impl SortedTable for DownloadsTable {
 
     fn rank(column: DownloadColumn, row: &DownloadLine) -> u8 {
         match column {
-            DownloadColumn::Done | DownloadColumn::Progress => activity_rank(row.status),
+            DownloadColumn::Done | DownloadColumn::Progress => {
+                activity_rank(row.status, row.stalled)
+            }
             _ => 0,
         }
     }
@@ -198,46 +243,65 @@ impl SortedTable for DownloadsTable {
     }
 }
 
+/// What the table's lines stand on: the parts of the state a line reads, the
+/// sort and the filter. A line reads the tick's levels, so each tick moves it.
+#[derive(PartialEq)]
+pub(super) struct LinesKey {
+    rows: u64,
+    tick: Option<Instant>,
+    core_alive: bool,
+    reconnecting: bool,
+    sort: TableSort<DownloadsTable>,
+    typed: u64,
+}
+
 impl TransfersView {
     /// Every download's line, in display order.
-    pub(super) fn sorted_lines(&self, state: &UiState) -> Vec<DownloadLine> {
-        let lines: Vec<DownloadLine> = state
-            .downloads
-            .keys()
-            .map(|id| DownloadLine::new(*id, state))
-            .collect();
-        let order = self.sort.order(&lines);
-        let mut slots: Vec<Option<DownloadLine>> = lines.into_iter().map(Some).collect();
-        order
-            .into_iter()
-            .filter_map(|at| slots[at].take())
-            .collect()
+    pub(super) fn sorted_lines(&self, state: &UiState) -> Arc<[DownloadLine]> {
+        let key = LinesKey {
+            rows: state.downloads.revision(),
+            tick: state.last_snapshot_at,
+            core_alive: state.core_alive,
+            reconnecting: state.reconnect.is_some(),
+            sort: self.sort,
+            typed: self.filter.generation(),
+        };
+        self.lines_memo.get(key, || {
+            let lines: Vec<DownloadLine> = state
+                .downloads
+                .keys()
+                .map(|id| DownloadLine::new(*id, state))
+                .filter(|line| keeps_row::<DownloadsTable>(&self.filter, line))
+                .collect();
+            let order = self.sort.order(&lines);
+            let mut slots: Vec<Option<DownloadLine>> = lines.into_iter().map(Some).collect();
+            order
+                .into_iter()
+                .filter_map(|at| slots[at].take())
+                .collect()
+        })
     }
 
     /// Every download's id, in display order.
     pub(super) fn download_ids(&self, state: &UiState) -> Vec<DownloadId> {
         self.sorted_lines(state)
-            .into_iter()
+            .iter()
             .map(|line| line.id)
             .collect()
     }
 
     /// Take up the downloads' sort as the durable preferences kept it.
     pub fn restore_sort(&mut self, sorts: &crate::table_sort::TableSorts) {
-        self.sort = crate::table_sort::TableSort::restore(sorts);
+        self.sort = TableSort::restore(sorts);
         self.restore_source_sort(sorts);
     }
 
     /// A click on the header row: sort by the column under it. `None` when
     /// the click was not on a header cell.
     pub(super) fn header_click(&mut self, column: u16, row: u16) -> Option<ViewOutcome> {
-        self.sort.header_click(
-            self.header_area,
-            &self.header_cols,
-            usize::from(super::COL_SPACING),
-            column,
-            row,
-        )
+        let (area, widths) = self.drawn.header();
+        self.sort
+            .header_click(area, widths, crate::table::GAP, column, row)
     }
 }
 

@@ -9,13 +9,20 @@
 //! figure a Requests or Transferred cell shows first. A cell that renders a
 //! dash has no value and sorts last either way.
 
+use crate::stored_keys as column_keys;
+use crate::words::columns;
 use std::borrow::Cow;
+use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use rmule_core::diagnostics::ShareTotals;
 use rmule_primitives::FileHash;
 
+use crate::row_filter::keeps_row;
+
 use super::SharedView;
-use crate::state::{SharedRow, UiState, withheld_rank};
+use crate::state::{DownloadRow, PARTIAL_RANK, SharedRow, UiState, withheld_rank};
 use crate::table_sort::{ColumnKind, ColumnSpec, SortValue, SortedTable, TableSort, TableSorts};
 use crate::views::ViewOutcome;
 use rmule_core::Withheld;
@@ -37,8 +44,8 @@ pub(super) enum SharedColumn {
     Transferred,
 }
 
-/// One shared file's cells, joined once per frame: the registry row and the
-/// levels read beside it.
+/// One shared file's cells, joined once per frame: the registry row, or the
+/// download a Partial Share belongs to, and the levels read beside it.
 pub(super) struct SharedLine {
     pub(super) file_hash: FileHash,
     /// The name it is shared under; `None` until the registry's path is read.
@@ -46,6 +53,9 @@ pub(super) struct SharedLine {
     /// Why nothing is offered for it now, and since when; `None` while
     /// offered.
     pub(super) withheld: Option<Withheld>,
+    /// A download offering the parts it verified (ADR-0113), not a registry
+    /// row.
+    pub(super) partial: bool,
     pub(super) size: Option<u64>,
     /// Peers holding a slot for it now.
     pub(super) uploading: u64,
@@ -59,22 +69,71 @@ pub(super) struct SharedLine {
     pub(super) all_time: Option<ShareTotals>,
 }
 
+/// What every line reads beside its own row, gathered once per build.
+struct Levels<'a> {
+    state: &'a UiState,
+    /// Slots per file, so no line walks the upload peers.
+    uploading: BTreeMap<FileHash, u64>,
+}
+
+impl<'a> Levels<'a> {
+    fn new(state: &'a UiState) -> Self {
+        let mut uploading = BTreeMap::new();
+        for file_hash in state.upload_slots() {
+            *uploading.entry(file_hash).or_default() += 1;
+        }
+        Self { state, uploading }
+    }
+}
+
 impl SharedLine {
-    pub(super) fn new(row: &SharedRow, state: &UiState) -> Self {
+    fn new(row: &SharedRow, levels: &Levels<'_>) -> Self {
+        Self::joined(
+            row.file_hash,
+            row.name(),
+            row.withheld,
+            row.file_size,
+            levels,
+        )
+    }
+
+    /// A Partial Share, under its download's name and size.
+    fn partial(file_hash: FileHash, download: &DownloadRow, levels: &Levels<'_>) -> Self {
+        let metadata = download.metadata.as_ref();
+        Self {
+            partial: true,
+            ..Self::joined(
+                file_hash,
+                metadata.map(|metadata| metadata.name.to_display_string()),
+                None,
+                metadata.map(|metadata| metadata.size),
+                levels,
+            )
+        }
+    }
+
+    fn joined(
+        file_hash: FileHash,
+        name: Option<String>,
+        withheld: Option<Withheld>,
+        size: Option<u64>,
+        levels: &Levels<'_>,
+    ) -> Self {
+        let state = levels.state;
         let counters = state.last_snapshot_at.map(|_| {
             state
-                .diagnostics
-                .shared_files
-                .get(&row.file_hash)
+                .shared_counters
+                .get(&file_hash)
                 .copied()
                 .unwrap_or_default()
         });
         Self {
-            file_hash: row.file_hash,
-            name: row.name(),
-            withheld: row.withheld,
-            size: row.file_size,
-            uploading: state.uploading_now(row.file_hash) as u64,
+            file_hash,
+            name,
+            withheld,
+            partial: false,
+            size,
+            uploading: levels.uploading.get(&file_hash).copied().unwrap_or(0),
             requests: counters.map(|counters| counters.requests),
             accepted: counters.map(|counters| counters.accepted),
             transferred: counters.map(|counters| counters.transferred),
@@ -87,33 +146,48 @@ impl SortedTable for SharedTable {
     type Row = SharedLine;
     type Column = SharedColumn;
     type Identity = FileHash;
-    const TABLE: &'static str = "shared";
+    const TABLE: &'static str = column_keys::TABLE_SHARED;
     const COLUMNS: &'static [ColumnSpec<SharedColumn>] = &[
-        ColumnSpec::new(SharedColumn::File, "name", "File", ColumnKind::Text),
-        ColumnSpec::new(SharedColumn::State, "state", "State", ColumnKind::Rank),
-        ColumnSpec::new(SharedColumn::Size, "size", "Size", ColumnKind::Quantity),
+        ColumnSpec::new(
+            SharedColumn::File,
+            column_keys::NAME,
+            columns::FILE,
+            ColumnKind::Text,
+        ),
+        ColumnSpec::new(
+            SharedColumn::State,
+            column_keys::STATE,
+            columns::STATE,
+            ColumnKind::Rank,
+        ),
+        ColumnSpec::new(
+            SharedColumn::Size,
+            column_keys::SIZE,
+            columns::SIZE,
+            ColumnKind::Quantity,
+        ),
         ColumnSpec::new(
             SharedColumn::Uploading,
-            "uploading",
-            "Uploading",
+            column_keys::UPLOADING,
+            columns::UPLOADING,
             ColumnKind::Quantity,
         ),
         ColumnSpec::new(
             SharedColumn::Requests,
-            "requests",
-            "Requests",
+            column_keys::REQUESTS,
+            columns::REQUESTS,
             ColumnKind::Quantity,
         ),
         ColumnSpec::new(
             SharedColumn::Accepted,
-            "accepted",
-            "Accepted",
+            column_keys::ACCEPTED,
+            columns::ACCEPTED,
             ColumnKind::Quantity,
         ),
         ColumnSpec::new(
             SharedColumn::Transferred,
-            "transferred",
-            "Transferred",
+            column_keys::TRANSFERRED,
+            columns::TRANSFERRED,
             ColumnKind::Quantity,
         ),
     ];
@@ -128,9 +202,11 @@ impl SortedTable for SharedTable {
                 .map(|name| SortValue::Text(Cow::Borrowed(name))),
             // State renders words but is a rank (ADR-0070: nothing sorts by
             // the spelling of an enumeration).
-            SharedColumn::State => Some(SortValue::Quantity(withheld_rank(
-                row.withheld.map(|held| held.reason),
-            ))),
+            SharedColumn::State => Some(SortValue::Quantity(if row.partial {
+                PARTIAL_RANK
+            } else {
+                withheld_rank(row.withheld.map(|held| held.reason))
+            })),
             SharedColumn::Size => row.size.map(SortValue::Quantity),
             SharedColumn::Uploading => Some(SortValue::Quantity(row.uploading)),
             SharedColumn::Requests => row.requests.map(SortValue::Quantity),
@@ -150,11 +226,56 @@ impl SortedTable for SharedTable {
     }
 }
 
+/// What the table's lines stand on: the parts of the state they read, the
+/// sort and the filters. Nothing else moves them, so the traffic around a
+/// list of ten thousand files costs it no rebuild.
+#[derive(Clone, PartialEq)]
+pub(super) struct LinesKey {
+    shared: u64,
+    partial_shares: u64,
+    /// The download rows, which name a Partial Share: read only while one is
+    /// offered.
+    downloads: Option<u64>,
+    counters: u64,
+    /// Whether a data tick has landed: before one a counter is unread, not
+    /// zero.
+    counted: bool,
+    slots: Vec<FileHash>,
+    sort: TableSort<SharedTable>,
+    directory: Option<PathBuf>,
+    /// The Row Filter's words, as it counts them.
+    typed: u64,
+}
+
 impl SharedView {
-    /// The shared files' cells, one line per file, in the sort's order.
-    pub(super) fn sorted_lines(&self, state: &UiState) -> Vec<SharedLine> {
+    /// The shared files' cells, one line per file, in the sort's order: the
+    /// registry's rows, then every Partial Share the registry does not offer
+    /// whole. A directory filter shows each under the directory its bytes lie
+    /// in: a row's file, a Partial Share's part file as its download names it.
+    pub(super) fn sorted_lines(&self, state: &UiState) -> Arc<[SharedLine]> {
+        self.lines_memo
+            .get(self.lines_key(state), || self.build_lines(state))
+    }
+
+    /// What the table's lines stand on.
+    pub(super) fn lines_key(&self, state: &UiState) -> LinesKey {
+        LinesKey {
+            shared: state.shared.revision(),
+            partial_shares: state.partial_shares.revision(),
+            downloads: (!state.partial_shares.is_empty()).then(|| state.downloads.revision()),
+            counters: state.shared_counters.revision(),
+            counted: state.last_snapshot_at.is_some(),
+            slots: state.upload_slots(),
+            sort: self.sort,
+            directory: self.directory_filter(state).map(Path::to_path_buf),
+            typed: self.filter.generation(),
+        }
+    }
+
+    fn build_lines(&self, state: &UiState) -> Vec<SharedLine> {
         let filter = self.directory_filter(state);
-        let lines: Vec<SharedLine> = state
+        let levels = Levels::new(state);
+        let rows = state
             .shared
             .values()
             .filter(|row| {
@@ -164,7 +285,24 @@ impl SharedView {
                         .is_some_and(|path| path.starts_with(dir))
                 })
             })
-            .map(|row| SharedLine::new(row, state))
+            .map(|row| SharedLine::new(row, &levels));
+        let partials = state
+            .partial_shares
+            .iter()
+            .filter(|file_hash| !state.shared.contains_key(file_hash))
+            .filter_map(|&file_hash| Some((file_hash, state.partial_download(file_hash)?)))
+            .filter(|(_, download)| {
+                filter.is_none_or(|dir| {
+                    download
+                        .file_path
+                        .as_deref()
+                        .is_some_and(|path| path.starts_with(dir))
+                })
+            })
+            .map(|(file_hash, download)| SharedLine::partial(file_hash, download, &levels));
+        let lines: Vec<SharedLine> = rows
+            .chain(partials)
+            .filter(|line| keeps_row::<SharedTable>(&self.filter, line))
             .collect();
         let order = self.sort.order(&lines);
         let mut slots: Vec<Option<SharedLine>> = lines.into_iter().map(Some).collect();
@@ -174,19 +312,18 @@ impl SharedView {
             .collect()
     }
 
-    /// The shared files in display order.
-    pub(super) fn ordered<'a>(&self, state: &'a UiState) -> Vec<&'a SharedRow> {
-        self.sorted_lines(state)
-            .iter()
-            .map(|line| &state.shared[&line.file_hash])
-            .collect()
+    /// The registry row under the cursor; `None` on a Partial Share, which
+    /// has none, or an empty table.
+    pub(super) fn selected_row<'a>(&self, state: &'a UiState) -> Option<&'a SharedRow> {
+        let lines = self.sorted_lines(state);
+        state.shared.get(&lines.get(self.files_selected)?.file_hash)
     }
 
     /// The shared files' hashes in display order — what the cursor is
     /// placed against.
     pub(super) fn file_ids(&self, state: &UiState) -> Vec<FileHash> {
         self.sorted_lines(state)
-            .into_iter()
+            .iter()
             .map(|line| line.file_hash)
             .collect()
     }
@@ -200,8 +337,9 @@ impl SharedView {
     /// A click on the header row: sort by the column under it. `None` when
     /// the click was not on a header cell.
     pub(super) fn header_click(&mut self, column: u16, row: u16) -> Option<ViewOutcome> {
+        let (area, widths) = self.drawn_files.header();
         self.sort
-            .header_click(self.header_area, &self.header_cols, 1, column, row)
+            .header_click(area, widths, crate::table::GAP, column, row)
     }
 }
 

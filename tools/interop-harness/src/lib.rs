@@ -11,9 +11,14 @@ pub mod bench_doctor;
 pub mod docker;
 pub mod fake_public;
 pub mod fake_public_v6;
+pub mod fastclock;
+#[cfg(test)]
+mod fixture;
 pub mod flow;
 pub mod kad_distance_design;
 pub mod kad_seed;
 pub mod nat;
 pub mod readiness;
 pub mod rmule;
+pub mod run_record;
+pub mod verdict;

@@ -10,19 +10,19 @@
 
 use std::time::Duration;
 
-use super::{KadEvent, KadNode, KadNodeDiagnostic, KadPublishRejection, ScheduledPublish};
+use super::{KadEvent, KadNode, KadNodeDiagnostic, KadPublishRejection};
 use crate::lookup::kad_wire_id;
 use crate::lookup_walk::KadWalkPurpose;
 use crate::messages::{Kad2Message, KadPublishedSource};
 use crate::net;
 use crate::source_result::{
-    OLD_MAX_FILE_SIZE, SOURCETYPE_BUDDY, SOURCETYPE_BUDDY_LARGE, SOURCETYPE_DIRECT,
-    SOURCETYPE_DIRECT_LARGE, SOURCETYPE_FIREWALLED_UDP,
+    SOURCETYPE_BUDDY, SOURCETYPE_BUDDY_LARGE, SOURCETYPE_DIRECT, SOURCETYPE_DIRECT_LARGE,
+    SOURCETYPE_FIREWALLED_UDP,
 };
 use crate::source_store::StoreOutcome;
 use crate::{
     KadEnvelope, KadId, KadInstant, KadNodeEndpoint, KadPublishPosture, KadPublishRequest,
-    KadSourceLookupRequest, KadSourceRow, encode_source_result, opcode::KADEMLIA2_PUBLISH_RES_ACK,
+    KadSourceRow, encode_source_result, opcode::KADEMLIA2_PUBLISH_RES_ACK,
 };
 
 impl KadNode {
@@ -66,6 +66,12 @@ impl KadNode {
         source_id: [u8; 16],
         source: &KadPublishedSource,
     ) {
+        // A UDP-firewalled storer cannot be found to serve the row, so it takes
+        // none and says nothing (`KademliaUDPListener.cpp:1299`).
+        if self.own_udp_firewalled() {
+            self.emit_diagnostic(KadNodeDiagnostic::PublishRefusedFirewalled { from });
+            return;
+        }
         // aMule's tolerance gate with its LAN bypass: private-range senders
         // (the mesh tiers and the private capture harness) are always
         // acceptable; everyone else must publish near this node's ID.
@@ -170,51 +176,9 @@ impl KadNode {
         });
     }
 
-    /// Start the walk for a source-lookup request (see `lookup_walk.rs` for
-    /// the state machine and its termination budgets).
-    pub(super) fn start_source_search(&mut self, now: KadInstant, request: KadSourceLookupRequest) {
-        let target = request.kad_target();
-        if self.walks.iter().any(|walk| walk.target() == target) {
-            self.emit_diagnostic(KadNodeDiagnostic::DuplicateSourceSearch { target });
-            return;
-        }
-        self.start_walk(now, KadWalkPurpose::SearchSources(request));
-    }
-
-    /// Register a publication and publish it immediately; `tick` republishes
-    /// it every [`Self::SOURCE_REPUBLISH_INTERVAL`] from each start.
-    pub(super) fn register_publish(&mut self, now: KadInstant, request: KadPublishRequest) {
-        let target = request.kad_target();
-        if self
-            .scheduled_publishes
-            .iter()
-            .any(|scheduled| scheduled.request.kad_target() == target)
-        {
-            self.emit_diagnostic(KadNodeDiagnostic::DuplicatePublish { target });
-            return;
-        }
-        self.scheduled_publishes.push(ScheduledPublish {
-            request,
-            next_at: now + Self::SOURCE_REPUBLISH_INTERVAL,
-        });
-        self.start_publish_walk(now, request);
-    }
-
     /// Stop republishing `request`'s file.
     pub(super) fn withdraw_publish(&mut self, request: KadPublishRequest) {
-        let target = request.kad_target();
-        self.scheduled_publishes
-            .retain(|scheduled| scheduled.request.kad_target() != target);
-    }
-
-    /// Launch one publish walk now, unless the target is already being
-    /// walked (a republish firing while the previous walk still runs).
-    pub(super) fn start_publish_walk(&mut self, now: KadInstant, request: KadPublishRequest) {
-        let target = request.kad_target();
-        if self.walks.iter().any(|walk| walk.target() == target) {
-            return;
-        }
-        self.start_walk(now, KadWalkPurpose::PublishSource(request));
+        self.publish_schedule.withdraw(request.kad_target());
     }
 
     /// Route a `KADEMLIA2_PUBLISH_RES` to the publish walk that fanned a
@@ -283,6 +247,22 @@ impl KadNode {
         }
     }
 
+    fn callable_by_udp(&self) -> bool {
+        self.publish_connect_options.is_some_and(|byte| {
+            rmule_primitives::SourceCryptOptions::from_byte(byte).supports_direct_udp_callback()
+        })
+    }
+
+    /// Whether this node can state a source row at all: a firewalled node with
+    /// no buddy and no direct UDP callback cannot.
+    pub(super) fn has_publish_row(&self) -> bool {
+        self.callable_by_udp()
+            || !matches!(
+                self.publish_posture,
+                KadPublishPosture::Firewalled { buddy: None }
+            )
+    }
+
     /// This node as a `0x44` announcement: own TCP port, the size (narrowed or widened to
     /// `TAG_FILESIZE`'s `CTagVarInt` width), the source
     /// ID as the User Hash in Kad wire order, and — only while the chooser
@@ -333,10 +313,10 @@ impl KadNode {
     ///   came from.
     pub(super) fn publish_source_req(&self, request: &KadPublishRequest) -> Option<Kad2Message> {
         let file_size = request.target().file_size();
-        let large = file_size > OLD_MAX_FILE_SIZE;
-        let callable_by_udp = self.publish_connect_options.is_some_and(|byte| {
-            rmule_primitives::SourceCryptOptions::from_byte(byte).supports_direct_udp_callback()
-        });
+        // aMule's `IsLargeFile` (`Search.cpp:613`, `:633`): strictly past
+        // `OLD_MAX_FILE_SIZE`, which a `u32` still holds.
+        let large = rmule_primitives::is_large_file(file_size);
+        let callable_by_udp = self.callable_by_udp();
         let (source_type, buddy) = match (callable_by_udp, self.publish_posture, large) {
             (true, _, _) => (SOURCETYPE_FIREWALLED_UDP, None),
             (false, KadPublishPosture::Firewalled { buddy: Some(buddy) }, false) => {
@@ -366,8 +346,8 @@ impl KadNode {
                 // `encode_published_source` narrows or widens it with
                 // `CTagVarInt`'s own rule, so every size this node holds is
                 // always `Some`. The `large` row-type choice above is a
-                // separate fact, keyed on `OLD_MAX_FILE_SIZE` rather than on
-                // the tag's width — this field does not gate it.
+                // separate fact, keyed on `is_large_file` rather than on the
+                // tag's width — this field does not gate it.
                 file_size: Some(file_size),
                 encryption: self.publish_connect_options,
                 // The `ip6` tag is gated on a Known address (ADR-0087): it is

@@ -22,7 +22,7 @@ fn a_source_holding_only_parts_the_asker_has_is_left_out_of_its_answer() {
         4662,
         t,
     );
-    let holds_part_0 = PartBitmap::downloader(size, |i| i.value() == 0);
+    let holds_part_0 = WireStatus::downloader(size, |i| i.value() == 0);
     name_ask(&mut state, asker, file, Some(holds_part_0), t);
     assert_eq!(
         answered(&mut state, asker, file, t),
@@ -45,7 +45,7 @@ fn an_asker_without_a_readable_status_is_sent_sources_holding_a_part_and_the_unk
     // answered aMule's rule for an asker without chunk status (ADR-0055 divergence 1):
     // the sources holding a part and the unknown `c`,
     // never `d`, whose own ask said it holds nothing.
-    let mismatched = PartBitmap::downloader(ED2K_PART_SIZE + 1, |_| true);
+    let mismatched = WireStatus::downloader(ED2K_PART_SIZE + 1, |_| true);
     for (octets, status) in [([8, 8, 8, 8], None), ([9, 9, 9, 9], Some(mismatched))] {
         let asker = peer_at(octets, 4000);
         identify_source(
@@ -65,7 +65,7 @@ fn an_asker_without_a_readable_status_is_sent_sources_holding_a_part_and_the_unk
 fn a_waiters_udp_reask_restates_the_parts_its_source_answer_is_filtered_by() {
     let file = hash(0x57);
     let size = 2 * ED2K_PART_SIZE + 1_000;
-    let holding = |parts: &[u32]| PartBitmap::downloader(size, |i| parts.contains(&i.value()));
+    let holding = |parts: &[u32]| WireStatus::downloader(size, |i| parts.contains(&i.value()));
     let t = Instant::now();
     let mut state = serving_state(2, vec![entry(file, size, "served.bin")]);
 
@@ -87,6 +87,7 @@ fn a_waiters_udp_reask_restates_the_parts_its_source_answer_is_filtered_by() {
             PeerSource::new(high_id_client(octets), 4662),
             Some(user(hash_byte)),
             None,
+            rmule_primitives::Informant::Party(p.ip()),
         ));
     }
 
@@ -117,7 +118,7 @@ fn a_waiters_udp_reask_restates_the_parts_its_source_answer_is_filtered_by() {
     .encode_udp();
     assert!(matches!(
         state
-            .on_reask_ping(t, udp([10, 0, 0, 2], 6000), &ping)
+            .on_reask_ping(t, udp([10, 0, 0, 2], 6000), &ping, &no_modifiers())
             .as_slice(),
         [ServeDecision::SendClientUdp { .. }],
     ));

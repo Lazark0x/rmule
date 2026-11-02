@@ -242,15 +242,12 @@ fn a_modern_hello_behind_the_mark_is_sent_no_block() {
 }
 
 #[test]
-fn a_block_before_an_accepted_peers_hello_is_dropped_not_answered() {
+fn a_block_before_an_accepted_peers_hello_costs_the_link() {
     let mut session = PeerSession::new_inbound(peer_at(8), serverless_ctx());
     session.handle_bytes(&emule_030_block(0x01));
     let (packets, _, closed) = outputs(&mut session);
     assert!(packets.is_empty());
-    assert!(
-        !closed,
-        "kept open (ADR-0018); both references would hang up"
-    );
+    assert!(closed, "there is no client to read it for");
 }
 
 #[test]
@@ -524,7 +521,7 @@ fn request_with_sources() -> rmule_peer::PeerCommand {
             0x86, 0x33,
         ]),
         file_size: 700_001,
-        own_status: rmule_peer::PartBitmap::downloader_empty(700_001),
+        own_status: rmule_peer::WireStatus::downloader_empty(700_001),
         want_sources: true,
         want_aich_root: false,
     })

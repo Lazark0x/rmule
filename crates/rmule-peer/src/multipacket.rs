@@ -31,26 +31,20 @@
 //! truncated answer item. A request item cut short is reported as a
 //! [`BundleCut`] instead, because aMule gates the bundle on its file before it
 //! walks a single sub (`ClientTCPSocket.cpp:1061-1085`) — a cut bundle for a
-//! file it does not share is answered not-found, not disconnected. An
-//! unrecognized sub-opcode stops the walk, keeps the
-//! already-decoded prefix, and reports [`UnknownSub`] so the caller can
-//! surface one non-terminal diagnostic and stay connected — the remainder is
-//! unparseable by construction (no length framing), so this is a
-//! deliberate, capture-invisible divergence from aMule's own behaviour
-//! (`ClientTCPSocket.cpp`'s `switch (opcode_in)` has no `default:` case, so
-//! an unmatched sub-opcode's payload bytes silently get reinterpreted as
-//! further opcodes on the next iteration).
+//! file it does not share is answered not-found, not disconnected. A byte no
+//! sub claims is passed over and the next read as a sub-opcode, as aMule's
+//! `switch (opcode_in)`, which has no `default:` case, does; the first such
+//! byte is reported as [`UnknownSub`], one non-terminal diagnostic per frame.
 
 use rmule_primitives::{
-    AichRootHash, Ed2kText, FileHash, MAX_ED2K_FILE_SIZE, Packet, WireReader, WireTruncated,
+    AichRootHash, Ed2kText, FileHash, MAX_ED2K_FILE_SIZE, Packet, WireReader, write_wire_string,
 };
-use thiserror::Error;
 
-use crate::file::PartBitmap;
-use crate::file_request::{
-    ExtendedRequests, FileSizedStatus, read_file_sized_status, write_part_status,
-};
+use crate::error::WireFault;
+
+use crate::file_request::{ExtendedRequests, FileSizedStatus, read_file_sized_status};
 use crate::opcode::PeerOpcode;
+use crate::wire_status::WireStatus;
 
 /// `OP_REQUESTSOURCES2` (SX2) sub-opcode byte. Kept as a local const rather
 /// than reusing [`PeerOpcode::RequestSources2`] (the standalone frame's
@@ -70,7 +64,7 @@ pub enum RequestItem {
     Name {
         /// The asker's own availability, as `file_request::RequestFileName`
         /// carries it standalone.
-        part_status: Option<PartBitmap>,
+        part_status: Option<WireStatus>,
     },
     /// `OP_SETREQFILEID` (`0x4F`) — no payload.
     SetReqId,
@@ -101,7 +95,7 @@ pub enum BundledAsk {
     /// session's level carries one and it could be read.
     Name {
         /// The asker's own availability.
-        part_status: Option<PartBitmap>,
+        part_status: Option<WireStatus>,
     },
     /// `OP_SETREQFILEID` (`0x4F`).
     SetReqId,
@@ -109,7 +103,10 @@ pub enum BundledAsk {
     AichRoot,
     /// `OP_REQUESTSOURCES` / `OP_REQUESTSOURCES2` (`0x81` / `0x83`), answered
     /// out of band.
-    Sources,
+    Sources {
+        /// The wire form an answer goes out in, echoed on `AnswerSources`.
+        form: crate::source_exchange::ServedSourcesVersion,
+    },
 }
 
 /// One item inside an unframed `OP_MULTIPACKETANSWER` reply stream — the
@@ -120,21 +117,20 @@ pub enum AnswerItem {
     /// `OP_REQFILENAMEANSWER` (`0x59`) — string only.
     Name(Ed2kText),
     /// `OP_FILESTATUS` (`0x50`) — part-count + bitmap.
-    Status(PartBitmap),
+    Status(WireStatus),
     /// `OP_AICHFILEHASHANS` (`0x9D`) — master hash.
     AichRoot(AichRootHash),
 }
 
-/// One non-terminal diagnostic: the walker met a sub-opcode it does not
-/// model and stopped. `items` on the enclosing value still holds the fully
-/// valid, already-decoded prefix (ADR-0054's walker error policy: stop, keep
-/// prefix, stay open).
+/// One non-terminal diagnostic: the walker met a byte no sub claims and passed
+/// over it (ADR-0054's walker error policy). Only the first is kept, so a frame
+/// of unknown bytes costs one report.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct UnknownSub {
     /// The sub-opcode byte the walker did not recognize.
     pub opcode: u8,
-    /// How many bytes remain in the payload after that sub-opcode byte —
-    /// unparseable by construction, since sub-items carry no length prefix.
+    /// How many bytes remained in the payload after that byte, each read as
+    /// a sub-opcode in turn since sub-items carry no length prefix.
     pub remaining: usize,
 }
 
@@ -148,7 +144,7 @@ pub struct MultiPacketRequest {
     pub file_size: Option<u64>,
     /// The asks, in the order they were framed.
     pub items: Vec<RequestItem>,
-    /// The first sub-opcode the walk did not model, when one stopped it early.
+    /// The first byte the walk passed over, when it met one.
     pub unknown_sub: Option<UnknownSub>,
     /// Where the walk ran out of bytes inside a sub, when it did.
     pub cut: Option<BundleCut>,
@@ -166,7 +162,7 @@ pub enum BundleCut {
     /// `None` when not even its count did, as aMule clears it before the read
     /// throws, else each byte's bits set before the next read can throw
     /// (`UploadClient.cpp:400-446`).
-    NameStatus(Option<PartBitmap>),
+    NameStatus(Option<WireStatus>),
     /// Inside an SX2 sub's `<ver 1><opts 2>` trailer.
     Sources2,
 }
@@ -178,36 +174,46 @@ pub struct MultiPacketAnswer {
     pub file_hash: FileHash,
     /// The answers, in the order they were framed.
     pub items: Vec<AnswerItem>,
-    /// The first sub-opcode the walk did not model, when one stopped it early.
+    /// The first byte the walk passed over, when it met one.
     pub unknown_sub: Option<UnknownSub>,
 }
 
-impl MultiPacketRequest {
-    /// Read a bundle, stopping at the first sub-opcode this crate does not
-    /// model and keeping the prefix already walked. `level` is the session's
-    /// negotiated extended-requests level: it alone says whether a part status
-    /// follows a `0x58` sub, since the stream frames nothing.
-    pub fn decode_packet(
-        packet: &Packet,
-        level: ExtendedRequests,
-    ) -> Result<Self, MultiPacketDecodeError> {
-        let has_size = match PeerOpcode::try_from_u8(packet.opcode()) {
-            Some(op @ PeerOpcode::MultiPacket) if op.protocol() == packet.protocol() => false,
-            Some(op @ PeerOpcode::MultiPacketExt) if op.protocol() == packet.protocol() => true,
-            // Dispatch only routes matching (protocol, opcode) here, but this is
-            // a public decoder — a direct caller with a mismatched packet gets a
-            // typed error, not a panic (the crate's malformed-input convention).
-            _ => {
-                return Err(MultiPacketDecodeError::UnexpectedOpcode {
-                    opcode: packet.opcode(),
-                });
+impl BundleCut {
+    /// Whether this cut ends the walk for a file of `file_size` bytes. A plain
+    /// bundle names no size, so its walker followed the wire's count; a count
+    /// that is not the file's is one aMule clears after its two bytes and reads
+    /// nothing of (`UploadClient.cpp:418-422`), so its bytes never ran out.
+    #[must_use]
+    pub fn throws_for(&self, file_size: u64) -> bool {
+        match self {
+            Self::NameStatus(Some(status)) => {
+                status.count() == 0
+                    || u32::from(status.count())
+                        == rmule_primitives::ed2k_status_part_count(file_size)
             }
-        };
+            Self::NameStatus(None) | Self::Sources2 => true,
+        }
+    }
+}
 
-        let payload = packet.payload();
+impl MultiPacketRequest {
+    /// Read a bundle, passing over any byte no sub claims. `level` is the
+    /// session's negotiated extended-requests level: it alone says whether a
+    /// part status follows a `0x58` sub, since the stream frames nothing.
+    pub fn decode_packet(packet: &Packet, level: ExtendedRequests) -> Result<Self, WireFault> {
+        let plain = PeerOpcode::MultiPacket;
+        let ext = PeerOpcode::MultiPacketExt;
+        let (has_size, payload) = packet
+            .body_of(plain.protocol(), plain.as_u8())
+            .map(|body| (false, body))
+            .or_else(|_| {
+                packet
+                    .body_of(ext.protocol(), ext.as_u8())
+                    .map(|body| (true, body))
+            })?;
         let header_len = FileHash::BYTE_LEN + if has_size { 8 } else { 0 };
         if payload.len() < header_len {
-            return Err(MultiPacketDecodeError::Truncated {
+            return Err(WireFault::Truncated {
                 needed: header_len,
                 actual: payload.len(),
             });
@@ -216,10 +222,18 @@ impl MultiPacketRequest {
         let file_hash = reader.read_file_hash("file hash")?;
         let file_size = if has_size {
             let size = reader.read_u64_le("file size")?;
-            // The size is the peer's claim and sizes every status read below,
-            // so a claim no eD2k file can have ends the bundle here.
+            // The size is the peer's claim and sizes every status read below.
+            // A claim no eD2k file can have matches no shared file, so aMule
+            // answers not-found without walking a sub (`:1072-1085`), and
+            // neither does this.
             if size > MAX_ED2K_FILE_SIZE {
-                return Err(MultiPacketDecodeError::FileSizeOutOfRange { size });
+                return Ok(Self {
+                    file_hash,
+                    file_size: Some(size),
+                    items: Vec::new(),
+                    unknown_sub: None,
+                    cut: None,
+                });
             }
             Some(size)
         } else {
@@ -262,14 +276,12 @@ impl MultiPacketRequest {
                     };
                     items.push(RequestItem::Sources2 { version, options });
                 }
-                // Unknown sub-opcode: stop, keep the prefix, report it — the
-                // remainder has no length framing to skip past (ADR-0054).
+                // No sub claims it: on to the next byte (ADR-0054).
                 _ => {
-                    unknown_sub = Some(UnknownSub {
+                    unknown_sub.get_or_insert(UnknownSub {
                         opcode: sub_opcode,
                         remaining: reader.remaining(),
                     });
-                    break;
                 }
             }
         }
@@ -301,7 +313,7 @@ impl MultiPacketRequest {
                 RequestItem::Name { part_status } => {
                     payload.push(PeerOpcode::RequestFileName.as_u8());
                     if let Some(status) = part_status {
-                        write_part_status(&mut payload, status);
+                        status.write_to(&mut payload);
                     }
                 }
                 RequestItem::SetReqId => payload.push(PeerOpcode::SetReqFileId.as_u8()),
@@ -319,11 +331,11 @@ impl MultiPacketRequest {
 }
 
 impl MultiPacketAnswer {
-    /// Read an answer bundle, with the same stop-and-keep rule as the request.
-    pub fn decode_packet(packet: &Packet) -> Result<Self, MultiPacketDecodeError> {
+    /// Read an answer bundle, passing over unknown bytes as the request does.
+    pub fn decode_packet(packet: &Packet) -> Result<Self, WireFault> {
         let payload = packet.payload();
         if payload.len() < FileHash::BYTE_LEN {
-            return Err(MultiPacketDecodeError::Truncated {
+            return Err(WireFault::Truncated {
                 needed: FileHash::BYTE_LEN,
                 actual: payload.len(),
             });
@@ -347,14 +359,12 @@ impl MultiPacketAnswer {
                     let root = reader.read_array("aich master hash")?;
                     items.push(AnswerItem::AichRoot(AichRootHash::from_bytes(root)));
                 }
-                // Unknown sub-opcode: stop, keep the prefix, report it — the
-                // remainder has no length framing to skip past (ADR-0054).
+                // No sub claims it: on to the next byte (ADR-0054).
                 _ => {
-                    unknown_sub = Some(UnknownSub {
+                    unknown_sub.get_or_insert(UnknownSub {
                         opcode: sub_opcode,
                         remaining: reader.remaining(),
                     });
-                    break;
                 }
             }
         }
@@ -375,17 +385,11 @@ impl MultiPacketAnswer {
             match item {
                 AnswerItem::Name(name) => {
                     payload.push(PeerOpcode::ReqFileNameAnswer.as_u8());
-                    let bytes = name.as_bytes();
-                    let len = u16::try_from(bytes.len()).expect("name length exceeds u16");
-                    payload.extend_from_slice(&len.to_le_bytes());
-                    payload.extend_from_slice(bytes);
+                    write_wire_string(&mut payload, name.as_bytes());
                 }
                 AnswerItem::Status(bitmap) => {
                     payload.push(PeerOpcode::FileStatus.as_u8());
-                    let part_count = u16::try_from(bitmap.part_count())
-                        .expect("part_count exceeds u16 — wire encoding does not support that");
-                    payload.extend_from_slice(&part_count.to_le_bytes());
-                    payload.extend_from_slice(&bitmap.encode());
+                    bitmap.write_to(&mut payload);
                 }
                 AnswerItem::AichRoot(root) => {
                     payload.push(PeerOpcode::AichFileHashAns.as_u8());
@@ -403,7 +407,7 @@ impl MultiPacketAnswer {
 
 /// Read the `0x59` sub-item body — `<u16 name_len><name>` — leaving the
 /// reader past exactly what it consumed (more items may follow).
-fn decode_name(reader: &mut WireReader<'_>) -> Result<Ed2kText, MultiPacketDecodeError> {
+fn decode_name(reader: &mut WireReader<'_>) -> Result<Ed2kText, WireFault> {
     Ok(Ed2kText::from_bytes(
         reader.read_len16_bytes("file name")?.to_vec(),
     ))
@@ -411,22 +415,21 @@ fn decode_name(reader: &mut WireReader<'_>) -> Result<Ed2kText, MultiPacketDecod
 
 /// Read the `0x50` sub-item body — `<u16 part_count><bitmap>` — leaving the
 /// reader past exactly what it consumed (more items may follow).
-fn decode_status(reader: &mut WireReader<'_>) -> Result<PartBitmap, MultiPacketDecodeError> {
-    let part_count = u32::from(reader.read_u16_le("part count")?);
-    let bitmap = reader.take((part_count as usize).div_ceil(8), "part bitmap")?;
-    Ok(PartBitmap::decode(part_count, bitmap)
-        .expect("slice length matches part_count by construction"))
+fn decode_status(reader: &mut WireReader<'_>) -> Result<WireStatus, WireFault> {
+    let part_count = reader.read_u16_le("part count")?;
+    let bitmap = reader.take(usize::from(part_count).div_ceil(8), "part bitmap")?;
+    Ok(WireStatus::padded(part_count, bitmap))
 }
 
 /// What a name sub's status took of the stream.
 enum NameStatus {
     /// Read whole, or cleared (`None`), taking `len` bytes.
     Read {
-        status: Option<PartBitmap>,
+        status: Option<WireStatus>,
         len: usize,
     },
     /// The stream ended inside it: the bits read, when any.
-    Cut(Option<PartBitmap>),
+    Cut(Option<WireStatus>),
 }
 
 /// Read a name sub's status from the front of `rest`. `OP_MULTIPACKET_EXT`
@@ -459,47 +462,18 @@ fn read_name_status(rest: &[u8], file_size: Option<u64>) -> NameStatus {
                     status: Some(status),
                     len: reader.position(),
                 },
-                Err(_) => NameStatus::Cut(None),
+                Err(_) => NameStatus::Cut(read_cut_status(rest)),
             }
         }
     }
 }
 
-impl From<WireTruncated> for MultiPacketDecodeError {
-    fn from(truncated: WireTruncated) -> Self {
-        Self::Truncated {
-            needed: truncated.needed,
-            actual: truncated.available,
-        }
-    }
-}
-
-/// Why a bundle could not be read. An unmodelled sub-opcode is not here:
-/// that stops the walk and is reported with the prefix, not as a failure.
-#[derive(Clone, Debug, Error, PartialEq, Eq)]
-pub enum MultiPacketDecodeError {
-    /// The bundle ended inside a sub-item's own fields.
-    #[error("multipacket payload truncated: needed {needed} bytes, had {actual}")]
-    Truncated {
-        /// Bytes that sub-item requires.
-        needed: usize,
-        /// Bytes left in the bundle.
-        actual: usize,
-    },
-
-    /// The frame is not a bundle at all.
-    #[error("multipacket decode called on non-multipacket opcode 0x{opcode:02X}")]
-    UnexpectedOpcode {
-        /// The opcode that arrived.
-        opcode: u8,
-    },
-
-    /// `OP_MULTIPACKET_EXT` claimed a file size above eD2k's 256 GiB ceiling.
-    #[error("multipacket file size {size} exceeds the eD2k maximum")]
-    FileSizeOutOfRange {
-        /// The size the bundle claimed.
-        size: u64,
-    },
+/// The status a plain bundle's name sub ran out inside: its count and the bits
+/// that came, `None` when not even the count did. The serving side knows
+/// whether that count is the file's, and so whether aMule would have read on.
+fn read_cut_status(rest: &[u8]) -> Option<WireStatus> {
+    let (count, bits) = rest.split_first_chunk::<2>()?;
+    Some(WireStatus::padded(u16::from_le_bytes(*count), bits))
 }
 
 #[cfg(test)]

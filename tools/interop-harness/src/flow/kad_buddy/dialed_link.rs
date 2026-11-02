@@ -380,8 +380,7 @@ fn ack_traced_from_listener_port(trail: &str, helper_ip: &str) -> bool {
 fn assert_dialed_link(layout: &RunLayout, facts: &Facts<'_>) -> Result<()> {
     let verdict = DialedLinkVerdict::judge(facts);
     let path = layout.kad_dir().join("kad-dialed-link-verdict.toml");
-    fs::write(&path, facts.file_text(verdict))
-        .with_context(|| format!("write {}", path.display()))?;
+    crate::verdict::write(&path, &facts.file_text(verdict))?;
     println!(
         "kad-dialed-link verdict={} dialed_acks={} connect_backs={} tcp_open={}",
         verdict.label(),

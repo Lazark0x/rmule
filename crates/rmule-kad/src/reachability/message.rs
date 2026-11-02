@@ -7,7 +7,7 @@
 
 use std::net::Ipv4Addr;
 
-use rmule_primitives::{UserHash, WireReader, WireTruncated};
+use rmule_primitives::{KadIp, UserHash, WireReader, WireTruncated};
 
 use crate::KadEnvelope;
 
@@ -123,13 +123,11 @@ impl FirewallMessage {
                 })
             }
             KADEMLIA_FIREWALLED_RES => {
-                let [a, b, c, d] = payload else {
-                    return Err(malformed("0x58 is not exactly a four-byte IP"));
-                };
-                // Low-octet-first on the wire (aMule `WriteUInt32`): the observed
-                // IP is written reversed, so read it back reversed (see `encode`).
+                let word: [u8; 4] = payload
+                    .try_into()
+                    .map_err(|_| malformed("0x58 is not exactly a four-byte IP"))?;
                 Ok(Self::FirewalledRes {
-                    ip: Ipv4Addr::new(*d, *c, *b, *a),
+                    ip: KadIp::from_wire(u32::from_le_bytes(word)).ip(),
                 })
             }
             KADEMLIA_FIREWALLED_ACK_RES => {
@@ -159,17 +157,14 @@ impl FirewallMessage {
                 payload.push(*connect_options);
                 KadEnvelope::plain(KADEMLIA_FIREWALLED2_REQ, payload)
             }
-            // The observed IP as aMule's `WriteUInt32` renders it: LOW-OCTET-FIRST
-            // (reversed dotted octets), the same convention rmule's Kad contact
-            // codec uses (`messages.rs` `read_ipv4_low_octet_first` /
-            // `octets.reverse()`). Capture-pinned: aMule's genuine `0x58` for
-            // 203.0.113.3 is `03 71 00 cb`
+            // The observed IP in Kad's word, as the contact codec writes one.
+            // Capture-pinned: aMule's genuine `0x58` for 203.0.113.3 is
+            // `03 71 00 cb`
             // (fixtures/firewalled/captured/amule-233-firewall-selfcheck-requester).
-            Self::FirewalledRes { ip } => {
-                let mut octets = ip.octets();
-                octets.reverse();
-                KadEnvelope::plain(KADEMLIA_FIREWALLED_RES, octets.to_vec())
-            }
+            Self::FirewalledRes { ip } => KadEnvelope::plain(
+                KADEMLIA_FIREWALLED_RES,
+                KadIp::new(*ip).wire().to_le_bytes().to_vec(),
+            ),
             Self::FirewalledAck => KadEnvelope::plain(KADEMLIA_FIREWALLED_ACK_RES, Vec::new()),
         }
     }

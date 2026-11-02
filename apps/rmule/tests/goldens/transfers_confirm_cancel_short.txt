@@ -1,0 +1,5 @@
+┌ Cancel download ─────────────────────────────────────────┐
+│ Cancel bunny.mp4 (87.7 MB, 42% done)?                   ▲│
+│                                                         █│
+│ This deletes the part file. It cannot be undone.        ▼│
+└─────────────────────────────────────────────────── 3 / 5 ┘

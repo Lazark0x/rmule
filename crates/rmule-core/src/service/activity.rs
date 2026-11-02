@@ -13,7 +13,7 @@ use tokio::sync::watch;
 use tokio::task::JoinHandle;
 
 use crate::adapters::RuntimeServerUdpTransport;
-use crate::download::StopReason;
+use crate::download::{RunNumber, StopReason};
 use crate::server_capabilities::SharedServerCapabilities;
 
 use super::{DownloadId, SearchId};
@@ -69,7 +69,7 @@ pub(super) struct Activities<L> {
     /// retire (ADR-0093).
     downloads: HashMap<DownloadId, ActiveDownload>,
     /// The run number the next download run is given; never reused.
-    next_download_run: u64,
+    next_download_run: RunNumber,
     /// The downloads attach found running and has yet to start, in store
     /// order: one leaves per restore pace (ADR-0094). Not in the Download Set
     /// until then — a pause, cancel or resume reaches one here.
@@ -77,6 +77,9 @@ pub(super) struct Activities<L> {
     /// The **Source Seeds** attach loaded for each download in `restoring`
     /// (ADR-0109), handed to its run when it starts.
     remembered: HashMap<DownloadId, Vec<crate::download::source_seeds::SourceSeed>>,
+    /// Downloads a Volume Stop paused for free space, which resume when it
+    /// returns (ADR-0094). Memory only: a restart reads a plain pause.
+    awaiting_space: std::collections::BTreeSet<DownloadId>,
     /// The serve activity, while one runs.
     serve: Option<ServeActivity<L>>,
     /// A **Download Directory Scan** per scanned directory of the **Shared
@@ -91,9 +94,10 @@ impl<L> Default for Activities<L> {
         Self {
             searches: Searches::default(),
             downloads: HashMap::new(),
-            next_download_run: 0,
+            next_download_run: RunNumber::default(),
             restoring: VecDeque::new(),
             remembered: HashMap::new(),
+            awaiting_space: std::collections::BTreeSet::new(),
             serve: None,
             scans: std::collections::BTreeMap::new(),
         }
@@ -115,9 +119,9 @@ impl<L> Activities<L> {
     }
 
     /// The run number for a download run about to start.
-    pub(super) const fn take_download_run(&mut self) -> u64 {
+    pub(super) const fn take_download_run(&mut self) -> RunNumber {
         let run = self.next_download_run;
-        self.next_download_run = run.wrapping_add(1);
+        self.next_download_run = run.next();
         run
     }
 
@@ -136,6 +140,28 @@ impl<L> Activities<L> {
         self.downloads.contains_key(&download_id)
     }
 
+    /// The ledger's reading of a run's finish notice: `run`'s entry, when it
+    /// is still the one the Download Set holds, filed for a free-space wait
+    /// when the notice asks. A late notice files nothing either: the
+    /// operator's Pause since then ended the wait before it began.
+    pub(super) fn take_finished(
+        &mut self,
+        download_id: DownloadId,
+        run: RunNumber,
+        awaits_space: bool,
+    ) -> Option<ActiveDownload> {
+        if !self
+            .download(download_id)
+            .is_some_and(|active| active.run == run)
+        {
+            return None;
+        }
+        if awaits_space {
+            self.await_space(download_id);
+        }
+        self.take_download(download_id)
+    }
+
     /// Stop or death: take `download_id`'s run out for its retire.
     pub(super) fn take_download(&mut self, download_id: DownloadId) -> Option<ActiveDownload> {
         self.downloads.remove(&download_id)
@@ -149,6 +175,27 @@ impl<L> Activities<L> {
     /// Whether the Download Set holds no live run.
     pub(super) fn downloads_idle(&self) -> bool {
         self.downloads.is_empty()
+    }
+
+    /// `download_id` paused for free space, and waits for it.
+    pub(super) fn await_space(&mut self, download_id: DownloadId) {
+        self.awaiting_space.insert(download_id);
+    }
+
+    /// `download_id` no longer waits for free space, because it left the wait
+    /// or the operator took it: whether it did.
+    pub(super) fn end_space_wait(&mut self, download_id: DownloadId) -> bool {
+        self.awaiting_space.remove(&download_id)
+    }
+
+    /// Whether any download waits for free space.
+    pub(super) fn space_awaited(&self) -> bool {
+        !self.awaiting_space.is_empty()
+    }
+
+    /// The downloads waiting for free space.
+    pub(super) fn awaiting_space(&self) -> Vec<DownloadId> {
+        self.awaiting_space.iter().copied().collect()
     }
 
     /// Whether attach left a download waiting its restore.
@@ -269,7 +316,7 @@ pub(super) struct ActiveDownload {
     /// Which run of this download this is: its finish notice carries it, so
     /// a notice from a run a stop already retired never retires the run a
     /// later start or resume put under the same id.
-    pub(super) run: u64,
+    pub(super) run: RunNumber,
     /// The file this run holds — the key of its **File-Known Predicate**
     /// entry, returned at its retire.
     pub(super) file_hash: FileHash,
@@ -280,12 +327,16 @@ pub(super) struct ActiveDownload {
     /// The run's latest **Source Seeds** ranking (ADR-0109), which the actor
     /// writes every ten minutes and at Quit.
     pub(super) seeds: watch::Receiver<Vec<crate::download::source_seeds::SourceSeed>>,
+    /// The run's **Completion Gate** (ADR-0115): a Pause or Cancel closes it,
+    /// or is refused once the finished file is in place.
+    pub(super) completion: std::sync::Arc<crate::download::CompletionGate>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum FinishedActivity {
-    /// A download run ended: the download and which run of it.
-    Download(DownloadId, u64),
+    /// A download run ended: the download, which run of it, and whether it
+    /// stopped for free space and waits for it (ADR-0094).
+    Download(DownloadId, RunNumber, bool),
     /// A search ended on its own: the search and which run of it.
     Search(SearchId, u64),
 }

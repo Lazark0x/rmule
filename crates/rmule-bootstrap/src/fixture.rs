@@ -11,16 +11,16 @@
 //! own decoder vectors are, and the aMule-authored golden remains a documented
 //! missing asset (see the crate-level evidence note).
 
+use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::net::{Ipv4Addr, Ipv6Addr};
-use std::sync::Mutex;
 
 use rmule_ed2k::{ServerMet, ServerMetEntry};
 use rmule_primitives::{
     Ed2kText, Ipv4Endpoint, ST_IPV6, Tag, TagName, TagValue, ipv6_address_tag_compact,
 };
 
-use crate::fetcher::{FetchError, Fetcher};
+use crate::fetcher::{FetchError, FetchFuture, Fetcher};
 
 const HEADER_AMULE: u8 = 0xE0;
 const TAG_SERVERNAME: u8 = 0x01;
@@ -184,32 +184,18 @@ impl FakeFetcher {
 
     /// Total [`Fetcher::get`] calls across every URL.
     pub(crate) fn call_count(&self) -> usize {
-        self.call_counts.lock().unwrap().values().sum()
+        self.call_counts.lock().values().sum()
     }
 
     /// [`Fetcher::get`] calls for one URL.
     pub(crate) fn call_count_for(&self, url: &str) -> usize {
-        self.call_counts
-            .lock()
-            .unwrap()
-            .get(url)
-            .copied()
-            .unwrap_or(0)
+        self.call_counts.lock().get(url).copied().unwrap_or(0)
     }
 }
 
 impl Fetcher for FakeFetcher {
-    fn get(
-        &self,
-        url: &str,
-        max_bytes: usize,
-    ) -> impl std::future::Future<Output = Result<Vec<u8>, FetchError>> + Send {
-        *self
-            .call_counts
-            .lock()
-            .unwrap()
-            .entry(url.to_owned())
-            .or_insert(0) += 1;
+    fn get<'a>(&'a self, url: &'a str, max_bytes: usize) -> FetchFuture<'a> {
+        *self.call_counts.lock().entry(url.to_owned()).or_insert(0) += 1;
 
         let canned = self
             .responses
@@ -233,6 +219,6 @@ impl Fetcher for FakeFetcher {
             other => other,
         };
 
-        async move { result }
+        Box::pin(async move { result })
     }
 }

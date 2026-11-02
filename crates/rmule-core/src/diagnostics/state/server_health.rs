@@ -12,7 +12,7 @@
 //! the policy or the session moves, under the level's one lock, so the swept
 //! list never reflects a row the published list does not.
 //!
-//! The level also dates each death (ADR-0052, "Dead since when"): the moment
+//! The level also dates each death (ADR-0080, "Dead since when"): the moment
 //! a row's health turned dead, held in memory beside the row.
 
 use std::collections::{HashMap, HashSet};
@@ -23,6 +23,7 @@ use rmule_ed2k::ServerUdpFlags;
 use rmule_primitives::{Ipv4Endpoint, ServerEndpoint};
 
 use super::{DiagnosticsInner, DiagnosticsState};
+use crate::diagnostics::PingProbe;
 use crate::global_sources::SharedServerList;
 use crate::ip_filter::SharedIpFilter;
 use crate::server_list::{
@@ -44,6 +45,9 @@ pub(super) struct ServerHealthLevel {
     /// When each dead row died: `None` for one already dead when the level
     /// first saw it.
     died: HashMap<ServerEndpoint, Option<Instant>>,
+    /// The Status Ping Sweep's probe fact for each row it has a word on this
+    /// run (ADR-0080, "The Ping State").
+    probes: HashMap<ServerEndpoint, PingProbe>,
     /// The rows of the last projection, so a row the level already knew is
     /// told apart from one it sees for the first time.
     known: HashSet<ServerEndpoint>,
@@ -79,6 +83,12 @@ impl ServerHealthLevel {
         })
     }
 
+    /// The Status Ping Sweep's probe fact for `row`; `None` for a row it has
+    /// sent nothing this run, or whose last probe was answered.
+    pub(super) fn probe(&self, row: &ServerEndpoint) -> Option<PingProbe> {
+        self.probes.get(row).copied()
+    }
+
     /// Date every death `rows` show under the policy: a row the level knew
     /// alive dies now; one dead at first sight died before this run, since
     /// only the list read at start can bring a tally (an import's is ours).
@@ -101,11 +111,13 @@ impl ServerHealthLevel {
 
     pub(super) fn project(&mut self, rows: &[ManagedServer], connected: Option<&ServerEndpoint>) {
         self.resolved.keep_only(rows);
+        self.probes
+            .retain(|row, _| rows.iter().any(|server| &server.endpoint == row));
         self.date_deaths(rows);
         let Some((swept, ip_filter)) = &self.swept else {
             return;
         };
-        let filter = ip_filter.read().expect("ip filter lock");
+        let filter = ip_filter.read();
         let live = rows
             .iter()
             .filter(|row| !self.policy.is_dead(row))
@@ -129,7 +141,7 @@ impl ServerHealthLevel {
                 ServerEndpoint::new(reached.ip.to_string(), reached.port).ok()
             })
             .collect();
-        *swept.lock().expect("global source server list") = live;
+        *swept.lock() = live;
     }
 }
 
@@ -147,7 +159,7 @@ pub(crate) struct ServerHalf<'a> {
 
 impl DiagnosticsState {
     fn with_health<T>(&self, act: impl FnOnce(&mut DiagnosticsInner) -> T) -> T {
-        act(&mut self.inner.lock().expect("diagnostics mutex poisoned"))
+        act(&mut self.inner.lock())
     }
 
     /// A write to the server half landed: wake every subscriber, after the
@@ -290,10 +302,56 @@ impl DiagnosticsState {
         })
     }
 
+    /// The UDP flags the listed row reached at `server` holds; `None` for an
+    /// unlisted server or a row that holds none.
+    pub(crate) fn listed_udp_flags(&self, server: Ipv4Endpoint) -> Option<ServerUdpFlags> {
+        self.with_health(|inner| {
+            inner
+                .servers
+                .iter()
+                .find(|row| inner.server_health.resolved.udp_endpoint_of(row) == Some(server))
+                .and_then(ManagedServer::udp_flags)
+        })
+    }
+
     /// Whether a server session is up: the global source sweep asks only
     /// then (ADR-0051's amendment; aMule `DownloadQueue.cpp:870`).
     pub(crate) fn server_session_up(&self) -> bool {
         self.with_health(|inner| inner.connected_server.is_some())
+    }
+
+    /// The Status Ping Sweep sent `row` a probe: it awaits an answer, unless
+    /// its earlier probes already went unanswered, whose run this one
+    /// continues until something is answered.
+    pub(crate) fn record_probe_sent(&self, row: &ServerEndpoint) {
+        self.with_health(|inner| {
+            inner
+                .server_health
+                .probes
+                .entry(row.clone())
+                .or_insert(PingProbe::Out);
+        });
+    }
+
+    /// A plain probe to `row`, sent at `sent_at`, was judged silent: the
+    /// first silence of a run dates it.
+    pub(crate) fn record_probe_silent(&self, row: &ServerEndpoint, sent_at: Instant) {
+        self.with_health(|inner| {
+            let probe = inner
+                .server_health
+                .probes
+                .entry(row.clone())
+                .or_insert(PingProbe::Silent(sent_at));
+            if *probe == PingProbe::Out {
+                *probe = PingProbe::Silent(sent_at);
+            }
+        });
+    }
+
+    /// `row` gave a challenge-matched status answer: its round trip, now on
+    /// its figures, is the ping again.
+    pub(crate) fn record_probe_answered(&self, row: &ServerEndpoint) {
+        self.with_health(|inner| inner.server_health.probes.remove(row));
     }
 
     /// Whether the Status Ping Sweep's latest verdict found nobody answering.
@@ -305,7 +363,8 @@ impl DiagnosticsState {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::{Arc, Mutex};
+    use parking_lot::Mutex;
+    use std::sync::Arc;
 
     use super::*;
 
@@ -322,7 +381,7 @@ mod tests {
 
     fn blocking(texts: &[&[u8]]) -> SharedIpFilter {
         let (filter, _) = crate::ip_filter::IpFilter::from_texts(texts, 127, true, true);
-        Arc::new(std::sync::RwLock::new(filter))
+        Arc::new(parking_lot::RwLock::new(filter))
     }
 
     /// The swept list is the published list as it stands: a server added
@@ -338,7 +397,7 @@ mod tests {
             swept.clone(),
             blocking(&[b"203.0.113.0-203.0.113.255,0,blocked servers\n".as_slice()]),
         );
-        let read = || swept.lock().unwrap().clone();
+        let read = || swept.lock().clone();
 
         level.set_servers(vec![failed("192.0.2.10", 0)]);
         assert_eq!(read(), vec![endpoint("192.0.2.10")]);
@@ -433,7 +492,7 @@ mod tests {
         level.set_servers(vec![row.clone()]);
 
         assert_eq!(
-            swept.lock().unwrap().clone(),
+            swept.lock().clone(),
             vec![ServerEndpoint::new("192.0.2.10", 4661).unwrap()]
         );
         assert_eq!(
@@ -458,7 +517,7 @@ mod tests {
             swept.clone(),
             blocking(&[b"203.0.113.0-203.0.113.255,0,blocked servers\n".as_slice()]),
         );
-        let read = || swept.lock().unwrap().clone();
+        let read = || swept.lock().clone();
         let named = ServerEndpoint::new("dyn.example.org", 4661).unwrap();
         level.set_servers(vec![ManagedServer::listed(named.clone())]);
         let published = || level.snapshot().servers[0].clone();

@@ -119,10 +119,13 @@ absent as precisely as from what is present.
 _Avoid_: metric, assertion, check
 
 **Verdict**:
-The TOML a flow writes into its run dir (and prints) recording what it observed, leg
-by leg. `PASS` means the counterparty did the thing. `OBSERVED` is the honest partial:
-the topology stood up and the counterparty engaged, but the target exchange did not
-fire in-window. A verdict never reports a number it did not measure.
+The `<flow>-verdict.toml` a flow writes into its run dir (and prints) recording what
+it observed, leg by leg, under one typed word from `verdict::Verdict`; `verdict::write`
+is the only writer and refuses anything else. `PASS` means the counterparty did the
+thing and every claim the run owes held. `OBSERVED` is the honest partial: the topology
+stood up and the counterparty engaged, but the target exchange did not fire in-window,
+or a required leg was never driven. `FAIL` makes the harness exit non-zero. A verdict
+never reports a number it did not measure.
 _Avoid_: result, report, assertion, status
 
 **Documented Absence**:
@@ -230,6 +233,32 @@ publish (source lookup), the responder's HELLO-verification of its seeded contac
 overrides it (the fake-docker suite sets `0`). Not a Readiness Gate — nothing is
 polled — and not a Tap window, which is observation after the stimulus.
 _Avoid_: publish window, sleep, warm-up
+
+**Run Record**:
+The `run.toml` the harness itself writes into every Run Dir: when the run began and
+ended, the commit and dirty state of the harness workspace, the hash of the `rmule-tools`
+binary (or the id of the Driver Image) under test, the ids of the images the run started,
+and how it ended (`outcome`: `pass`, `observed`, `fail`, `skip`, `error`, or `unknown`
+when the run wrote no verdict). It is what lets "mine before running" tell an unchanged
+build from a changed one; a re-score only appends `rescored_at`.
+_Avoid_: run metadata, resolved config (that is the flow's options only)
+
+**Driver Image**:
+The `rmule-tools` image every UDP or in-network driver runs from. It is not compiled
+by `docker build`: the binary comes from the shared target cache (the warm
+host-persisted prebuild the Kad flows also run from), is staged beside the recipe, and
+is `COPY`d into a thin runtime. An unchanged tree therefore rebuilds nothing, and the
+Bench Doctor's own image is the only one built before a flow decides to skip.
+_Avoid_: tools build, release compile
+
+**Search Schedule**:
+The bounded cadence of the requester's repeated Kad source searches (`Cancel` +
+re-`Add`, four attempts, a 2 s gap inside each, 25 s between). Resolved once per run
+and clamped so its total never exceeds `--timeout`;
+`RMULE_KAD_SEARCH_CANCEL_GAP_SECS` and `RMULE_KAD_SEARCH_RETRY_INTERVAL_SECS`
+override the two pauses (the fake-docker suite sets both `0`). Live runs keep the
+defaults.
+_Avoid_: retry loop, sleep
 
 **Seeded Bootstrap**:
 The harness-generated `preferencesKad.dat` (pinning a node's Kad ID) and `nodes.dat`

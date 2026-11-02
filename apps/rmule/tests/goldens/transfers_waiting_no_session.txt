@@ -1,8 +1,8 @@
-┌ Downloads (3) ─────────── s sort  S reverse  C clear completed  L add link ┐
-│  File ▲      Size       Done Progress   Speed      ETA    Src   Status     │
-│▸ bunny.mp4   87.7 MB    42%  ██░█▓░█▓░░ —          —      8     No network │
-│  ABABABABAB… ≈ 27.8 MB  —    ░░░░░░░░░░ —          —      0     Asking Kad │
-│  5C5C5C5C5C… 42.9 MB    100% ██████████ —          —      1     Completed  │
+┌ Downloads (3) ─── p pause  m menu  / filter  L add  Tab sources  Space tag ┐
+│  File ▲                              Size Progress        Speed Status     │
+│▸ bunny.mp4                        87.7 MB ██░█▓░█▓░░   0.0 KB/s No network │
+│  ABABABABAB…                    ≈ 27.8 MB ░░░░░░░░░░   0.0 KB/s Asking Kad │
+│  5C5C5C5C5C…                      42.9 MB ██████████   0.0 KB/s Completed  │
 │                                                                            │
 │                                                                            │
 │                                                                            │
@@ -10,12 +10,12 @@
 │                                                                            │
 │                                                                            │
 │                                                                            │
-└────────────────────────────────────────────────────────────────────────────┘
+│                                                                            │
+│                                                                            │
+│                                                                            │
+│Off-screen: Done 42% · ETA unknown · Src 8                                  │
+└ too narrow to show: Done, ETA, Src ───────────────────────────────── 1 / 3 ┘
 ┌ Sources · bunny.mp4 ───────────────────────────────────────────────────────┐
-│                                                                            │
-│                                                                            │
 │  no source left to try; waiting for a server session or Kad: connect to a  │
 │                            server, or enable Kad                           │
-│                                                                            │
-│                                                                            │
 └────────────────────────────────────────────────────────────────────────────┘

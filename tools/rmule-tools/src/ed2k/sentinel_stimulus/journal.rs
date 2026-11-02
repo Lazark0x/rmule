@@ -10,10 +10,10 @@
 //! Rendered as TOML by hand: `rmule-tools` carries no serialiser, and the
 //! harness parses the file back with its own `toml` dependency.
 
+use parking_lot::Mutex;
 use std::fmt::Write as _;
 use std::fs;
 use std::path::Path;
-use std::sync::Mutex;
 
 use anyhow::{Context, Result};
 
@@ -90,15 +90,12 @@ impl Journal {
 
     /// Append one entry.
     pub(crate) fn push(&self, entry: Entry) {
-        self.entries
-            .lock()
-            .expect("sentinel stimulus journal")
-            .push(entry);
+        self.entries.lock().push(entry);
     }
 
     /// Render the whole record as TOML.
     pub(crate) fn render(&self) -> String {
-        let entries = self.entries.lock().expect("sentinel stimulus journal");
+        let entries = self.entries.lock();
         let mut out = String::new();
         let _ = writeln!(out, "stimulus = \"sentinel-stimulus\"");
         let _ = writeln!(out, "listen = \"{}\"", self.listen);

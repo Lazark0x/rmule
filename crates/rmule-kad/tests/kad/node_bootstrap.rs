@@ -54,7 +54,7 @@ fn bootstrap_response_adds_the_responder_live_and_probes_hearsay_rows() {
         id: id(0xAA),
         tcp_port: 4662,
         version: 8,
-        udp_port_tag: Some(4672),
+        udp_port_tag: None,
         misc_options: 0,
     });
     assert_eq!(

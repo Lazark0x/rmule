@@ -19,9 +19,10 @@
 
 use std::net::Ipv4Addr;
 
+use rmule_peer::WireStatus;
 use rmule_peer::{
-    AnswerSources, AnswerSources2, ExtendedRequests, HelloAnswer, MultiPacketRequest, PartBitmap,
-    PeerIdentity, RequestItem, SourceExchangeVersion,
+    AnswerSources, AnswerSources2, ExtendedRequests, HelloAnswer, MultiPacketRequest, PeerIdentity,
+    RequestItem, SourceExchangeVersion,
 };
 use rmule_primitives::{ClientId, FileHash, Ipv4Endpoint, Packet, PeerSource, UserHash};
 
@@ -189,7 +190,7 @@ fn emule_qt_writes_its_part_status_into_the_name_sub_at_level_one() {
         request.items,
         vec![
             RequestItem::Name {
-                part_status: Some(PartBitmap::downloader_empty(1_048_576)),
+                part_status: Some(WireStatus::downloader_empty(1_048_576)),
             },
             RequestItem::SetReqId,
             RequestItem::Sources2 {
@@ -203,15 +204,23 @@ fn emule_qt_writes_its_part_status_into_the_name_sub_at_level_one() {
     assert_eq!(request.encode_packet().encode(), EMULEQT_V1_NAME_ASK);
 
     let at_level_zero = MultiPacketRequest::decode_packet(&packet, ExtendedRequests::NONE)
-        .expect("the walker stops, it does not fail");
+        .expect("the walker passes over what it cannot read");
     assert_eq!(
         at_level_zero.items,
-        vec![RequestItem::Name { part_status: None }]
+        vec![
+            RequestItem::Name { part_status: None },
+            RequestItem::SetReqId,
+            RequestItem::Sources2 {
+                version: 1,
+                options: 0,
+            },
+            RequestItem::AichRoot,
+        ],
     );
     assert_eq!(
         at_level_zero.unknown_sub.map(|sub| sub.opcode),
         Some(0x01),
-        "the status count's low byte read as a sub-opcode ends the walk",
+        "the status count's low byte is read as a sub-opcode and passed over",
     );
 }
 

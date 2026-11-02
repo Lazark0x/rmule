@@ -1,11 +1,13 @@
 //! End-to-end Secure User Identification through the whole Core stack
 //! (ADR-0041): the Core loads its keypair once at build from the
-//! store it is given (ADR-0048 "Identity ownership"), the real
+//! store it is given (ADR-0048 "One identity per node, owned by the core"), the real
 //! `RuntimePeerTransferService` dials with SUI, and by the
 //! time the download completes each side has proven itself to the other —
 //! rmule binds the peer as a **Secured Identity** in its credit store, and the
 //! peer observed rmule's proof. Asymmetric keys and user hashes per side keep
 //! a flipped signing direction detectable.
+
+use rmule_peer::WireStatus;
 
 use crate::fixture::serving_started;
 use rmule_core::DurableCreditStore;
@@ -19,12 +21,12 @@ use rmule_core::{
 };
 use rmule_net::peer::{ConnectOptions, Connection, PeerListener};
 use rmule_peer::{
-    ConnectionEvent, PartBitmap, PeerCommand, PeerEvent, PeerHandshakeContext, SecureIdentConfig,
+    ConnectionEvent, PeerCommand, PeerEvent, PeerHandshakeContext, SecureIdentConfig,
     ServerCommand, ServerEvent,
 };
 use rmule_primitives::{
-    ClientId, ClientIdentity, Ed2kFileLink, Ed2kText, FileHashSummary, PeerEndpoint, PeerSource,
-    SecureIdentKey, ServerEndpoint, SourceLookupTarget, SourceSighting, UserHash, part_count,
+    ClientId, ClientIdentity, Ed2kFileLink, Ed2kText, FileHashSummary, Informant, PeerEndpoint,
+    PeerSource, SecureIdentKey, ServerEndpoint, SourceLookupTarget, SourceSighting, UserHash,
 };
 use rmule_testkit::{PendingSourceLookup, RefusingPeerTransfer};
 
@@ -41,7 +43,7 @@ impl SourceLookupService for OneSourceLookup {
     ) -> Result<SourceLookupOutcome, DownloadFailure> {
         Ok(SourceLookupOutcome {
             client_id: ClientId::from_u32(0x0100_007F),
-            sources: vec![SourceSighting::plain(self.peer)],
+            sources: vec![SourceSighting::plain(self.peer, Informant::Own)],
         })
     }
 }
@@ -98,8 +100,7 @@ async fn serve_once_with_sui(
                         rmule_peer::BundledAsk::SetReqId => {
                             PeerCommand::Server(ServerCommand::AnswerFileStatus {
                                 file_hash,
-                                bitmap: PartBitmap::decode(part_count(bytes.len() as u64), &[0xFF])
-                                    .unwrap(),
+                                bitmap: WireStatus::whole(bytes.len() as u64),
                             })
                         }
                         _ => continue,
@@ -108,7 +109,7 @@ async fn serve_once_with_sui(
                 }
             }
             PeerEvent::Server(ServerEvent::FileIdSet { file_hash }) => {
-                let bitmap = PartBitmap::decode(part_count(bytes.len() as u64), &[0xFF]).unwrap();
+                let bitmap = WireStatus::whole(bytes.len() as u64);
                 let _ = conn
                     .send(PeerCommand::Server(ServerCommand::AnswerFileStatus {
                         file_hash,
@@ -120,7 +121,7 @@ async fn serve_once_with_sui(
                 let _ = conn
                     .send(PeerCommand::Server(ServerCommand::AnswerHashSet {
                         file_hash,
-                        part_hashes: Vec::new(),
+                        part_hashes: rmule_primitives::PartHashList::default(),
                     }))
                     .await;
             }
@@ -217,18 +218,16 @@ async fn sui_download(dial: DialAdapter) {
     };
 
     core.send(CoreCommand::Download(DownloadCommand::StartDownload {
-        file: Ed2kFileLink {
-            name: Ed2kText::from_utf8("loopback.bin"),
-            size: FILE_BYTES as u64,
-            file_hash: summary.file_hash(),
-            part_hash_set: None,
-            aich_root: None,
-            ipv6_sources: Vec::new(),
-            sources: Default::default(),
-        },
+        file: Ed2kFileLink::new(
+            Ed2kText::from_utf8("loopback.bin"),
+            FILE_BYTES as u64,
+            summary.file_hash(),
+        )
+        .expect("a size eD2k addresses"),
         source_hint: Some(ServerEndpoint::new("127.0.0.1", 4661).unwrap()),
         name: rmule_testkit::file_name("loopback.bin"),
         if_taken: rmule_core::NameTaken::Refuse,
+        kad_aich_root: None,
     }))
     .await
     .unwrap();

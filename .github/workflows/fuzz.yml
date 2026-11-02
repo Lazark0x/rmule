@@ -1,0 +1,75 @@
+# Fuzz every target on what a stranger can put in front of rmule (ADR-0118). A
+# workflow of its own and no required check, so no pull request waits on it: a
+# pull request that touches the code a target reaches gets a short pass, and each
+# night gets a long one over the corpus the earlier passes kept. A crash fails
+# the run and leaves its input as an artifact.
+name: Fuzz
+
+on:
+  pull_request:
+    paths:
+      - "crates/rmule-ed2k/**"
+      - "crates/rmule-kad/**"
+      - "crates/rmule-peer/**"
+      - "crates/rmule-primitives/**"
+      - "crates/rmule-testkit/**"
+      - "fuzz/**"
+      - "scripts/fuzz-pass.sh"
+      - ".github/workflows/fuzz.yml"
+  schedule:
+    - cron: "41 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  # cargo-fuzz needs a nightly's sanitizer flags. Dated, so a nightly's breakage
+  # is a change here and not a red run overnight.
+  FUZZ_TOOLCHAIN: nightly-2026-07-24
+
+concurrency:
+  group: fuzz-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  fuzz:
+    name: fuzz
+    runs-on: ubuntu-latest
+    # Nine targets at the nightly budget, with the build and a margin. A hang
+    # past the per-input limit ends here.
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+      - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1.17.0
+        with:
+          toolchain: ${{ env.FUZZ_TOOLCHAIN }}
+          cache: false
+          rustflags: ""
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: fuzz
+      # Built on stable: its locked dependencies do not compile on a nightly.
+      - run: |
+          cargo fuzz --version || {
+            rustup toolchain install stable --profile minimal
+            cargo +stable install --locked cargo-fuzz@0.13.1
+          }
+      # Restored from the latest pass and saved as a new entry: a cache key
+      # never takes a second write.
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: fuzz/corpus
+          key: fuzz-corpus-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: fuzz-corpus-
+      - run: scripts/fuzz-pass.sh "$SECONDS_PER_TARGET" "$FUZZ_TOOLCHAIN"
+        env:
+          SECONDS_PER_TARGET: ${{ github.event_name == 'pull_request' && 30 || 300 }}
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: failure()
+        with:
+          name: fuzz-crashes
+          path: fuzz/artifacts

@@ -4,6 +4,7 @@
 //! replies. (ADR-0031; design §6.)
 
 use crate::fixture::plain_hello_body;
+use rmule_peer::WireStatus;
 use rmule_peer::{
     CancelTransfer, ConnectionEvent, HashSetRequest, Hello, HelloAnswer, MiscOptions1, NoticeEvent,
     PartOffsetWidth, PartRanges, PeerCommand, PeerError, PeerEvent, PeerOpcode, PeerOutput,
@@ -11,7 +12,7 @@ use rmule_peer::{
     SetReqFileId, StartUploadReq,
 };
 use rmule_primitives::session::drain;
-use rmule_primitives::{Ed2kText, FileHash, Packet, PartHash, UserHash};
+use rmule_primitives::{Ed2kText, FileHash, Packet, PartHash, PartHashList, UserHash};
 use rmule_testkit::peer_session::{peer_at, serverless_ctx};
 
 /// An inbound session driven through the hello exchange — ready to serve.
@@ -131,8 +132,10 @@ fn serve_dispatch_is_symmetric_on_dialed_sessions() {
 }
 
 #[test]
-fn serve_request_before_hello_stays_unknown() {
-    let mut s = PeerSession::new_inbound(peer_at(9), serverless_ctx());
+fn serve_request_before_our_hello_is_answered_stays_unknown() {
+    let mut s = PeerSession::new_outbound(peer_at(9), serverless_ctx());
+    s.start();
+    let _ = drain(|| s.poll_output());
     let fh = FileHash::from_bytes([0xC3; FileHash::BYTE_LEN]);
     s.handle_bytes(&RequestFileName::new(fh, None).encode_packet().encode());
     let outputs = drain(|| s.poll_output());
@@ -226,7 +229,7 @@ fn inbound_cancel_transfer_after_grant_emits_transfer_cancelled_and_clears_serve
     );
 
     // served_slot is cleared: a stray late SendBlock for the cancelled file
-    // is rejected rather than framed (ADR-0056 "pending unsent blocks dropped").
+    // is rejected rather than framed (ADR-0056).
     s.handle_command(PeerCommand::Server(ServerCommand::SendBlock {
         file_hash: fh,
         start: 0,
@@ -265,7 +268,7 @@ fn parts_request_after_grant_emits_parts_requested() {
     }));
     let _ = drain(|| s.poll_output());
 
-    let ranges = PartRanges::new([(0, 10), (0, 0), (0, 0)]).unwrap();
+    let ranges = PartRanges::new([(0, 10), (0, 0), (0, 0)]);
     s.handle_bytes(
         &RequestParts {
             file_hash: fh,
@@ -281,11 +284,47 @@ fn parts_request_after_grant_emits_parts_requested() {
             if *file_hash == fh && *r == ranges)));
 }
 
+/// aMule skips a range running backwards alone (`UploadClient.cpp:871-882`), so
+/// the one wire frame holding it still asks for its neighbours and keeps the
+/// connection.
+#[test]
+fn a_backward_range_on_the_wire_keeps_the_connection_and_its_neighbours() {
+    let mut s = inbound_session();
+    let fh = FileHash::from_bytes([0xB7; FileHash::BYTE_LEN]);
+    s.handle_command(PeerCommand::Server(ServerCommand::GrantSlot {
+        file_hash: fh,
+    }));
+    let _ = drain(|| s.poll_output());
+
+    let mut payload = fh.as_bytes().to_vec();
+    for offset in [0u32, 900, 2000, 100, 500, 2100] {
+        payload.extend_from_slice(&offset.to_le_bytes());
+    }
+    let opcode = rmule_peer::PeerOpcode::RequestParts;
+    s.handle_bytes(&Packet::new(opcode.protocol(), opcode.as_u8(), payload).encode());
+
+    let outputs = drain(|| s.poll_output());
+    assert!(
+        !outputs.iter().any(|o| matches!(o, PeerOutput::Close(_))),
+        "a backward range is no reason to close: {outputs:?}"
+    );
+    let asked: Vec<(u64, u64)> = outputs
+        .iter()
+        .find_map(|o| match o {
+            PeerOutput::Event(PeerEvent::Server(ServerEvent::PartsRequested {
+                ranges, ..
+            })) => Some(ranges.as_array().to_vec()),
+            _ => None,
+        })
+        .expect("the request reaches core");
+    assert_eq!(asked, [(0, 100), (900, 500), (2000, 2100)]);
+}
+
 #[test]
 fn parts_request_without_slot_reports_serve_parts_without_slot() {
     let mut s = inbound_session();
     let fh = FileHash::from_bytes([0xEE; FileHash::BYTE_LEN]);
-    let ranges = PartRanges::new([(0, 10), (0, 0), (0, 0)]).unwrap();
+    let ranges = PartRanges::new([(0, 10), (0, 0), (0, 0)]);
     s.handle_bytes(
         &RequestParts {
             file_hash: fh,
@@ -330,7 +369,43 @@ fn send_block_after_grant_frames_sending_part() {
 }
 
 #[test]
-fn serve_compresses_block_for_a_compression_capable_peer() {
+fn a_block_leaves_when_its_bytes_are_written_not_when_it_is_framed() {
+    let mut s = inbound_session();
+    let fh = FileHash::from_bytes([0xA1; FileHash::BYTE_LEN]);
+    s.handle_command(PeerCommand::Server(ServerCommand::GrantSlot {
+        file_hash: fh,
+    }));
+    let _ = drain(|| s.poll_output());
+    s.handle_command(PeerCommand::Server(ServerCommand::SendBlock {
+        file_hash: fh,
+        start: 8,
+        end: 12,
+        bytes: vec![1, 2, 3, 4],
+    }));
+    let left = |output: &PeerOutput| {
+        matches!(
+            output,
+            PeerOutput::Event(PeerEvent::Server(ServerEvent::BlockLeft {
+                file_hash,
+                start: 8,
+                end: 12,
+            })) if *file_hash == fh
+        )
+    };
+    assert!(!drain(|| s.poll_output()).iter().any(left));
+
+    s.bytes_written();
+
+    assert!(drain(|| s.poll_output()).iter().any(left));
+    s.bytes_written();
+    assert!(
+        drain(|| s.poll_output()).is_empty(),
+        "one block leaves once"
+    );
+}
+
+#[test]
+fn a_deflated_block_is_framed_as_compressed_parts() {
     let mut s = inbound_session_with_compression();
     let fh = FileHash::from_bytes([0xA1; FileHash::BYTE_LEN]);
     s.handle_command(PeerCommand::Server(ServerCommand::GrantSlot {
@@ -339,11 +414,11 @@ fn serve_compresses_block_for_a_compression_capable_peer() {
     let _ = drain(|| s.poll_output());
 
     let plain: Vec<u8> = b"compressible block ".repeat(40);
-    s.handle_command(PeerCommand::Server(ServerCommand::SendBlock {
+    s.handle_command(PeerCommand::Server(ServerCommand::SendDeflatedBlock {
         file_hash: fh,
         start: 0,
         end: plain.len() as u64,
-        bytes: plain.clone(),
+        stream: rmule_peer::deflate_block(&plain).expect("repeated text shrinks"),
     }));
     match decode_last_write(&drain(|| s.poll_output())) {
         PeerPacket::CompressedPart(cp) => {
@@ -363,29 +438,6 @@ fn serve_compresses_block_for_a_compression_capable_peer() {
         }
         other => panic!("expected CompressedPart, got {other:?}"),
     }
-}
-
-#[test]
-fn serve_sends_raw_when_compression_does_not_shrink() {
-    // A 4-byte block: zlib overhead makes the compressed form larger, so the
-    // raw OP_SENDINGPART wins (compress-only-if-smaller).
-    let mut s = inbound_session_with_compression();
-    let fh = FileHash::from_bytes([0xA1; FileHash::BYTE_LEN]);
-    s.handle_command(PeerCommand::Server(ServerCommand::GrantSlot {
-        file_hash: fh,
-    }));
-    let _ = drain(|| s.poll_output());
-
-    s.handle_command(PeerCommand::Server(ServerCommand::SendBlock {
-        file_hash: fh,
-        start: 0,
-        end: 4,
-        bytes: vec![1, 2, 3, 4],
-    }));
-    assert!(matches!(
-        decode_last_write(&drain(|| s.poll_output())),
-        PeerPacket::SendingPart(_)
-    ));
 }
 
 #[test]
@@ -413,8 +465,6 @@ fn send_block_without_grant_is_command_rejected() {
 
 #[test]
 fn full_inbound_serve_flow_hello_to_part_bytes() {
-    use rmule_peer::PartBitmap;
-
     let remote = UserHash::from_bytes([0x99; UserHash::BYTE_LEN]);
     let fh = FileHash::from_bytes([0xA1; FileHash::BYTE_LEN]);
     let mut s = PeerSession::new_inbound(peer_at(9), serverless_ctx());
@@ -458,7 +508,7 @@ fn full_inbound_serve_flow_hello_to_part_bytes() {
     )));
     s.handle_command(PeerCommand::Server(ServerCommand::AnswerFileStatus {
         file_hash: fh,
-        bitmap: PartBitmap::decode(1, &[0b1]).unwrap(),
+        bitmap: WireStatus::decode(1, &[0b1]).unwrap(),
     }));
     assert!(matches!(
         decode_last_write(&drain(|| s.poll_output())),
@@ -473,7 +523,8 @@ fn full_inbound_serve_flow_hello_to_part_bytes() {
     )));
     s.handle_command(PeerCommand::Server(ServerCommand::AnswerHashSet {
         file_hash: fh,
-        part_hashes: vec![PartHash::from_bytes([0x01; PartHash::BYTE_LEN])],
+        part_hashes: PartHashList::new(vec![PartHash::from_bytes([0x01; PartHash::BYTE_LEN])])
+            .unwrap(),
     }));
     assert!(matches!(
         decode_last_write(&drain(|| s.poll_output())),
@@ -495,7 +546,7 @@ fn full_inbound_serve_flow_hello_to_part_bytes() {
     ));
 
     // 6. RequestParts → PartsRequested; stream the block.
-    let ranges = PartRanges::new([(0, 4), (0, 0), (0, 0)]).unwrap();
+    let ranges = PartRanges::new([(0, 4), (0, 0), (0, 0)]);
     s.handle_bytes(
         &RequestParts {
             file_hash: fh,
@@ -530,17 +581,16 @@ fn answer_file_status_for_a_complete_file_writes_amules_zero_part_count_sentinel
     // `ab483654`): `IsPartFile() ? WritePartStatus() : data.WriteUInt16(0)`
     // — a fully-owned shared file writes a literal zero part count and no
     // bitmap bytes, never a real bitmap with every bit set.
-    use rmule_peer::PartBitmap;
 
     let fh = FileHash::from_bytes([0x7A; FileHash::BYTE_LEN]);
     let mut s = inbound_session();
     s.handle_command(PeerCommand::Server(ServerCommand::AnswerFileStatus {
         file_hash: fh,
-        bitmap: PartBitmap::all_present(4),
+        bitmap: WireStatus::decode(4, &[0b1111]).unwrap(),
     }));
     match decode_last_write(&drain(|| s.poll_output())) {
         PeerPacket::FileStatus(status) => {
-            assert_eq!(status.bitmap, PartBitmap::complete_source_sentinel());
+            assert_eq!(status.bitmap, WireStatus::complete_source());
         }
         other => panic!("expected FileStatus, got {other:?}"),
     }
@@ -548,11 +598,11 @@ fn answer_file_status_for_a_complete_file_writes_amules_zero_part_count_sentinel
 
 #[test]
 fn answer_file_status_for_a_partial_file_writes_the_bitmap_literally() {
-    use rmule_peer::PartBitmap;
+    use rmule_peer::WireStatus;
 
     let fh = FileHash::from_bytes([0x7B; FileHash::BYTE_LEN]);
     let mut s = inbound_session();
-    let partial = PartBitmap::decode(4, &[0b0111]).unwrap();
+    let partial = WireStatus::decode(4, &[0b0111]).unwrap();
     s.handle_command(PeerCommand::Server(ServerCommand::AnswerFileStatus {
         file_hash: fh,
         bitmap: partial.clone(),

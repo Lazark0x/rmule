@@ -450,7 +450,7 @@ Two harness findings made the capture possible (both recorded in the fixture's
 
 Reproduce: `cargo run -p rmule-interop-harness -- kad-distance-ordering-capture` (builds
 the mesh, fires the stimulus, auto-decodes the winning hypothesis to
-`distance-verdict.txt`).
+`distance-ordering-verdict.toml`).
 
 ## 2026-07-07 The `0x3B` wall FELL: genuine source result captured (ADR-0043)
 
@@ -504,7 +504,7 @@ an 8 s timer until it sees the `0x4B` (success-only opcodes never NAK), which co
   unrecognized `0x02` name and still projects the direct source (regression-guarded).
 
 Reproduce: `cargo run -p rmule-interop-harness -- kad-source-capture` (builds the mesh,
-publishes + searches from the rmule stimulus node, writes `kad-source-capture-verdict.txt`
+publishes + searches from the rmule stimulus node, writes `kad-source-capture-verdict.toml`
 and the captured `0x3B` bytes for promotion).
 
 ## The firewalled publisher's own `0x44` (capture, 2026-09-22)
@@ -526,9 +526,9 @@ holding rmule as its recruited buddy — run `1790097388`, promoted as
   asymmetrically per 32-bit word, a buddy ID spelling
   `FFEEDDCCBBAA99887766554433221100` on the wire came out as
   `CCDDEEFF8899AABB4455667700112233` in the tag — `CUInt128::ToByteArray`, not
-  `GetData()`. eMule 0.70b and eMuleAI write the other string (source reading;
-  neither is on the bench), so the two families cannot address each other's
-  buddies.
+  `GetData()`. eMule 0.70b, eMuleAI, aMule from 3.2.0 and emule-qt from
+  `3ba9a4d4e0` write the other string (source reading; none of them is on the
+  bench), and rmule writes it too (ADR-0061).
 - **`TAG_SERVERIP` is not byte-swapped.** Its four value bytes read `a b c d`
   for `a.b.c.d` — the opposite of `SOURCEIP` above, which a storer synthesises
   in host order. A decoder that treats them alike gets one of them backwards.

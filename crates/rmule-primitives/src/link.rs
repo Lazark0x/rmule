@@ -12,7 +12,7 @@ pub use sources::{LinkPeer, LinkPeerHost, LinkSourceExpiry, LinkSources};
 
 use crate::{
     AichRootHash, Ed2kText, FileHash, Ipv6Endpoint, PartHash, PartHashSet, PrimitiveError, Result,
-    ServerEndpoint, is_usable_tag_identity,
+    ServerEndpoint, WIRE_STRING_MAX, is_usable_tag_identity,
 };
 
 /// The eD2k listen port an `s6=` entry means when it names none — the
@@ -55,8 +55,9 @@ pub struct Ed2kFileLink {
     /// `Ed2kText::to_display_string` for a lossy UTF-8 projection.
     pub name: Ed2kText,
     /// The file's size in bytes — the second half of its identity, since a
-    /// hash alone does not decide part geometry.
-    pub size: u64,
+    /// hash alone does not decide part geometry. Private to the crate, so a
+    /// link exists only at a size eD2k addresses ([`Self::new`]).
+    pub(crate) size: u64,
     /// The eD2k file hash.
     pub file_hash: FileHash,
     /// The part hash set, when the link's optional `p=` field carried one
@@ -74,6 +75,71 @@ pub struct Ed2kFileLink {
     /// peers and the `s=` web sources. Hints like `ipv6_sources`: a
     /// download's first candidates, never part of the file's identity.
     pub sources: LinkSources,
+}
+
+impl Ed2kFileLink {
+    /// A link to `file_hash` of `size` bytes, with no optional field.
+    ///
+    /// # Errors
+    /// [`PrimitiveError::FileSizeAboveLimit`] past
+    /// [`MAX_ED2K_FILE_SIZE`](crate::MAX_ED2K_FILE_SIZE),
+    /// [`PrimitiveError::FileSizeZero`] at zero: aMule takes neither.
+    pub fn new(name: Ed2kText, size: u64, file_hash: FileHash) -> Result<Self> {
+        Ok(Self {
+            name,
+            size: checked_size(size)?,
+            file_hash,
+            part_hash_set: None,
+            aich_root: None,
+            ipv6_sources: Vec::new(),
+            sources: LinkSources::default(),
+        })
+    }
+
+    /// The file's size in bytes.
+    #[must_use]
+    pub const fn size(&self) -> u64 {
+        self.size
+    }
+
+    /// This link with `part_hash_set`.
+    #[must_use]
+    pub fn with_part_hash_set(mut self, part_hash_set: Option<PartHashSet>) -> Self {
+        self.part_hash_set = part_hash_set;
+        self
+    }
+
+    /// This link with `aich_root`.
+    #[must_use]
+    pub fn with_aich_root(mut self, aich_root: Option<AichRootHash>) -> Self {
+        self.aich_root = aich_root;
+        self
+    }
+
+    /// This link with `ipv6_sources`.
+    #[must_use]
+    pub fn with_ipv6_sources(mut self, ipv6_sources: Vec<Ipv6Endpoint>) -> Self {
+        self.ipv6_sources = ipv6_sources;
+        self
+    }
+
+    /// This link with `sources`.
+    #[must_use]
+    pub fn with_sources(mut self, sources: LinkSources) -> Self {
+        self.sources = sources;
+        self
+    }
+}
+
+/// `size`, when a file link can name it.
+fn checked_size(size: u64) -> Result<u64> {
+    if size > crate::MAX_ED2K_FILE_SIZE {
+        return Err(PrimitiveError::FileSizeAboveLimit { file_size: size });
+    }
+    if size == 0 {
+        return Err(PrimitiveError::FileSizeZero);
+    }
+    Ok(size)
 }
 
 /// A link as read, with the fields it carried that no client reads.
@@ -274,13 +340,7 @@ fn parse_file_link(fields: &[&str], skipped: &mut Vec<String>) -> Result<Ed2kLin
     }
 
     let name = decode_file_name(fields[1])?;
-    let size = parse_u64(fields[2], "invalid file size")?;
-    if size > crate::MAX_ED2K_FILE_SIZE {
-        return Err(PrimitiveError::FileSizeAboveLimit { file_size: size });
-    }
-    if size == 0 {
-        return Err(PrimitiveError::FileSizeZero);
-    }
+    let size = checked_size(parse_u64(fields[2], "invalid file size")?)?;
     let file_hash = FileHash::from_hex(fields[3])?;
     let mut part_hash_set = None;
     let mut aich_root = None;
@@ -470,10 +530,13 @@ fn parse_part_hashes(input: &str) -> Result<Vec<PartHash>> {
 /// Percent-decode the raw bytes of a file-name field. Strict UTF-8 is
 /// *not* required — real ED2K links in the wild carry Windows-1252 /
 /// mojibake names; the raw bytes are preserved as [`Ed2kText`] and a
-/// lossy UTF-8 projection is the UI's responsibility.
+/// lossy UTF-8 projection is the UI's responsibility. Bounded by what a name
+/// can ever be on the wire, whatever length a stranger wrote.
 fn decode_file_name(input: &str) -> Result<Ed2kText> {
     Ok(Ed2kText::from_bytes(
-        percent_decode_str(input).collect::<Vec<u8>>(),
+        percent_decode_str(input)
+            .take(WIRE_STRING_MAX)
+            .collect::<Vec<u8>>(),
     ))
 }
 

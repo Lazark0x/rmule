@@ -7,11 +7,12 @@ use std::net::Ipv4Addr;
 
 use crate::fixture::identified_session;
 use rmule_peer::{
-    ChangeClientIpV6, ConnectionEvent, IdentityChange, NoticeEvent, PartRanges, PeerCommand,
-    PeerEvent, PeerSession, RequesterCommand, RequesterEvent, SideEvent, SlotReleaseReason,
+    ChangeClientIpV6, ConnectionCommand, ConnectionEvent, IdentityChange, NoticeEvent, PartRanges,
+    PeerCommand, PeerEvent, PeerSession, RequesterCommand, RequesterEvent, SideEvent,
+    SlotReleaseReason,
 };
 use rmule_primitives::session::drain;
-use rmule_primitives::{Ed2kText, FileHash, Ipv4Endpoint, Packet, PacketProtocol, PartHash};
+use rmule_primitives::{ClientId, Ed2kText, FileHash, Ipv4Endpoint, Packet, PacketProtocol};
 use rmule_testkit::peer_session::{ctx, events, file_hash, peer_at, writes};
 
 // --- Wire helpers -----------------------------------------------
@@ -25,7 +26,7 @@ fn ask_shared_dirs() -> Vec<u8> {
 }
 
 fn ask_shared_files_dir() -> Vec<u8> {
-    Packet::new(PacketProtocol::Edonkey, 0x5E, b"incoming".to_vec()).encode()
+    Packet::new(PacketProtocol::Edonkey, 0x5E, b"\x08\x00incoming".to_vec()).encode()
 }
 
 fn ask_shared_files_answer() -> Vec<u8> {
@@ -94,15 +95,6 @@ fn file_status(hash: FileHash, part_count: u16, bitmap: &[u8]) -> Vec<u8> {
     payload.extend_from_slice(&part_count.to_le_bytes());
     payload.extend_from_slice(bitmap);
     Packet::new(PacketProtocol::Edonkey, 0x50, payload).encode()
-}
-
-fn hashset_answer(hash: FileHash, part_hashes: &[PartHash]) -> Vec<u8> {
-    let mut payload = hash.as_bytes().to_vec();
-    payload.extend_from_slice(&(part_hashes.len() as u16).to_le_bytes());
-    for h in part_hashes {
-        payload.extend_from_slice(h.as_bytes());
-    }
-    Packet::new(PacketProtocol::Edonkey, 0x52, payload).encode()
 }
 
 fn acceptuploadreq() -> Vec<u8> {
@@ -263,6 +255,12 @@ fn oversize_chat_message_is_surfaced_capped_at_450_not_dropped() {
 #[test]
 fn file_comment_is_surfaced_with_no_reply() {
     let mut session = identified_session();
+    session.handle_command(PeerCommand::Requester(RequesterCommand::ProbeFile {
+        file_hash: file_hash(0x71),
+        file_size: 20_000_000,
+        own_status: rmule_peer::WireStatus::downloader_empty(20_000_000),
+    }));
+    let _ = drain(|| session.poll_output());
     session.handle_bytes(&filedesc(4, "nice rip"));
     let out = drain(|| session.poll_output());
 
@@ -277,62 +275,82 @@ fn file_comment_is_surfaced_with_no_reply() {
     );
 }
 
-/// `OP_CHANGE_CLIENT_ID` moves the identity the session keeps, with no reply:
-/// a High ID that is the address the peer connected from replaces the hello's
-/// ID (aMule `ClientTCPSocket.cpp:751`), a High ID that is some other address
-/// changes nothing, and a Low ID is taken.
+/// `OP_CHANGE_CLIENT_ID` is offered to core, with no reply: a High ID that
+/// is the address the peer connected from, and any Low ID, are offered with
+/// the server named beside them, and a High ID that is some other address is
+/// dropped (aMule `ClientTCPSocket.cpp:773-787`). Nothing moves until core
+/// answers.
 #[test]
-fn a_changed_client_id_revises_the_identity() {
+fn a_changed_client_id_is_offered_to_core() {
     let server = Ipv4Addr::new(198, 51, 100, 200);
     let mut session = identified_session();
     let own = u32::from_le_bytes(peer_at(55).as_v4().expect("v4 peer").ip.octets());
 
-    let revisions = |session: &mut PeerSession, id: u32| {
+    let offers = |session: &mut PeerSession, id: u32| {
         session.handle_bytes(&change_client_id(id, server));
         let out = drain(|| session.poll_output());
         assert!(writes(&out).is_empty(), "no reply expected, got {out:?}");
+        assert!(
+            !events(&out).iter().any(|e| matches!(
+                e,
+                PeerEvent::Connection(ConnectionEvent::IdentityRevised { .. })
+            )),
+            "nothing moves before core answers: {out:?}"
+        );
         events(&out)
             .into_iter()
             .filter_map(|e| match e {
-                PeerEvent::Connection(ConnectionEvent::IdentityRevised { identity, what }) => {
-                    Some((*what, identity.client_id().as_u32()))
+                PeerEvent::Connection(ConnectionEvent::ClientIdOffered { client_id, server }) => {
+                    Some((client_id.as_u32(), *server))
                 }
                 _ => None,
             })
             .collect::<Vec<_>>()
     };
 
-    assert!(revisions(&mut session, 0x0102_0304).is_empty());
-    assert_eq!(
-        revisions(&mut session, own),
-        vec![(IdentityChange::ClientId, own)]
-    );
-    assert!(revisions(&mut session, own).is_empty());
-    assert_eq!(
-        revisions(&mut session, 77),
-        vec![(IdentityChange::ClientId, 77)]
-    );
+    assert!(offers(&mut session, 0x0102_0304).is_empty());
+    assert_eq!(offers(&mut session, own), vec![(own, server)]);
+    assert_eq!(offers(&mut session, 77), vec![(77, server)]);
 }
 
-/// The server an `OP_CHANGE_CLIENT_ID` names stands as the server the peer is
-/// on: the "on our server" claim reads it, not the hello's.
+/// Core's answer moves the identity: a Low ID only with the known server it
+/// names, which then stands as the server the peer is on — the "on our
+/// server" claim reads it — and a High ID only when it is the peer's own
+/// address, whatever core says.
 #[test]
-fn a_changed_client_id_moves_the_on_our_server_claim() {
+fn a_taken_client_id_revises_the_identity_and_its_server() {
     let ours = Ipv4Endpoint::new(Ipv4Addr::new(198, 51, 100, 200), 4661);
+    let own = u32::from_le_bytes(peer_at(55).as_v4().expect("v4 peer").ip.octets());
     let mut session = identified_session();
-    session.handle_bytes(&change_client_id(77, ours.ip));
-    let out = drain(|| session.poll_output());
-    let identity = events(&out)
-        .into_iter()
-        .find_map(|e| match e {
-            PeerEvent::Connection(ConnectionEvent::IdentityRevised { identity, .. }) => {
+    let take = |session: &mut PeerSession, id: u32, server: Option<Ipv4Endpoint>| {
+        session.handle_command(PeerCommand::Connection(ConnectionCommand::TakeClientId {
+            client_id: ClientId::from_u32(id),
+            server,
+        }));
+        let out = drain(|| session.poll_output());
+        events(&out).into_iter().find_map(|e| match e {
+            PeerEvent::Connection(ConnectionEvent::IdentityRevised { identity, what }) => {
+                assert_eq!(*what, IdentityChange::ClientId);
                 Some(identity.clone())
             }
             _ => None,
         })
-        .expect("the revision is reported");
+    };
+
+    assert!(
+        take(&mut session, 77, None).is_none(),
+        "no server, no Low ID"
+    );
+    assert!(take(&mut session, 0x0102_0304, Some(ours)).is_none());
+    let identity = take(&mut session, 77, Some(ours)).expect("the revision is reported");
+    assert_eq!(identity.client_id().as_u32(), 77);
     assert!(identity.is_on_server(ours));
     assert!(!identity.is_on_server(Ipv4Endpoint::new(Ipv4Addr::new(198, 51, 100, 201), 4661)));
+    let identity = take(&mut session, own, None).expect("its own address is its High ID");
+    assert!(
+        identity.is_on_server(ours),
+        "an unknown server leaves the one it was on"
+    );
 }
 
 /// `OP_CHANGE_CLIENT_IP` moves the identity the session keeps: the one
@@ -362,11 +380,103 @@ fn a_changed_ipv6_revises_the_identity_once() {
     assert!(events(&out).is_empty(), "{out:?}");
 }
 
+/// A dialer whose hello named `named`, answered by a peer whose hello claims
+/// `MODMISC_IPV6` when `capable`. Returns the session still awaiting that
+/// answer, and the answer's bytes.
+fn dialing_with_ipv6(named: std::net::Ipv6Addr, capable: bool) -> (PeerSession, Vec<u8>) {
+    let mut session = PeerSession::new_outbound(peer_at(55), ctx()).with_ipv6_advertisement(named);
+    session.start();
+    let _ = drain(|| session.poll_output());
+    let mut tags =
+        crate::fixture::plain_hello_body(rmule_primitives::UserHash::from_bytes([0x99; 16])).tags;
+    if capable {
+        tags.push(rmule_peer::ModMiscOptions::rmule_claim().to_tag());
+    }
+    let answer = rmule_peer::HelloAnswer::new(crate::fixture::hello_body(
+        rmule_primitives::UserHash::from_bytes([0x99; 16]),
+        0x20000002,
+        tags,
+    ))
+    .encode_packet()
+    .encode();
+    (session, answer)
+}
+
+fn announced(out: &[rmule_peer::PeerOutput]) -> Vec<std::net::Ipv6Addr> {
+    writes(out)
+        .iter()
+        .filter(|packet| packet.opcode() == 0xAC)
+        .filter_map(|packet| ChangeClientIpV6::decode_packet(packet).ok())
+        .map(ChangeClientIpV6::address)
+        .collect()
+}
+
+fn announce(address: std::net::Ipv6Addr) -> PeerCommand {
+    PeerCommand::Connection(rmule_peer::ConnectionCommand::AnnounceIpv6Change(address))
+}
+
+/// ADR-0087: a move of our Advertised IPv6 reaches an IPv6-capable peer once,
+/// and a restatement of what it was told says nothing.
+#[test]
+fn an_ipv6_move_is_announced_once_to_a_capable_peer() {
+    let named: std::net::Ipv6Addr = "2001:db8::1".parse().expect("an address");
+    let moved: std::net::Ipv6Addr = "2001:db8::2".parse().expect("an address");
+    let (mut session, answer) = dialing_with_ipv6(named, true);
+    session.handle_bytes(&answer);
+    let _ = drain(|| session.poll_output());
+
+    session.handle_command(announce(named));
+    assert!(
+        announced(&drain(|| session.poll_output())).is_empty(),
+        "the hello named it"
+    );
+    session.handle_command(announce(moved));
+    assert_eq!(announced(&drain(|| session.poll_output())), vec![moved]);
+    session.handle_command(announce(moved));
+    assert!(
+        announced(&drain(|| session.poll_output())).is_empty(),
+        "told once"
+    );
+}
+
+/// A peer whose hello claims no IPv6 is never sent `0xAC`, and the command is
+/// no error.
+#[test]
+fn a_legacy_peer_is_never_sent_an_ipv6_move() {
+    let named: std::net::Ipv6Addr = "2001:db8::1".parse().expect("an address");
+    let (mut session, answer) = dialing_with_ipv6(named, false);
+    session.handle_bytes(&answer);
+    let _ = drain(|| session.poll_output());
+    session.handle_command(announce("2001:db8::2".parse().expect("an address")));
+    let out = drain(|| session.poll_output());
+    assert!(writes(&out).is_empty(), "{out:?}");
+    assert!(events(&out).is_empty(), "{out:?}");
+}
+
+/// A move while our hello was already out and its answer not yet in is owed:
+/// it follows the answer.
+#[test]
+fn an_ipv6_move_during_the_handshake_follows_the_answer() {
+    let named: std::net::Ipv6Addr = "2001:db8::1".parse().expect("an address");
+    let moved: std::net::Ipv6Addr = "2001:db8::2".parse().expect("an address");
+    let (mut session, answer) = dialing_with_ipv6(named, true);
+    session.handle_command(announce(moved));
+    let out = drain(|| session.poll_output());
+    assert!(
+        writes(&out).is_empty() && events(&out).is_empty(),
+        "{out:?}"
+    );
+    session.handle_bytes(&answer);
+    assert_eq!(announced(&drain(|| session.poll_output())), vec![moved]);
+}
+
 // --- Pre-Identified guard ------------------------------------------
 
 #[test]
-fn human_layer_packets_before_identified_are_unknown_not_acted_on() {
-    let mut session = PeerSession::new_inbound(peer_at(55), ctx());
+fn human_layer_packets_before_our_hello_is_answered_are_unknown_not_acted_on() {
+    let mut session = PeerSession::new_outbound(peer_at(55), ctx());
+    session.start();
+    let _ = drain(|| session.poll_output());
     for wire in [ask_shared_files(), public_ip_req(), message("too soon")] {
         session.handle_bytes(&wire);
         let out = drain(|| session.poll_output());
@@ -401,7 +511,7 @@ fn the_full_human_layer_volley_mid_transfer_leaves_the_active_slot_unbroken() {
 
     // Open a real requester-capability transfer: request parts, satisfy the
     // probe + hash-set gate, get the slot granted.
-    let ranges = PartRanges::new([(0, 16), (0, 0), (0, 0)]).unwrap();
+    let ranges = PartRanges::new([(0, 16), (0, 0), (0, 0)]);
     session.handle_command(PeerCommand::Requester(RequesterCommand::RequestParts {
         file_hash: h,
         file_size: 1_000_000,
@@ -409,13 +519,12 @@ fn the_full_human_layer_volley_mid_transfer_leaves_the_active_slot_unbroken() {
     }));
     session.handle_bytes(&reqfilename_answer(h, "volley.bin"));
     session.handle_bytes(&file_status(h, 1, &[0x01]));
-    session.handle_bytes(&hashset_answer(h, &[PartHash::from_bytes([0; 16])]));
     session.handle_bytes(&acceptuploadreq());
     let setup = drain(|| session.poll_output());
     assert!(
         events(&setup)
             .iter()
-            .any(|e| matches!(e, PeerEvent::Requester(RequesterEvent::SlotGranted { file_hash }) if *file_hash == h)),
+            .any(|e| matches!(e, PeerEvent::Requester(RequesterEvent::SlotGranted { file_hash, .. }) if *file_hash == h)),
         "setup must reach a granted slot, got {setup:?}"
     );
 

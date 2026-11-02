@@ -333,17 +333,23 @@ impl KadPumpState {
     fn on_event(&mut self, event: rmule_kad::KadEvent, now: Instant, out: &mut Vec<KadPumpEffect>) {
         use rmule_kad::{KadEvent, KadNodeDiagnostic};
         match event {
-            KadEvent::SourcesFound { target, candidates } => {
+            KadEvent::SourcesFound {
+                target,
+                storer,
+                candidates,
+            } => {
                 // Every row that names a road crosses, not just the dialable
                 // ones — a firewalled row carries the buddy that is the only
                 // way to reach it — and a walk that decoded only refusals
-                // still answers.
+                // still answers. Each row is the storer's word (ADR-0085).
                 if !candidates.is_empty() {
+                    let informant =
+                        rmule_primitives::Informant::Party(std::net::IpAddr::V4(storer.ip()));
                     out.push(KadPumpEffect::Sources {
                         file_hash: target.file_hash(),
                         answer: candidates
                             .into_iter()
-                            .filter_map(rmule_kad::KadSourceCandidate::sighting)
+                            .filter_map(|candidate| candidate.sighting(informant))
                             .collect(),
                     });
                 }
@@ -389,11 +395,13 @@ impl KadPumpState {
                 buddy_id,
                 requester_hash,
                 requester_tcp_port,
+                check_collision,
             } => out.push(KadPumpEffect::Spawn(Spawn::FindBuddy {
                 requester,
                 buddy_id,
                 requester_hash,
                 requester_tcp_port,
+                check_collision,
             })),
             KadEvent::CallbackRelayRequested {
                 requester,
@@ -406,15 +414,16 @@ impl KadPumpState {
                 file_hash,
                 requester_tcp_port,
             })),
-            KadEvent::FloodOffenderDetected { ip, opcode } => {
+            KadEvent::FloodOffenderDetected { ip, opcode, proven } => {
                 // ADR-0064: the node only reports a flood offender; this is
-                // where the report becomes a peer-TCP ban.
-                out.push(KadPumpEffect::Ban { ip, at: now });
-                tracing::debug!(
-                    %ip,
-                    opcode,
-                    "flood offender banned at the peer-TCP surface"
-                );
+                // where the report becomes a ban, or the Hush when no datagram
+                // proved the address it named.
+                out.push(if proven {
+                    KadPumpEffect::Ban { ip, at: now }
+                } else {
+                    KadPumpEffect::Hush { ip, at: now }
+                });
+                tracing::debug!(%ip, opcode, proven, "flood offender reported");
             }
             event @ (KadEvent::ReachabilityRecheckStarted
             | KadEvent::ReachabilityConnectBack
@@ -499,9 +508,10 @@ impl KadPumpState {
                 tracing::debug!(asked, "FINDBUDDY walk ended (ADR-0061)");
             }
             KadEvent::CallbackWalkEnded { buddy_id, end } => {
-                if let Some((reply, reason)) = self.callback_walks.ended(buddy_id, end) {
-                    out.push(KadPumpEffect::CallbackWalkRetired { reply, reason });
-                }
+                out.extend(self.callback_walks.ended(buddy_id, end));
+            }
+            KadEvent::BuddyCallbackPaced { buddy_id, pace } => {
+                out.extend(self.callback_walks.paced(buddy_id, pace));
             }
             KadEvent::BuddyFound {
                 buddy,
@@ -516,6 +526,9 @@ impl KadPumpState {
                 buddy_tcp_port,
                 connect_options,
             )),
+            KadEvent::Diagnostic(KadNodeDiagnostic::HushedDropped { .. }) => {
+                out.push(KadPumpEffect::Diagnostics(DiagnosticsWrite::HushedDatagram));
+            }
             KadEvent::Diagnostic(KadNodeDiagnostic::UndecodableEnvelope { from, error }) => {
                 // A hostile or malformed datagram never panics the node; the
                 // count is what makes a crypt-armed run's own decode failures

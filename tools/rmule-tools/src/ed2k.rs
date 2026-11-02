@@ -7,6 +7,7 @@
 //! [`Ed2kEvent`](rmule_ed2k::Ed2kEvent)'s co-located `Display`; the verbose
 //! field-level inspectors are genuinely tool-specific and live here.
 
+mod crypt_pong;
 mod file_hash;
 mod inspect;
 mod link;
@@ -18,6 +19,7 @@ mod server_udp;
 mod udp_capture;
 mod welcome;
 
+pub(crate) use crypt_pong::server_crypt_pong;
 pub(crate) use file_hash::{hash_file, part_hashes};
 pub(crate) use inspect::{
     inspect_client_packet, inspect_login, inspect_packet, inspect_server_packet,

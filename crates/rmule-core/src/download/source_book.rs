@@ -14,10 +14,15 @@
 mod aliases;
 mod asks;
 mod blocks;
+mod exchange;
+mod frequency;
 mod gate;
+mod grant;
 mod lanes;
+mod peer_standing;
 mod purge;
 mod record;
+mod records;
 mod road;
 mod run_tier;
 mod sighting;
@@ -26,15 +31,17 @@ mod standing;
 #[cfg(test)]
 mod tests;
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::time::Instant;
 
 use rmule_peer::PeerIdentity;
 use rmule_primitives::{Ipv4Endpoint, PeerCrypt, PeerEndpoint, UserHash};
 
 use self::aliases::Aliases;
+pub(crate) use self::asks::AskName;
 use self::blocks::Blocks;
-pub(crate) use self::gate::Gate;
+use self::frequency::PartFrequency;
+pub(crate) use self::gate::{Gate, OwnPosition};
 use self::lanes::Lanes;
 #[cfg(test)]
 pub(crate) use self::purge::{
@@ -44,15 +51,21 @@ pub(crate) use self::purge::{
 pub(crate) use self::purge::{PurgeKind, Purged};
 pub(crate) use self::record::Lane;
 use self::record::{DialRoad, Record, RecordId, Stage, stated_crypt};
+use self::records::Records;
 pub(crate) use self::road::Deadline;
 #[cfg(test)]
 pub(crate) use self::run_tier::CLIENT_LIST_CLEANUP;
 use self::run_tier::RunTier;
-pub(crate) use self::standing::{Answer, Reask, ReaskGates, UDP_REASK_LEAD};
+pub(crate) use self::standing::{
+    Answer, Reask, ReaskGates, UDP_REASK_LEAD, no_needed_parts_period, reask_period,
+};
 #[cfg(test)]
-pub(crate) use self::standing::{FILE_REASK_TIME, NO_NEEDED_PARTS_MULTIPLIER, REASK_RECHECK};
+pub(crate) use self::standing::{
+    FILE_REASK_TIME, LOW_ID_REASK_TIME, NO_NEEDED_PARTS_MULTIPLIER, REASK_RECHECK,
+};
 use crate::adapters::CallbackKey;
 use crate::download::source_ask_clock::{FileAskClock, SourceCounts};
+use crate::download::spent_names::{Spend, SpentSeat};
 use crate::download::state::{LowIdCandidate, LowIdRoad};
 
 /// What one sighting did to the book.
@@ -71,6 +84,11 @@ pub(crate) enum Sighted {
 /// Why a sighting pooled nothing.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Blocked {
+    /// It names us (ADR-0090; aMule `CanAddSource`, `CheckAndAddSource`).
+    Ourselves,
+    /// Every address it named lies in a Reserved Range its Informant cannot
+    /// vouch for (ADR-0085; aMule `IsGoodIP`).
+    Reserved,
     /// The IP filter refuses every address it named (aMule
     /// `CPartFile::AddSources`).
     IpFiltered,
@@ -83,6 +101,12 @@ pub(crate) enum Blocked {
     Spent,
     /// It names no road at all: no address, and no Low ID or Kad callback.
     Unreachable,
+    /// A third party named a port below 1024, which no peer of the network
+    /// needs and any service holds (ADR-0116, the Source Quota).
+    PrivilegedPort,
+    /// A third party named an address or subnet the book already holds its
+    /// share of (ADR-0116, the Source Quota).
+    OverQuota,
 }
 
 /// The road a record that gave way in a merge still had in flight.
@@ -154,7 +178,7 @@ pub(crate) enum Adopted {
 /// One download's sources. See the module docs.
 #[derive(Debug)]
 pub(crate) struct SourceBook {
-    records: HashMap<RecordId, Record>,
+    records: Records,
     minted: u64,
     aliases: Aliases,
     lanes: Lanes,
@@ -168,14 +192,17 @@ pub(crate) struct SourceBook {
     /// When a purge last let a source go, or the run started: `None` before
     /// the first tick.
     purged_at: Option<Instant>,
+    /// Part Frequency over the records' Advertised Parts (ADR-0112).
+    frequency: PartFrequency,
 }
 
 impl SourceBook {
     /// The empty book a run starts with, holding the distrust the download's
-    /// record carries. Every source reaches it as a sighting.
-    pub(crate) fn new(distrusted: HashSet<UserHash>) -> Self {
+    /// record carries, for a file of `part_count` parts. Every source reaches
+    /// it as a sighting.
+    pub(crate) fn new(distrusted: HashSet<UserHash>, part_count: u32) -> Self {
         Self {
-            records: HashMap::new(),
+            records: Records::default(),
             minted: 0,
             aliases: Aliases::default(),
             lanes: Lanes::default(),
@@ -184,6 +211,7 @@ impl SourceBook {
             file_asks: FileAskClock::default(),
             own_server: None,
             purged_at: None,
+            frequency: PartFrequency::new(part_count),
         }
     }
 
@@ -249,7 +277,7 @@ impl SourceBook {
         }
     }
 
-    /// Whether `endpoint` sits out a re-ask period (ADR-0090 invariant 3).
+    /// Whether `endpoint` sits out its dead-source window (ADR-0090 invariant 3).
     pub(crate) fn is_spent(&self, endpoint: PeerEndpoint) -> bool {
         self.blocks.is_spent(endpoint)
     }
@@ -259,16 +287,36 @@ impl SourceBook {
         self.blocks.distrusts(user_hash)
     }
 
-    /// The brain's tick at `now`: once a `FILEREASKTIME` period has passed,
-    /// endpoints spent two periods ago may be dialed again when next sighted.
-    /// Nothing is re-pooled here. The first instant starts the period.
+    /// The brain reached the book at `now`: spent names read and write on this
+    /// clock. Nothing is re-pooled here.
     pub(crate) fn turn_spent(&mut self, now: Instant) {
-        self.blocks.turn_at(now);
+        self.blocks.clock(now);
     }
 
-    /// When the spent endpoints' generations next turn.
-    pub(crate) fn next_spent_turn(&self) -> Option<Instant> {
-        self.blocks.next_turn()
+    /// Read and write spent names in the node's registry through `spent`.
+    pub(crate) fn share_spent(&mut self, spent: SpentSeat) {
+        self.blocks.share_spent(spent);
+    }
+
+    /// The live worker at `endpoint` closed after the hello with its file
+    /// request unanswered and no slot ask out: stock's `DS_CONNECTED` close,
+    /// dead and removed (`BaseClient.cpp:1288-1293`). A rank moves no download
+    /// state (`DownloadClient.cpp:1213-1218`), so a standing it earned goes
+    /// too. The record is spent, and its candidate goes with it, so no road
+    /// reopens it. Whether it was.
+    pub(crate) fn closed_unanswered(&mut self, endpoint: PeerEndpoint) -> bool {
+        let Some(record) = self.live_record_mut(endpoint) else {
+            return false;
+        };
+        record.standing = None;
+        let spend = record.dead_spend();
+        let candidate = record.candidate.take();
+        self.blocks.spend(endpoint, spend);
+        if let Some(candidate) = candidate {
+            self.blocks
+                .spend(AskName::LowId(candidate.key()), Spend::DeadLowId);
+        }
+        true
     }
 
     /// Whether `endpoint`'s record came from a seed at that endpoint.
@@ -278,13 +326,18 @@ impl SourceBook {
     }
 
     /// The crypt side `endpoint` stated — its stance and User Hash — by the
-    /// ADR-0049 precedence: the live worker's own hello, else what a record
-    /// stated, else, for a dial at a Low-ID candidate's half, the candidate's,
-    /// else nothing stated.
+    /// ADR-0049 precedence: the live worker's own hello, else the hello the
+    /// standing it waits on kept, else what a record stated, else, for a dial
+    /// at a Low-ID candidate's half, the candidate's, else nothing stated.
     pub(crate) fn peer_crypt(&self, endpoint: PeerEndpoint) -> PeerCrypt {
         let record = self.record_at(endpoint);
         self.identity(endpoint)
             .map(stated_crypt)
+            .or_else(|| {
+                record
+                    .filter(|record| record.stage == Stage::RemoteQueued(endpoint))
+                    .and_then(|record| record.standing?.stated_crypt())
+            })
             .or_else(|| self.run.record_crypt(endpoint))
             .or_else(|| {
                 let record = record?;
@@ -304,23 +357,74 @@ impl SourceBook {
         record.stage.identity()
     }
 
-    /// The counts the source-ask rule reads (aMule's): every source the book
-    /// holds, and those on queue, downloading or connected
-    /// (`GetValidSourcesCount`, stock 2.3.3 `PartFile.cpp:3467-3496`) — each
-    /// once, because each is one record.
+    /// The counts the source limit, the purges and the source-ask rule read
+    /// (aMule's): every source the book holds, and those on queue, downloading
+    /// or connected (`GetValidSourcesCount`, stock 2.3.3
+    /// `PartFile.cpp:3467-3496`) — each once, because each is one record — and
+    /// neither takes a record waiting on another download's standing, as
+    /// aMule's A4AF list is not `m_SrcList` (ADR-0090).
     pub(crate) fn counts(&self) -> SourceCounts {
-        let valid = self
-            .records
-            .values()
+        let sources = || {
+            self.records
+                .values()
+                .filter(|record| !record.waits_elsewhere())
+        };
+        let valid = sources()
             .filter(|record| {
                 record.stage.live().is_some() || matches!(record.stage, Stage::RemoteQueued(_))
             })
             .count();
         let count = |n: usize| u32::try_from(n).unwrap_or(u32::MAX);
         SourceCounts {
-            known: count(self.records.len()),
+            known: count(sources().count()),
             valid: count(valid),
         }
+    }
+
+    /// Every record the book holds, a record waiting on another download's
+    /// standing among them: what the operator reads.
+    pub(crate) fn held(&self) -> u32 {
+        u32::try_from(self.records.len()).unwrap_or(u32::MAX)
+    }
+
+    /// The book's sources by **Source Activity** (ADR-0116): every dial,
+    /// callback in flight and worker `granted` does not name is asking, but a
+    /// worker ranked without a grant, holding its link, is queued, as every
+    /// RemoteQueued record is but a spaced one, which holds no place and is
+    /// counted asking; those holding no part we lack are counted again apart;
+    /// every worker `granted` names is transferring.
+    pub(crate) fn activity(
+        &self,
+        granted: impl Fn(PeerEndpoint) -> bool,
+    ) -> crate::diagnostics::SourceActivity {
+        let mut activity = crate::diagnostics::SourceActivity::default();
+        for record in self.records.values() {
+            let tally = match &record.stage {
+                Stage::RemoteQueued(_) | Stage::RoadHeld
+                    if record.standing.is_some_and(|standing| !standing.queued()) =>
+                {
+                    &mut activity.asking
+                }
+                Stage::RemoteQueued(_) | Stage::RoadHeld => &mut activity.queued,
+                Stage::Worker(live, _) if granted(live.endpoint) => &mut activity.transferring,
+                Stage::Worker(..) if record.standing.is_some_and(|standing| standing.ranked()) => {
+                    &mut activity.queued
+                }
+                Stage::Dialing(_) | Stage::Worker(..) | Stage::CallbackPending(_) => {
+                    &mut activity.asking
+                }
+                Stage::Pooled(_) => continue,
+            };
+            *tally = tally.saturating_add(1);
+            if matches!(record.stage, Stage::RemoteQueued(_) | Stage::RoadHeld)
+                && record
+                    .standing
+                    .is_some_and(|standing| !standing.needs_parts())
+            {
+                activity.needing_nothing = activity.needing_nothing.saturating_add(1);
+            }
+        }
+        activity
     }
 
     /// How many worker slots the stages hold: every dial, worker and callback
@@ -330,6 +434,11 @@ impl SourceBook {
             .values()
             .filter(|record| record.stage.holds_slot())
             .count()
+    }
+
+    /// The **Book Generation**: it stands while no record changed.
+    pub(crate) fn generation(&self) -> u64 {
+        self.records.generation()
     }
 
     fn record_at(&self, endpoint: PeerEndpoint) -> Option<&Record> {
@@ -360,11 +469,15 @@ impl SourceBook {
         id
     }
 
-    /// Take `id` out of the book: its aliases, its lane, the record. What its
-    /// source asks stamped stays under its names for the run.
+    /// Take `id` out of the book: its aliases, its lane, the record, and its
+    /// Advertised Parts out of Part Frequency. What its source asks stamped
+    /// stays under its names for the run.
     fn remove(&mut self, id: RecordId) -> Option<Record> {
         self.keep_asks(id);
         let record = self.records.remove(&id)?;
+        if let Some(parts) = &record.advertised {
+            self.frequency.subtract(parts);
+        }
         for &endpoint in &record.endpoints {
             self.aliases.unbind_endpoint(endpoint, id);
         }
@@ -375,6 +488,30 @@ impl SourceBook {
             self.lanes.remove(lane, id);
         }
         Some(record)
+    }
+
+    /// Spend `id` under every **Ask Name** it holds — its endpoints, its
+    /// Low-ID key, the User Hashes it knows, the one its standing keeps from
+    /// the hello it queued under among them — and take it out of the book: its
+    /// source said it lacks the file (ADR-0090). A sighting under any of those
+    /// names is refused for the spent period.
+    fn spend_lacking(&mut self, id: RecordId) {
+        let Some(record) = self.records.get(&id) else {
+            return;
+        };
+        let mut hashes = self.user_hashes(record);
+        if let Some(queued_under) = record.standing.and_then(|standing| standing.crypt())
+            && !hashes.contains(&queued_under.user_hash)
+        {
+            hashes.push(queued_under.user_hash);
+        }
+        let spend = Spend::NoFile {
+            low_id: record.candidate.is_some(),
+        };
+        for name in self.ask_names(record, &hashes) {
+            self.blocks.spend(name, spend);
+        }
+        self.remove(id);
     }
 
     /// Bind `endpoint` to `id`, if the record has room and nothing else

@@ -303,6 +303,15 @@ run_ed2k_server_mode() {
     if [ -n "${AMULE_QUEUE_SIZE_PREF:-}" ]; then
         set_config QueueSizePref "$AMULE_QUEUE_SIZE_PREF"
     fi
+    # Optional upload-slot allocation pref (KB/s per slot): with a capped
+    # MaxUpload aMule keeps round(MaxUpload / SlotAllocation) slots
+    # (UploadQueue.cpp:297-320), so a high value holds a fast uploader to
+    # MIN_UP_CLIENTS_ALLOWED = 2 slots and its 10 MB session kick
+    # (UploadQueue.cpp:576-583) lands in a minute. A legal user preference;
+    # unset leaves aMule's default (2).
+    if [ -n "${AMULE_SLOT_ALLOCATION:-}" ]; then
+        set_config SlotAllocation "$AMULE_SLOT_ALLOCATION"
+    fi
     # Optional protocol-obfuscation knobs (ADR-0042). The peer-UDP crypt capture
     # runs its counterparties in THIS mode, not direct-peer, so the
     # documented recipe's env has to be honoured here too — aMule obfuscates its
@@ -657,6 +666,13 @@ run_direct_peer_mode() {
     set_config ECAddress 127.0.0.1
     set_config ECPort "$EC_PORT"
     set_config ECPassword "$EC_PASSWORD_MD5"
+    # Optional upload-rate cap (partial-share seeds): a seed reached only
+    # through a link's sources, slow enough that the downloader holds a part
+    # verified while others are still arriving. `0`/unset leaves aMule's
+    # default (unlimited).
+    if [ "${AMULE_MAX_UPLOAD:-0}" != "0" ]; then
+        set_config MaxUpload "$AMULE_MAX_UPLOAD"
+    fi
     # Secure User Identification on (aMule default, pinned explicitly — the
     # exchange is the whole point of this mode).
     set_config IsSecureIdentEnabled 1

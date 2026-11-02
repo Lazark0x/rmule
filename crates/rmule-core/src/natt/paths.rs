@@ -16,7 +16,7 @@ use std::time::{Duration, Instant};
 
 use rmule_net::portmap::PeerPinRequest;
 use rmule_peer::natt::PUNCHED_PATH_KEEPALIVE;
-use rmule_primitives::Ipv4Endpoint;
+use rmule_primitives::{Ipv4Endpoint, UserHash};
 
 /// The lease a pin asks for. Comfortably above the keepalive so one lost
 /// keepalive never costs the path, and short enough that a path rmule forgot
@@ -28,6 +28,18 @@ pub(crate) const PEER_PIN_LEASE: Duration = Duration::from_secs(10 * 60);
 pub(crate) struct PunchedPaths {
     /// Per peer: when the path last carried anything in either direction.
     last_activity: HashMap<Ipv4Endpoint, Instant>,
+    /// Paths no hello has named anyone on yet (ADR-0091, security rule 12),
+    /// with the peer our dial aimed at, when a dial raised the path.
+    unidentified: HashMap<Ipv4Endpoint, Option<UserHash>>,
+}
+
+/// What a closing path leaves behind.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ClosedPath {
+    /// A hello named somebody on it.
+    Named,
+    /// Nobody was ever named on it; `aimed` is the peer a dial raised it for.
+    Unnamed { aimed: Option<UserHash> },
 }
 
 impl PunchedPaths {
@@ -71,8 +83,25 @@ impl PunchedPaths {
     }
 
     /// The Tunnel over this path is gone; stop holding it.
-    pub(crate) fn on_path_closed(&mut self, peer: Ipv4Endpoint) {
+    ///
+    /// Says whether anybody was ever named on it.
+    pub(crate) fn on_path_closed(&mut self, peer: Ipv4Endpoint) -> ClosedPath {
         self.last_activity.remove(&peer);
+        match self.unidentified.remove(&peer) {
+            Some(aimed) => ClosedPath::Unnamed { aimed },
+            None => ClosedPath::Named,
+        }
+    }
+
+    /// A Tunnel rose on this path and nothing has said who is on it yet.
+    /// `aimed` is the peer our dial asked for, which is no more than a claim.
+    pub(crate) fn unnamed(&mut self, peer: Ipv4Endpoint, aimed: Option<UserHash>) {
+        self.unidentified.insert(peer, aimed);
+    }
+
+    /// A hello named somebody on this path. Returns who our dial aimed at.
+    pub(crate) fn identified(&mut self, peer: Ipv4Endpoint) -> Option<UserHash> {
+        self.unidentified.remove(&peer).flatten()
     }
 
     /// Paths idle for a full keepalive interval. Each is stamped as the

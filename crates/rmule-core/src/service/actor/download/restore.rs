@@ -5,19 +5,21 @@
 //! restore pace, never all in one tick.
 
 use std::collections::{HashMap, VecDeque};
+use std::path::PathBuf;
 use std::time::SystemTime;
-
-use tokio::sync::mpsc;
 
 use crate::adapters::{
     KadRuntimeFactory, PeerTransferService, ServeRuntimeService, SourceLookupService,
 };
+use crate::content::part_link::{self, LinkedPart};
+use crate::content::{ContentFileStore, on_pool};
 use crate::diagnostics::DiagnosticsState;
 use crate::download::source_seeds::SourceSeed;
-use crate::service::{CoreEvent, DownloadEvent, DownloadId, send_download_event};
-use crate::storage::DownloadRepository;
+use crate::served_downloads::ServedDownloads;
+use crate::service::{DownloadEvent, DownloadId, send_download_event};
+use crate::storage::{DownloadRepository, recorded_part_hashes};
 use crate::store::download::DurableDownloadRepository;
-use crate::{DownloadFailure, DownloadLifecycle};
+use crate::{DownloadFailure, DownloadLifecycle, DownloadPaths};
 
 use super::super::CoreActor;
 
@@ -29,11 +31,15 @@ use super::super::CoreActor;
 /// `can_restore`, since only a core built to restore at attach runs them —
 /// each with its **Source Seeds** under a day old (ADR-0109), the older ones
 /// dropped, said once for all of them.
+///
+/// Each that is a Served Download is installed with an empty range and no
+/// identity, its lease with the actor (ADR-0113).
 pub(in crate::service::actor) async fn attach_downloads(
     store: &DurableDownloadRepository,
     diagnostics: &DiagnosticsState,
-    evt_tx: &mpsc::Sender<CoreEvent>,
+    evt_tx: &crate::service::Outbox,
     can_restore: bool,
+    served: &ServedDownloads,
 ) -> (VecDeque<DownloadId>, HashMap<DownloadId, Vec<SourceSeed>>) {
     let records = match store.listed_downloads() {
         Ok(records) => records,
@@ -42,12 +48,18 @@ pub(in crate::service::actor) async fn attach_downloads(
             return (VecDeque::new(), HashMap::new());
         }
     };
+    sweep_cancelled(store, evt_tx).await;
+    match store.unreadable_rows() {
+        Ok(0) | Err(_) => {}
+        Ok(rows) => send_download_event(evt_tx, DownloadEvent::RowsUnreadable { rows }),
+    }
     let mut restoring = VecDeque::new();
     for record in records {
         let download_id = record.id();
         let parts = store.verified_parts(download_id).unwrap_or_default();
         let verified_bytes = parts.iter().map(|part| part.len).sum();
         let held: Vec<u32> = parts.iter().map(|part| part.part_index).collect();
+        served.install(&record, &recorded_part_hashes(store, download_id));
         diagnostics.rest_download(
             download_id,
             record.file_hash(),
@@ -62,9 +74,9 @@ pub(in crate::service::actor) async fn attach_downloads(
                 failure: record.failure().cloned(),
                 file_hash: record.file_hash(),
                 metadata: record.metadata().clone(),
+                file_path: record.file_path().to_path_buf(),
             },
-        )
-        .await;
+        );
         send_download_event(
             evt_tx,
             DownloadEvent::DownloadProgressRestored {
@@ -72,11 +84,11 @@ pub(in crate::service::actor) async fn attach_downloads(
                 verified_parts: parts.len(),
                 verified_bytes,
             },
-        )
-        .await;
+        );
+        // A completing row's run goes straight to its move (ADR-0115).
         let wants_run = matches!(
             record.lifecycle(),
-            DownloadLifecycle::Active | DownloadLifecycle::Queued
+            DownloadLifecycle::Active | DownloadLifecycle::Queued | DownloadLifecycle::Completing
         );
         if wants_run && can_restore {
             restoring.push_back(download_id);
@@ -91,7 +103,7 @@ pub(in crate::service::actor) async fn attach_downloads(
 /// any to load or to drop.
 async fn load_seeds(
     store: &DurableDownloadRepository,
-    evt_tx: &mpsc::Sender<CoreEvent>,
+    evt_tx: &crate::service::Outbox,
     restoring: &VecDeque<DownloadId>,
 ) -> HashMap<DownloadId, Vec<SourceSeed>> {
     let now = SystemTime::now();
@@ -120,8 +132,7 @@ async fn load_seeds(
                 seeds: remembered.values().map(Vec::len).sum(),
                 expired,
             },
-        )
-        .await;
+        );
     }
     remembered
 }
@@ -174,6 +185,56 @@ where
                 );
                 Vec::new()
             }
+        }
+    }
+}
+
+/// Take back every part file in the Temp Directory the store has no row for
+/// (ADR-0083), said once for all of them. Runs before the rows are read, so
+/// each is listed as any Paused download is.
+pub(in crate::service::actor) async fn adopt_part_files(
+    store: &DurableDownloadRepository,
+    temp_dir: Option<PathBuf>,
+    download_dir: Option<PathBuf>,
+    evt_tx: &crate::service::Outbox,
+) {
+    let (Some(temp_dir), Some(download_dir)) = (temp_dir, download_dir) else {
+        return;
+    };
+    let linked = on_pool(move || part_link::linked_parts(&temp_dir)).await;
+    let mut parts = 0;
+    for LinkedPart { part_path, link } in linked {
+        let Some(name) = part_path.file_stem().map(PathBuf::from) else {
+            continue;
+        };
+        let paths = DownloadPaths::new(download_dir.join(name), part_path);
+        match store.adopt(&link, &paths) {
+            Ok(Some(_)) => parts += 1,
+            Ok(None) => {}
+            Err(error) => tracing::warn!(%error, "a part file could not be taken back"),
+        }
+    }
+    if parts > 0 {
+        send_download_event(evt_tx, DownloadEvent::PartFilesAdopted { parts });
+    }
+}
+
+/// Try again the part files a cancel could not delete (ADR-0094). One that
+/// is still refused is told again, and the next attach goes on trying.
+async fn sweep_cancelled(store: &DurableDownloadRepository, evt_tx: &crate::service::Outbox) {
+    for record in store.cancelled_part_files().unwrap_or_default() {
+        let download_id = record.id();
+        if let Err(error) = ContentFileStore::delete_part(record.paths()).await {
+            tracing::warn!(%error, "a cancelled download's part file is still there");
+            send_download_event(
+                evt_tx,
+                DownloadEvent::CancelledFileLeft {
+                    download_id,
+                    part_path: record.paths().part_path().to_path_buf(),
+                },
+            );
+        } else if let Err(error) = store.part_file_gone(download_id) {
+            tracing::warn!(%error, "a deleted part file could not be taken off its row");
         }
     }
 }

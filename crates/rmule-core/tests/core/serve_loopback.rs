@@ -64,7 +64,7 @@ async fn mock_peer_downloads_a_shared_part_over_a_real_socket() {
     // Drive the requester side: RequestParts auto-issues probe + hashset +
     // slot acquisition, and the serve side answers each step, grants
     // the slot, and streams the block.
-    let ranges = PartRanges::new([(0, bytes.len() as u64), (0, 0), (0, 0)]).unwrap();
+    let ranges = PartRanges::new([(0, bytes.len() as u64), (0, 0), (0, 0)]);
     peer.send(PeerCommand::Requester(RequesterCommand::RequestParts {
         file_hash,
         file_size: bytes.len() as u64,
@@ -126,8 +126,7 @@ async fn serving_a_block_records_uploaded_bytes_in_the_credit_store() {
     // credit-store handle to assert accounting.
     let ctx = test_handshake_ctx(0x01, "rmule-serve");
     let (serve_runtime, bound_rx) = LoopbackServeRuntime::new(ctx.clone());
-    let credit = DurableCreditStore::new(store.clone());
-    let mut core = Core::builder(CoreConfig::default(), store)
+    let mut core = Core::builder(CoreConfig::default(), store.clone())
         .settings(rmule_core::CoreSettings::default())
         .source_lookup(PendingSourceLookup)
         .peer_transfer(RefusingPeerTransfer)
@@ -166,7 +165,7 @@ async fn serving_a_block_records_uploaded_bytes_in_the_credit_store() {
     .await
     .expect("identified");
 
-    let ranges = PartRanges::new([(0, bytes.len() as u64), (0, 0), (0, 0)]).unwrap();
+    let ranges = PartRanges::new([(0, bytes.len() as u64), (0, 0), (0, 0)]);
     peer.send(PeerCommand::Requester(RequesterCommand::RequestParts {
         file_hash,
         file_size: bytes.len() as u64,
@@ -190,18 +189,18 @@ async fn serving_a_block_records_uploaded_bytes_in_the_credit_store() {
 
     // The dialer identifies with test_handshake_ctx's user_hash 0x01.
     let dialer = UserHash::from_bytes([0x01; UserHash::BYTE_LEN]);
-    // Allow the serve task to process the PartsRequested accounting.
+    // The block counts once the serve task hears it left for the socket.
     timeout(HANG_GUARD, async {
-        loop {
-            if credit.totals(dialer).unwrap().uploaded >= 4096 {
-                return;
-            }
+        while core.diagnostics_snapshot().session.up_bytes_total < 4096 {
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
     })
     .await
     .expect("uploaded bytes recorded");
 
+    // Quit writes the ring; this is what the next run reads.
+    core.shutdown().await;
+    let credit = DurableCreditStore::new(store);
     assert_eq!(credit.totals(dialer).unwrap().uploaded, 4096);
     assert_eq!(credit.totals(dialer).unwrap().downloaded, 0);
 }
@@ -245,7 +244,7 @@ async fn serving_a_block_counts_upload_bytes_per_peer_and_for_the_session() {
     .await
     .expect("identified");
 
-    let ranges = PartRanges::new([(0, bytes.len() as u64), (0, 0), (0, 0)]).unwrap();
+    let ranges = PartRanges::new([(0, bytes.len() as u64), (0, 0), (0, 0)]);
     peer.send(PeerCommand::Requester(RequesterCommand::RequestParts {
         file_hash,
         file_size: bytes.len() as u64,
@@ -266,6 +265,21 @@ async fn serving_a_block_counts_upload_bytes_per_peer_and_for_the_session() {
     })
     .await
     .expect("received the block");
+
+    // Counted once the serve task hears the block left for the socket.
+    timeout(HANG_GUARD, async {
+        while serving
+            .core_mut()
+            .diagnostics_snapshot()
+            .session
+            .up_bytes_total
+            < 4096
+        {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("the block counted");
 
     let served = serving.core_mut().diagnostics_snapshot();
     assert_eq!(

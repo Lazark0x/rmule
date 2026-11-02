@@ -28,6 +28,7 @@ fn slot_requests_grant_queue_or_refuse_within_the_shared_budget() {
                 peer: peer(1),
                 file_hash,
                 software: None,
+                road: crate::GrantRoad::Linked,
             }),
         ],
     );
@@ -61,40 +62,6 @@ fn slot_requests_grant_queue_or_refuse_within_the_shared_budget() {
         state.on_conn_event(t0, peer(4), slot_request(hash(0x99)), &no_modifiers()),
         Vec::new(),
     );
-}
-
-/// Converted from the inline serve-task theft test (ADR-0041):
-/// the brain forwards every SUI proof as a `BindIdentity` decision —
-/// including a thief's under a different key — because only the ledger
-/// knows the stored key. Its atomic compare-and-set denies the mismatch
-/// (pinned in `tests/credit_store.rs`) and the enactor reports the theft,
-/// mirroring the download runner's arm.
-#[test]
-fn identity_proofs_bind_through_the_ledger_decision() {
-    let mut state = serving_state(1, Vec::new());
-    let user_hash = user(0x0C);
-    let t = Instant::now();
-
-    for (p, key) in [
-        (peer(1), b"the-owners-key".as_slice()),
-        (peer(2), b"the-thiefs-key".as_slice()),
-    ] {
-        assert_eq!(
-            state.on_conn_event(
-                t,
-                p,
-                ServeInput::Connection(ConnectionEvent::IdentityVerified {
-                    user_hash,
-                    public_key: key.to_vec(),
-                }),
-                &no_modifiers(),
-            ),
-            vec![ServeDecision::BindIdentity {
-                user_hash,
-                public_key: key.to_vec(),
-            }],
-        );
-    }
 }
 
 /// Converted from the inline serve-task promotion test: a freed
@@ -142,6 +109,7 @@ fn disconnect_promotes_the_highest_credit_waiter_and_releases_the_slot() {
                 peer: rich,
                 file_hash,
                 software: None,
+                road: crate::GrantRoad::Linked,
             }),
             ServeDecision::Emit(ServeEvent::UploadSlotReleased { peer: holder }),
         ],
@@ -193,6 +161,7 @@ fn transfer_cancelled_promotes_the_highest_credit_waiter_and_releases_the_slot()
                 peer: rich,
                 file_hash,
                 software: None,
+                road: crate::GrantRoad::Linked,
             }),
             ServeDecision::Emit(ServeEvent::UploadSlotReleased { peer: holder }),
         ],
@@ -210,18 +179,19 @@ fn transfer_cancelled_wipes_served_ranges_so_a_fresh_ask_re_reads() {
     let p = peer(1);
     identify(&mut state, p, user(0x0B), t);
 
-    let ranges = PartRanges::new([(0, 100), (0, 0), (0, 0)]).unwrap();
-    let read = ServeDecision::ReadRange {
+    let ranges = PartRanges::new([(0, 100), (0, 0), (0, 0)]);
+    let flow_read = |flow| ServeDecision::ReadRange {
         peer: p,
-        path: "/shared/served.bin".into(),
-        offset: 0,
-        len: 100,
-        purpose: ReadPurpose::Block {
+        flow,
+        from: ReadFrom::Row("/shared/served.bin".into()),
+        block: BlockRead {
             file_hash,
             start: 0,
             end: 100,
         },
     };
+    let slot = ServeInput::Server(ServerEvent::SlotRequested { file_hash });
+    let _ = state.on_conn_event(t, p, slot.clone(), &no_modifiers());
     assert_eq!(
         state.on_conn_event(
             t,
@@ -229,7 +199,7 @@ fn transfer_cancelled_wipes_served_ranges_so_a_fresh_ask_re_reads() {
             ServeInput::Server(ServerEvent::PartsRequested { file_hash, ranges }),
             &no_modifiers(),
         ),
-        vec![read.clone()],
+        vec![flow_read(1)],
     );
 
     // Cancel wipes the range record (and the credit identity) without
@@ -240,6 +210,8 @@ fn transfer_cancelled_wipes_served_ranges_so_a_fresh_ask_re_reads() {
         ServeInput::Server(ServerEvent::TransferCancelled { file_hash }),
         &no_modifiers(),
     );
+    let _ = state.end_slotless_flows();
+    let _ = state.on_conn_event(t, p, slot, &no_modifiers());
     assert_eq!(
         state.on_conn_event(
             t,
@@ -247,8 +219,8 @@ fn transfer_cancelled_wipes_served_ranges_so_a_fresh_ask_re_reads() {
             ServeInput::Server(ServerEvent::PartsRequested { file_hash, ranges }),
             &no_modifiers(),
         ),
-        vec![read],
-        "the same range reads again: nothing is stranded as already-served"
+        vec![flow_read(2)],
+        "the same range reads again on the next slot: nothing is stranded as already-served"
     );
 }
 
@@ -601,6 +573,7 @@ fn grant_and_queue_edges_name_each_peers_own_client() {
             peer: peer(1),
             file_hash,
             software: Some(amule),
+            road: crate::GrantRoad::Linked,
         }))
     );
     assert!(
@@ -669,4 +642,336 @@ fn a_software_revision_reaches_the_upload_row() {
     };
     assert_eq!(granted(&mut state, peer(1)), Some(Some(named)));
     assert_eq!(granted(&mut state, peer(2)), Some(None));
+}
+
+/// Two peers on a one-slot queue: the first holds the slot, the second waits.
+fn holder_and_waiter(file_hash: FileHash, t: Instant) -> (ServeState, PeerEndpoint, PeerEndpoint) {
+    let mut state = serving_state(1, vec![entry(file_hash, 64 << 20, "served.bin")]);
+    let (holder, waiter) = (peer(4001), peer(4002));
+    identify(&mut state, holder, user(1), t);
+    identify(&mut state, waiter, user(2), t);
+    let _ = slot_request(&mut state, holder, file_hash, t);
+    let _ = slot_request(&mut state, waiter, file_hash, t);
+    (state, holder, waiter)
+}
+
+fn block_left(file_hash: FileHash, bytes: u64) -> ServeInput {
+    ServeInput::Server(ServerEvent::BlockLeft {
+        file_hash,
+        start: 0,
+        end: bytes,
+    })
+}
+
+/// aMule kicks at 10 MiB while someone waits, tells the holder at once and
+/// puts it back on the wait list (`UploadQueue.cpp:616-620`,
+/// `UploadClient.cpp:493-510`): the slot goes to the waiter in the same batch.
+#[test]
+fn a_session_past_its_bytes_ends_tells_the_holder_and_moves_the_queue() {
+    let file_hash = hash(0x51);
+    let t = Instant::now();
+    let (mut state, holder, waiter) = holder_and_waiter(file_hash, t);
+
+    let under = state.on_conn_event(
+        t,
+        holder,
+        block_left(file_hash, 10_485_760),
+        &no_modifiers(),
+    );
+    assert!(
+        !under.contains(&send(holder, ServerCommand::EndUploadSession)),
+        "the bound is strictly more than 10 MiB"
+    );
+
+    let over = state.on_conn_event(t, holder, block_left(file_hash, 1), &no_modifiers());
+    let told = over
+        .iter()
+        .position(|d| *d == send(holder, ServerCommand::EndUploadSession))
+        .expect("the holder is told");
+    let granted = over
+        .iter()
+        .position(|d| *d == send(waiter, ServerCommand::GrantSlot { file_hash }))
+        .expect("the waiter takes the slot");
+    assert!(told < granted);
+    assert!(over.contains(&send(holder, ServerCommand::SetQueueRank { rank: 1 })));
+    assert!(state.queue.is_granted(waiter));
+    assert!(state.queue.contains(holder) && !state.queue.is_granted(holder));
+}
+
+/// `m_allowKicking` stands only with someone waiting (`UploadQueue.cpp:244-258`).
+#[test]
+fn a_session_past_its_bytes_runs_on_while_nobody_waits() {
+    let file_hash = hash(0x52);
+    let t = Instant::now();
+    let mut state = serving_state(1, vec![entry(file_hash, 64 << 20, "served.bin")]);
+    let holder = peer(4001);
+    identify(&mut state, holder, user(1), t);
+    let _ = slot_request(&mut state, holder, file_hash, t);
+
+    let decisions = state.on_conn_event(t, holder, block_left(file_hash, 1 << 30), &no_modifiers());
+
+    assert!(!decisions.contains(&send(holder, ServerCommand::EndUploadSession)));
+    assert!(state.queue.is_granted(holder));
+}
+
+/// A holder that sends nothing cannot sit out the bytes bound: the hour is read
+/// at the slot sweep (`UploadQueue.cpp:616`).
+#[test]
+fn a_session_past_its_hour_ends_at_the_sweep() {
+    let file_hash = hash(0x53);
+    let t = Instant::now();
+    let (mut state, holder, waiter) = holder_and_waiter(file_hash, t);
+    // Each sweep before the bound is a live holder, so its slot stands.
+    let moved = t + Duration::from_secs(3600);
+    state.link_moved(moved, holder);
+    assert!(
+        !state
+            .on_slot_sweep(moved, &no_modifiers())
+            .contains(&send(holder, ServerCommand::EndUploadSession))
+    );
+
+    let past = moved + Duration::from_secs(1);
+    state.link_moved(past, holder);
+    let decisions = state.on_slot_sweep(past, &no_modifiers());
+
+    assert!(decisions.contains(&send(holder, ServerCommand::EndUploadSession)));
+    assert!(state.queue.is_granted(waiter));
+}
+
+/// One kick a cycle, one start a second (`UploadQueue.cpp:244-258`, `:619`).
+#[test]
+fn sessions_end_one_a_second() {
+    let file_hash = hash(0x54);
+    let t = Instant::now();
+    let mut state = serving_state(2, vec![entry(file_hash, 64 << 20, "served.bin")]);
+    let (one, two) = (peer(4001), peer(4002));
+    let waiters = [peer(4003), peer(4004)];
+    for (index, p) in [one, two, waiters[0], waiters[1]].into_iter().enumerate() {
+        identify(&mut state, p, user(index as u8 + 1), t);
+        let _ = slot_request(&mut state, p, file_hash, t);
+    }
+    let full = 11 << 20;
+    let first = state.on_conn_event(t, one, block_left(file_hash, full), &no_modifiers());
+    let second = state.on_conn_event(t, two, block_left(file_hash, full), &no_modifiers());
+    assert!(first.contains(&send(one, ServerCommand::EndUploadSession)));
+    assert!(!second.contains(&send(two, ServerCommand::EndUploadSession)));
+
+    let later = t + Duration::from_secs(1);
+    let next = state.on_conn_event(later, two, block_left(file_hash, 1), &no_modifiers());
+    assert!(next.contains(&send(two, ServerCommand::EndUploadSession)));
+}
+
+/// aMule's guard reads `GetDownloadState() == DS_NONE`: "not our source", not
+/// "no slot of ours" (`UploadQueue.cpp:405`). A source of ours asks past fifty
+/// waiters; a slot holder that is none of ours is a stranger to it.
+#[test]
+fn the_low_id_guard_spares_our_sources_and_nobody_else() {
+    let file_hash = hash(0x55);
+    let t = Instant::now();
+    let mut state = ServeState::new(UploadSlotQueue::new(1, 64));
+    let _ = state.on_share_set(
+        vec![entry(file_hash, 4096, "served.bin")],
+        t,
+        &no_modifiers(),
+    );
+    state.on_self_position(ServeSelfPosition {
+        low_id: true,
+        server: None,
+    });
+    let holder = peer_at([198, 51, 100, 200], 4662);
+    let _ = slot_request(&mut state, holder, file_hash, t);
+    for n in 0..51 {
+        let _ = slot_request(
+            &mut state,
+            peer_at([198, 51, 100, n + 1], 4662),
+            file_hash,
+            t,
+        );
+    }
+
+    let refused = ServeDecision::Emit(ServeEvent::UploadLowIdAbuseRefused { peer: holder });
+    assert_eq!(
+        slot_request(&mut state, holder, file_hash, t),
+        vec![refused]
+    );
+
+    state.on_asker(ServeAsker {
+        banned: false,
+        our_source: true,
+    });
+    let source = peer_at([198, 51, 100, 201], 4662);
+    let refused = ServeDecision::Emit(ServeEvent::UploadLowIdAbuseRefused { peer: source });
+    assert!(!slot_request(&mut state, source, file_hash, t).contains(&refused));
+}
+
+fn banned_asker() -> ServeAsker {
+    ServeAsker {
+        banned: true,
+        our_source: false,
+    }
+}
+
+/// A ban lands on an open link: the holder's next ask ends its slot and its
+/// link, the next waiter is granted in the same batch, and it is answered
+/// nothing (`ClientTCPSocket.cpp:660`, `UploadClient.cpp:628-649`).
+#[test]
+fn a_banned_holders_next_ask_ends_its_slot_and_moves_the_queue() {
+    let file_hash = hash(0x56);
+    let t = Instant::now();
+    let (mut state, holder, waiter) = holder_and_waiter(file_hash, t);
+
+    state.on_asker(banned_asker());
+    let decisions = state.on_conn_event(
+        t,
+        holder,
+        parts(file_hash, [(0, 512), (0, 0), (0, 0)]),
+        &no_modifiers(),
+    );
+
+    assert!(decisions.contains(&ServeDecision::Disconnect { peer: holder }));
+    assert!(decisions.contains(&send(waiter, ServerCommand::GrantSlot { file_hash })));
+    assert!(
+        decisions.contains(&ServeDecision::Emit(ServeEvent::UploadSlotReleased {
+            peer: holder
+        }))
+    );
+    assert!(!state.queue.contains(holder));
+}
+
+/// A waiter a ban reaches leaves at the next sort, heard from or not, and is
+/// never promoted (`UploadQueue.cpp:98`).
+#[test]
+fn a_banned_waiter_leaves_at_the_sweep() {
+    let file_hash = hash(0x57);
+    let t = Instant::now();
+    let (mut state, holder, waiter) = holder_and_waiter(file_hash, t);
+
+    let decisions = state.on_banned_standings(t, &[waiter], &no_modifiers());
+
+    assert!(
+        decisions.contains(&ServeDecision::Emit(ServeEvent::WaiterLeft {
+            peer: waiter,
+            cause: WaiterLeaveCause::Banned,
+        }))
+    );
+    assert!(!state.queue.contains(waiter));
+    assert!(state.queue.is_granted(holder));
+}
+
+/// A source of ours is not banned to the serve side: stock's `IsBanned` reads
+/// false for a client it downloads from (`UploadClient.cpp:653`).
+#[test]
+fn a_ban_spares_a_source_of_ours() {
+    let file_hash = hash(0x58);
+    let t = Instant::now();
+    let (mut state, holder, _) = holder_and_waiter(file_hash, t);
+
+    state.on_asker(ServeAsker {
+        banned: true,
+        our_source: true,
+    });
+    let decisions = state.on_conn_event(
+        t,
+        holder,
+        ServeInput::Server(ServerEvent::SlotRequested { file_hash }),
+        &no_modifiers(),
+    );
+
+    assert!(decisions.contains(&send(holder, ServerCommand::GrantSlot { file_hash })));
+    assert!(state.queue.is_granted(holder));
+}
+
+/// Five fast slot asks reach the score of ten and ban: stock's arithmetic,
+/// charged at `OP_STARTUPLOADREQ` (`ClientTCPSocket.cpp:659`).
+#[test]
+fn a_fifth_fast_slot_ask_bans_and_a_source_of_ours_is_spared() {
+    let file_hash = hash(0x59);
+    let t = Instant::now();
+    let (mut state, holder, waiter) = holder_and_waiter(file_hash, t);
+    for _ in 0..3 {
+        let decisions = slot_request(&mut state, waiter, file_hash, t);
+        assert!(!decisions.contains(&ServeDecision::Ban { peer: waiter }));
+    }
+
+    let banned = slot_request(&mut state, waiter, file_hash, t);
+
+    assert_eq!(banned[0], ServeDecision::Ban { peer: waiter });
+    assert!(banned.contains(&ServeDecision::Disconnect { peer: waiter }));
+    assert!(!state.queue.contains(waiter));
+
+    state.on_asker(ServeAsker {
+        banned: false,
+        our_source: true,
+    });
+    for _ in 0..8 {
+        let decisions = slot_request(&mut state, holder, file_hash, t);
+        assert!(!decisions.contains(&ServeDecision::Ban { peer: holder }));
+    }
+}
+
+/// 3.1.0 charges `OP_AICHREQUEST` as a file ask (`ClientTCPSocket.cpp:1768`):
+/// the address cap never bounded its walk of known2.
+#[test]
+fn fast_aich_recovery_asks_ban_too() {
+    let file_hash = hash(0x5A);
+    let t = Instant::now();
+    let mut state = serving_state(1, vec![entry(file_hash, 4096, "served.bin")]);
+    let asker = peer(4001);
+    identify(&mut state, asker, user(1), t);
+    let ask = ServeInput::Server(ServerEvent::AichRequested {
+        file_hash,
+        part: 0,
+        root: rmule_primitives::AichRootHash::from_bytes(
+            [1; rmule_primitives::AichRootHash::BYTE_LEN],
+        ),
+    });
+    let mut last = Vec::new();
+    for _ in 0..5 {
+        last = state.on_conn_event(t, asker, ask.clone(), &no_modifiers());
+    }
+    assert_eq!(last[0], ServeDecision::Ban { peer: asker });
+}
+
+/// A client that proved a key at a place and comes back under another hash
+/// inside two hours is banned at the hello (`BaseClient.cpp:780-787`); a place
+/// that never proved one changes hash freely.
+#[test]
+fn a_new_hash_at_a_place_that_proved_another_bans_at_the_hello() {
+    let t = Instant::now();
+    let mut state = serving_state(1, Vec::new());
+    let place = peer(4001);
+    identify(&mut state, place, user(1), t);
+    let _ = state.on_conn_event(
+        t,
+        place,
+        ServeInput::IdentityBound { user_hash: user(1) },
+        &no_modifiers(),
+    );
+
+    let back = hello_facts(user(2), 0, 0, 2).identified();
+    let decisions = state.on_conn_event(
+        t,
+        peer_at([10, 0, 0, 9], 4662),
+        back.clone(),
+        &no_modifiers(),
+    );
+    assert!(decisions.is_empty(), "another place is another client");
+
+    let decisions = state.on_conn_event(t, place, back, &no_modifiers());
+    assert!(decisions.contains(&ServeDecision::Ban { peer: place }));
+}
+
+/// A silent link closes, its waiter's place riding its reask (ADR-0057), and a
+/// slot holder's is left to the slot sweep, which lends what the kernel holds.
+#[test]
+fn a_silent_link_closes_unless_it_holds_a_slot() {
+    let file_hash = hash(0x5B);
+    let t = Instant::now();
+    let (mut state, holder, waiter) = holder_and_waiter(file_hash, t);
+
+    let silent = state.on_conn_event(t, waiter, ServeInput::LinkSilent, &no_modifiers());
+    assert_eq!(silent, vec![ServeDecision::Disconnect { peer: waiter }]);
+
+    let held = state.on_conn_event(t, holder, ServeInput::LinkSilent, &no_modifiers());
+    assert_eq!(held, Vec::new());
 }

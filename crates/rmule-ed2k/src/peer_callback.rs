@@ -112,19 +112,7 @@ impl PeerCallback {
     /// body layout is not this packet's.
     pub fn decode_packet(packet: &Packet) -> Result<Self> {
         let opcode = Opcode::PeerCallback.as_u8();
-        if packet.protocol() != PacketProtocol::Edonkey {
-            return Err(Ed2kError::InvalidPayload {
-                opcode,
-                reason: "unsupported packet protocol",
-            });
-        }
-        if packet.opcode() != opcode {
-            return Err(Ed2kError::InvalidPayload {
-                opcode,
-                reason: "wrong opcode for OP_CALLBACKREQUESTED",
-            });
-        }
-        let payload = packet.payload();
+        let payload = packet.body_of(PacketProtocol::Edonkey, opcode)?;
         if payload.len() < MIN_PAYLOAD_LEN {
             return Err(Ed2kError::InvalidPayload {
                 opcode,
@@ -187,12 +175,16 @@ impl PeerCallback {
 /// oracle has produced — the dial-back to a v6 requester is plaintext until
 /// something on the wire says otherwise.
 ///
-/// **Evidence: `single-oracle`, and un-captured.** Only eNode-go is known to
-/// emit this opcode; the other server implementing the dialect never mentions
-/// it, so a firewalled IPv6 peer on that server may have no callback path at
-/// all. Building the eighteen-byte consume anyway costs nothing and is what
-/// keeps an IPv6-only rmule able to take the one server's callback — the
-/// evidence table is the honest form of the gate, not a build-time one.
+/// Any sixteen bytes decode. The address gate is not the codec's: core judges
+/// the requester of either opcode by the Reserved Range check with the server
+/// as its Informant (ADR-0085), which only the session knows.
+///
+/// **Evidence: source-derived, and un-captured.** No pinned server emits this
+/// opcode; the layout rests on the emule-qt IPv6 spec alone, so a firewalled
+/// IPv6 peer may have no callback path at all. Building the eighteen-byte
+/// consume anyway costs nothing and keeps an IPv6-only rmule able to take a
+/// server's callback the day one emits it — the evidence table is the honest
+/// form of the gate, not a build-time one.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct PeerCallbackIpv6 {
     /// Where to dial the peer that asked for the callback.
@@ -217,19 +209,7 @@ impl PeerCallbackIpv6 {
     /// body layout is not this packet's.
     pub fn decode_packet(packet: &Packet) -> Result<Self> {
         let opcode = Opcode::PeerCallbackIpv6.as_u8();
-        if packet.protocol() != PacketProtocol::Edonkey {
-            return Err(Ed2kError::InvalidPayload {
-                opcode,
-                reason: "unsupported packet protocol",
-            });
-        }
-        if packet.opcode() != opcode {
-            return Err(Ed2kError::InvalidPayload {
-                opcode,
-                reason: "wrong opcode for OP_CALLBACKREQUESTED_IPV6",
-            });
-        }
-        let payload = packet.payload();
+        let payload = packet.body_of(PacketProtocol::Edonkey, opcode)?;
         if payload.len() < Self::MIN_PAYLOAD_LEN {
             return Err(Ed2kError::InvalidPayload {
                 opcode,
@@ -360,8 +340,8 @@ mod tests {
     /// the one thing a reader can get wrong silently, so it is asserted
     /// against a value whose two bytes differ.
     ///
-    /// Evidence: **`single-oracle` (eNode-go) and un-captured** — these are the
-    /// spec's bytes, not a capture's.
+    /// Evidence: **source-derived and un-captured** — these are the spec's
+    /// bytes, not a capture's.
     #[test]
     fn the_ipv6_callback_is_sixteen_address_bytes_then_a_little_endian_port() {
         let address: std::net::Ipv6Addr = "2a01:4f8::1".parse().unwrap();

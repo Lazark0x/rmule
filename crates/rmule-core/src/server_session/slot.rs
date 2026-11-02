@@ -34,6 +34,11 @@ use crate::server_list::ServerFacts;
 pub(crate) struct SharedServerSession {
     slot: Arc<Mutex<Option<ServerSessionHandle>>>,
     own: SharedOwnIdentity,
+    /// Raised to end the dial in flight; lowered by the next claim.
+    dial_cancel: Arc<watch::Sender<bool>>,
+    /// The bounded **Name Resolver** an establishment resolves a named
+    /// server through, before its filter gate.
+    resolver: Arc<std::sync::OnceLock<crate::name_resolver::SharedNameResolver>>,
     /// What the connected server said about reaching us over IPv6
     /// (`ST_IPV6_STATUS`, ADR-0084). It rides the session cell for the same
     /// reason the self-facts do: the session is its only writer and its
@@ -82,8 +87,8 @@ pub(crate) struct SharedServerSession {
     /// order, and an activity racing the connect rides the operator's session
     /// rather than the one the connect is about to end.
     ///
-    /// A `std::sync::Mutex`: one small value, never held across an await.
-    pending_connect: Arc<std::sync::Mutex<Option<watch::Receiver<()>>>>,
+    /// A `parking_lot::Mutex`: one small value, never held across an await.
+    pending_connect: Arc<parking_lot::Mutex<Option<watch::Receiver<()>>>>,
     /// How long a dialed server may leave the login unanswered.
     ///
     /// Late-bound like [`facts`](Self::facts), and for the same reason: the
@@ -110,6 +115,12 @@ pub(crate) struct SharedServerSession {
     /// and which is woven after this cell. Unset, a session presents its own
     /// id, which is what the owner answers with no Kad node anyway.
     reach: Arc<std::sync::OnceLock<crate::reachability::SharedSelfReach>>,
+    /// The **Server Callback Dial-Backs** (ADR-0061): how every session
+    /// answers the server relaying a peer that wants to download from us. It
+    /// rides here because the in-flight bound outlives any one session, and
+    /// establishment, which hands each session its sinks, holds only this
+    /// cell.
+    dial_backs: super::ServerCallbackDialBacks,
 }
 
 impl Default for SharedServerSession {
@@ -117,6 +128,7 @@ impl Default for SharedServerSession {
     /// Address Learning store — the one owner every advert reads.
     fn default() -> Self {
         let own = SharedOwnIdentity::default();
+        let obfuscation = crate::obfuscation_policy::SharedObfuscationPolicy::default();
         Self {
             udp_ports_advert: crate::adapters::SharedUdpPortsAdvert::over(own.addresses().clone()),
             own,
@@ -127,9 +139,12 @@ impl Default for SharedServerSession {
             facts: Arc::default(),
             sessions: Arc::new(watch::channel(0).0),
             pending_connect: Arc::default(),
+            dial_cancel: Arc::new(watch::channel(false).0),
+            resolver: Arc::default(),
             login_timeout: Arc::default(),
             withhold_shares: Arc::new(watch::channel(false).0),
-            obfuscation: crate::obfuscation_policy::SharedObfuscationPolicy::default(),
+            dial_backs: super::ServerCallbackDialBacks::new(obfuscation.clone()),
+            obfuscation,
             reach: Arc::default(),
         }
     }
@@ -149,6 +164,11 @@ impl SharedServerSession {
     /// Presented Client ID from. Binding twice keeps the first.
     pub(crate) fn install_reach(&self, reach: crate::reachability::SharedSelfReach) {
         let _ = self.reach.set(reach);
+    }
+
+    /// The Server Callback Dial-Backs every session answers through.
+    pub(crate) fn dial_backs(&self) -> &super::ServerCallbackDialBacks {
+        &self.dial_backs
     }
 
     /// Self Reach as bound, or `None` for a cell no actor wove.
@@ -172,8 +192,8 @@ impl SharedServerSession {
         &self.server_punch
     }
 
-    /// The **Advertised IPv6** (ADR-0087) the login's `CT_MOD_IP_V6` tag and
-    /// its coupled `SRVCAP_IPV6` bit ride, and the builder clones into every
+    /// The **Advertised IPv6** (ADR-0087) the login's `CT_MOD_IP_V6` tag
+    /// names, and the builder clones into every
     /// hello, the Kad publisher and both dial roads — a view over this cell's
     /// own Address Learning store and probe verdict, so the login and a hello
     /// can never name different addresses and none of them caches one.
@@ -253,8 +273,8 @@ impl SharedServerSession {
             .unwrap_or_else(|| rmule_net::ed2k::ConnectOptions::default().login_timeout)
     }
 
-    /// The live session, or `None` — and never a dial (ADR-0093, "Connecting
-    /// is the operator's act"). An operator connect in flight is waited out
+    /// The live session, or `None` — and never a dial (ADR-0095, "Connecting is the operator's
+    /// act"). An operator connect in flight is waited out
     /// first: the handle in the slot may be the one that connect
     /// is about to end, and the session it makes is the one to ride.
     pub(crate) async fn live_session(&self) -> Option<ServerSessionHandle> {
@@ -314,14 +334,40 @@ impl SharedServerSession {
     /// connect task is spawned; the claim moves into that task and its drop —
     /// success, failure, or panic — is the release.
     pub(crate) fn claim_connect(&self) -> OperatorConnectClaim {
+        self.dial_cancel.send_replace(false);
         let (tx, rx) = watch::channel(());
-        *self
-            .pending_connect
-            .lock()
-            .expect("pending connect lock poisoned") = Some(rx);
+        *self.pending_connect.lock() = Some(rx);
         OperatorConnectClaim {
             _resolved_on_drop: tx,
         }
+    }
+
+    /// End the dial in flight: the operator's Disconnect is meant for a stuck
+    /// dial above all. Nothing happens to a dial past its login, which ends
+    /// as a session and is hung up as one. One dial flies at a time, so one
+    /// flag does; the next claim lowers it.
+    pub(crate) fn cancel_dial(&self) {
+        self.dial_cancel.send_replace(true);
+    }
+
+    /// Resolves once the dial in flight is cancelled.
+    pub(crate) async fn dial_cancelled(&self) {
+        let mut cancel = self.dial_cancel.subscribe();
+        // The sender lives in this cell, so the wait never ends in an error.
+        let _ = cancel.wait_for(|cancelled| *cancelled).await;
+    }
+
+    /// Bind the **Name Resolver** an establishment resolves a named server
+    /// through. Binding twice keeps the first.
+    #[cfg(test)]
+    pub(crate) fn install_resolver(&self, resolver: crate::name_resolver::SharedNameResolver) {
+        let _ = self.resolver.set(resolver);
+    }
+
+    /// The Name Resolver as bound, or the system's.
+    pub(crate) fn resolver(&self) -> &crate::name_resolver::SharedNameResolver {
+        self.resolver
+            .get_or_init(crate::name_resolver::system_resolver)
     }
 
     /// Whether an operator connect holds establishment authority right now
@@ -330,7 +376,6 @@ impl SharedServerSession {
     pub(crate) fn operator_connect_pending(&self) -> bool {
         self.pending_connect
             .lock()
-            .expect("pending connect lock poisoned")
             .as_ref()
             .is_some_and(|rx| rx.has_changed().is_ok())
     }
@@ -342,10 +387,7 @@ impl SharedServerSession {
     pub(crate) async fn wait_for_operator_connect(&self) {
         loop {
             let live = {
-                let pending = self
-                    .pending_connect
-                    .lock()
-                    .expect("pending connect lock poisoned");
+                let pending = self.pending_connect.lock();
                 match pending.as_ref() {
                     // `has_changed` errors once the sender dropped — a
                     // resolved claim is the same as none.

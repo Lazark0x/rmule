@@ -26,6 +26,7 @@ pub struct KadNodeStart {
     admission: KadContactAdmission,
     self_lookup: bool,
     small_timer: bool,
+    big_timer: Option<fn() -> KadId>,
     self_check: Option<KadSelfCheck>,
     obfuscation: Option<KadObfuscation>,
 }
@@ -41,6 +42,7 @@ impl KadNodeStart {
             admission: KadContactAdmission::default(),
             self_lookup: false,
             small_timer: false,
+            big_timer: None,
             self_check: None,
             obfuscation: None,
         }
@@ -52,6 +54,14 @@ impl KadNodeStart {
     #[must_use]
     pub fn admission(mut self, admission: KadContactAdmission) -> Self {
         self.admission = admission;
+        self
+    }
+
+    /// Run the big timer's hourly refresh lookups; `random_id` supplies the
+    /// low bits of each target, as the node holds no randomness of its own.
+    #[must_use]
+    pub const fn big_timer(mut self, random_id: fn() -> KadId) -> Self {
+        self.big_timer = Some(random_id);
         self
     }
 
@@ -217,6 +227,7 @@ impl KadNode {
             admission,
             self_lookup,
             small_timer,
+            big_timer,
             self_check,
             obfuscation,
         } = start;
@@ -227,6 +238,10 @@ impl KadNode {
         }
         if small_timer {
             node.next_small_timer = Some(now + Self::SMALL_TIMER_INITIAL);
+        }
+        if let Some(random_id) = big_timer {
+            node.refresh_target = Some(random_id);
+            node.next_big_timer = Some(now + Self::BIG_TIMER_INTERVAL);
         }
         if let Some(self_check) = self_check {
             node.firewall = Some(crate::reachability::FirewallSelfCheck::new(now));

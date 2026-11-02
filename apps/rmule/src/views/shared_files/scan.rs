@@ -4,21 +4,21 @@
 //! own add raised. Each view remembers what it answered, since the question
 //! stays open in the state until core's next edge for the directory.
 
+use std::cell::Cell;
 use std::collections::BTreeSet;
 
-use crate::views::modal::Modal;
+use crate::row_selection::viewport::Viewport;
+use crate::table_sort::RowMove;
+use crate::views::modal::{Question, draw_question, scroll_key};
 use ratatui::Frame;
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use ratatui::layout::Rect;
-use ratatui::style::{Modifier, Style};
-use ratatui::text::{Line, Span};
 use rmule_core::{CoreCommand, ScanCommand};
 
 use super::ViewOutcome;
 use crate::action::Action;
 use crate::state::{ScanConsent, UiState};
 use crate::theme::Theme;
-use crate::wrap::{clamp_u16, wrapped_lines};
 
 /// The oldest open question this view has not answered; with `adding_only`,
 /// only a directory being added.
@@ -35,20 +35,26 @@ pub(crate) fn open_consent<'a>(
 
 /// `y` shares, `n` keeps the directory private. Every other key is
 /// swallowed so nothing behind the question moves, except what the globals
-/// claim (a tab switch, quit — which answers nothing).
+/// claim (a tab switch, quit — which answers nothing). `j` `k` `g` `G`
+/// scroll the question in a frame too short for it.
 pub(crate) fn consent_key(
     key: KeyEvent,
     consent: &ScanConsent,
-    answered: &mut BTreeSet<u64>,
+    (answered, viewport): (&mut BTreeSet<u64>, &mut Cell<Viewport>),
 ) -> ViewOutcome {
     let share = match key.code {
-        KeyCode::Char('y') => true,
-        KeyCode::Char('n') => false,
-        KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('j' | 'k' | 'g' | 'G' | 'm' | 'x') => {
+        KeyCode::Char('y' | 'Y') => true,
+        KeyCode::Char('n' | 'N') => false,
+        code if RowMove::of(code).is_some() => {
+            scroll_key(viewport, code);
+            return ViewOutcome::Redraw;
+        }
+        KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('m' | 'x') => {
             return ViewOutcome::Redraw;
         }
         _ => return ViewOutcome::Ignored,
     };
+    viewport.take();
     answered.insert(consent.asked);
     ViewOutcome::Emit(Action::Command(CoreCommand::Scan(ScanCommand::Answer {
         dir: consent.dir.clone(),
@@ -57,29 +63,25 @@ pub(crate) fn consent_key(
 }
 
 /// The question, with what a yes discloses.
-pub(crate) fn draw_consent(frame: &mut Frame, area: Rect, consent: &ScanConsent, theme: &Theme) {
+pub(crate) fn draw_consent(
+    frame: &mut Frame,
+    area: Rect,
+    consent: &ScanConsent,
+    theme: &Theme,
+    viewport: &Cell<Viewport>,
+) {
     let (title, question, consequence) = crate::words::scan::share_confirm(
         &consent.dir,
         consent.offer,
         consent.adding,
         &consent.replaces,
     );
-    let width = clamp_u16(64).min(area.width);
-    let text_w = usize::from(width).saturating_sub(4).max(1);
-
-    let mut lines = wrapped_lines(&question, text_w, Style::new().fg(theme.fg));
-    lines.push(Line::from(""));
-    lines.extend(wrapped_lines(&consequence, text_w, theme.dim_text()));
-    lines.push(Line::from(""));
-    lines.push(Line::from(vec![
-        Span::styled("y", Style::new().fg(theme.bad).add_modifier(Modifier::BOLD)),
-        Span::styled(" share    ", Style::new().fg(theme.fg)),
-        Span::styled("n", Style::new().fg(theme.accent)),
-        Span::styled(" keep private", Style::new().fg(theme.fg)),
-    ]));
-    Modal::new(title, theme)
-        .padded()
-        .draw(frame, area, width, theme, lines);
+    let question = Question {
+        title,
+        asks: &question,
+        does: &consequence,
+    };
+    draw_question(frame, area, &question, theme, viewport);
 }
 
 #[cfg(test)]
@@ -91,6 +93,7 @@ mod tests {
 
     use super::*;
     use crate::fixture::press;
+    use crate::views::View;
     use crate::views::shared_files::SharedView;
 
     fn asked(dir: &str) -> UiState {
@@ -190,5 +193,34 @@ mod tests {
             answer_of(view.handle_key(press(KeyCode::Char('n')), &state)),
             Some(false)
         );
+    }
+
+    #[test]
+    fn golden_the_question_scrolls_in_a_short_frame() {
+        let state = asked("/dl");
+        let mut view = SharedView::default();
+        let area = Rect::new(0, 0, 50, 5);
+        let shown = |view: &mut SharedView| {
+            crate::golden::render_to_lines(area.width, area.height, |frame| {
+                view.draw(
+                    frame,
+                    area,
+                    &state,
+                    &Theme::default_dark(),
+                    std::time::Instant::now(),
+                );
+            })
+        };
+        crate::golden::assert_golden("shared_consent_short", area.width, area.height, |frame| {
+            view.draw(
+                frame,
+                area,
+                &state,
+                &Theme::default_dark(),
+                std::time::Instant::now(),
+            );
+        });
+        view.handle_key(press(KeyCode::Char('G')), &state);
+        assert!(shown(&mut view).contains("n no"), "{}", shown(&mut view));
     }
 }

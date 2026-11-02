@@ -8,13 +8,19 @@
 //! timeouts and budgets are rmule policy — deterministic knobs for the sim
 //! tier, not wire compatibility.
 
+use std::net::IpAddr;
 use std::time::Duration;
 
-use super::{KadCallbackWalkEnd, KadEvent, KadNode, KadNodeDiagnostic};
+use rmule_primitives::Informant;
+
+use super::send_gate::{PacedSend, SendOffer, SendRoad};
+use super::{KadCallbackPace, KadCallbackWalkEnd, KadEvent, KadNode, KadNodeDiagnostic};
 use crate::buddy::BuddyMessage;
+use crate::envelope::KadEnvelope;
 use crate::keyword_store::encode_search_key_req;
 use crate::lookup_walk::{KadLookupWalk, KadWalkAction, KadWalkOutcome, KadWalkPurpose};
 use crate::messages::Kad2Message;
+use crate::routing::KadAnswerRefusal;
 use crate::{KadContact, KadId, KadInstant, KadNodeEndpoint};
 
 impl KadNode {
@@ -105,35 +111,96 @@ impl KadNode {
         target: KadId,
         contacts: &[KadContact],
     ) {
-        // IP-filtered rows are dropped before any walk sees them (aMule
-        // `ProcessKademlia2Response`, `KademliaUDPListener.cpp#L733` —
-        // its filter runs before the rows reach the search manager *or* the
-        // routing zone), so a walk never dials a filtered candidate.
-        let (admitted, refused): (Vec<KadContact>, Vec<KadContact>) = contacts
+        // A row no node can be at, then an IP-filtered one, is dropped before
+        // any walk sees it (aMule `ProcessKademlia2Response`,
+        // `KademliaUDPListener.cpp:732-733` — its checks run before the rows
+        // reach the search manager *or* the routing zone), so a walk never
+        // dials either. The responder is the party that named every row
+        // (ADR-0085).
+        let informant = Informant::Party(IpAddr::V4(from.ip()));
+        let mut admitted = Vec::with_capacity(contacts.len());
+        for &contact in contacts {
+            let endpoint = contact.endpoint();
+            if !crate::net::may_be_a_contact(informant, endpoint, contact.version()) {
+                self.emit_diagnostic(KadNodeDiagnostic::ContactRefused { endpoint });
+            } else if !self.contact_admission.admits(endpoint.ip()) {
+                self.emit_diagnostic(KadNodeDiagnostic::ContactIpFiltered { endpoint });
+            } else {
+                admitted.push(contact);
+            }
+        }
+        let Some(index) = self
+            .walks
             .iter()
-            .copied()
-            .partition(|contact| self.contact_admission.admits(contact.endpoint().ip()));
-        for contact in refused {
-            self.emit_diagnostic(KadNodeDiagnostic::ContactIpFiltered {
-                endpoint: contact.endpoint(),
-            });
-        }
-        let consumed = self.walks.iter_mut().find_map(|walk| {
-            if walk.target() != target {
-                return None;
-            }
-            let actions = walk.on_lookup_res(now, from, &admitted)?;
-            Some((walk.purpose(), actions))
-        });
-        match consumed {
-            Some((purpose, actions)) => {
-                if let KadWalkPurpose::UdpFirewallHelpers { .. } = purpose {
-                    self.offer_udp_helper_rows(&admitted);
+            .position(|walk| walk.target() == target && walk.awaits(from))
+        else {
+            self.emit_diagnostic(KadNodeDiagnostic::UnsolicitedLookupRes { from });
+            return;
+        };
+        let purpose = self.walks[index].purpose();
+        // A UDP firewall check's rows go to its tester as they are, never into
+        // the table (`KademliaUDPListener.cpp:734-740`), and its walk dials
+        // none of them. Any other walk's rows are taken one by one, in answer
+        // order, as aMule takes them.
+        let helper = matches!(purpose, KadWalkPurpose::UdpFirewallHelpers { .. });
+        let mut dialable = Vec::with_capacity(admitted.len());
+        if helper {
+            dialable.clone_from(&admitted);
+        } else {
+            for &row in &admitted {
+                let endpoint = row.endpoint();
+                match self.take_answer_row(now, row) {
+                    Ok(()) => dialable.push(row),
+                    Err(KadAnswerRefusal::Kad1) => {
+                        self.emit_diagnostic(KadNodeDiagnostic::ContactRefused { endpoint });
+                    }
+                    Err(KadAnswerRefusal::ContradictsStored) => {
+                        self.emit_diagnostic(KadNodeDiagnostic::ContactContradictsStored {
+                            endpoint,
+                        });
+                    }
+                    Err(KadAnswerRefusal::Cap(cap)) => {
+                        self.emit_diagnostic(KadNodeDiagnostic::ContactOverAdmissionCap {
+                            endpoint,
+                            cap,
+                        });
+                    }
                 }
-                self.apply_walk_actions(now, purpose, actions);
             }
-            None => self.emit_diagnostic(KadNodeDiagnostic::UnsolicitedLookupRes { from }),
         }
+        let Some(actions) = self.walks[index].on_lookup_res(now, from, &dialable) else {
+            self.emit_diagnostic(KadNodeDiagnostic::UnsolicitedLookupRes { from });
+            return;
+        };
+        if helper {
+            self.offer_udp_helper_rows(&admitted);
+        }
+        self.apply_walk_actions(now, purpose, actions);
+    }
+
+    /// Take one lookup-answer row as aMule's `ProcessKademlia2Response` does
+    /// (`KademliaUDPListener.cpp:731-750`, ADR-0064). A Kad1 row never. A row
+    /// of an ID the table does not hold is stored unverified and unqueried,
+    /// under the bucket rules and admission caps of any add; a known ID's
+    /// entry is left as it is (`AddUnfiltered` passes `update` false). The walk
+    /// may dial the row when the table stored it or would accept it.
+    fn take_answer_row(
+        &mut self,
+        now: KadInstant,
+        row: KadContact,
+    ) -> Result<(), KadAnswerRefusal> {
+        if row.version() <= 1 {
+            return Err(KadAnswerRefusal::Kad1);
+        }
+        if self.routing.get(row.id()).is_none() {
+            let unverified =
+                KadContact::new(row.id(), row.endpoint(), row.tcp_port(), row.version());
+            let update = self.routing.upsert(now, unverified);
+            if self.announce(unverified, update) {
+                return Ok(());
+            }
+        }
+        self.routing.accepts_answer_row(&row)
     }
 
     /// Translate walk actions into datagrams and events, then drop any walk
@@ -147,11 +214,12 @@ impl KadNode {
         actions: Vec<KadWalkAction>,
     ) {
         let target = purpose.kad_target();
+        let mut callback_sends = CallbackWalkSends::default();
+        let mut refused = Vec::new();
         for action in actions {
             match action {
-                KadWalkAction::SendLookup { contact } => self.send(
-                    contact.endpoint(),
-                    &Kad2Message::LookupReq {
+                KadWalkAction::SendLookup { contact } => {
+                    let lookup = Kad2Message::LookupReq {
                         count: match purpose {
                             KadWalkPurpose::UdpFirewallHelpers { .. } => {
                                 Self::UDP_HELPER_LOOKUP_CONTACT_COUNT
@@ -160,37 +228,46 @@ impl KadNode {
                         },
                         target,
                         check: contact.id(),
-                    },
-                ),
-                KadWalkAction::SendSearch { contact } => match purpose {
-                    KadWalkPurpose::SearchSources(request) => self.send(
+                    };
+                    refused.extend(self.pace_walk_send(
+                        now,
+                        target,
                         contact.endpoint(),
-                        &Kad2Message::SearchSourceReq {
+                        lookup.encode(),
+                    ));
+                }
+                KadWalkAction::SendSearch { contact } => {
+                    let search = match purpose {
+                        KadWalkPurpose::SearchSources(request) => Kad2Message::SearchSourceReq {
                             target,
                             start_position: 0,
                             file_size: request.target().file_size(),
-                        },
-                    ),
-                    // The v1 requester emits the plain lead keyword — offset 0,
-                    // no restrictive tree (aMule's unfiltered query).
-                    KadWalkPurpose::SearchKeyword { target: keyword } => {
-                        self.send_envelope(
-                            contact.endpoint(),
-                            &encode_search_key_req(keyword, 0, None),
-                        );
-                    }
-                    _ => unreachable!("SendSearch is only emitted by search walks"),
-                },
+                        }
+                        .encode(),
+                        // The v1 requester emits the plain lead keyword — offset 0,
+                        // no restrictive tree (aMule's unfiltered query).
+                        KadWalkPurpose::SearchKeyword { target: keyword } => {
+                            encode_search_key_req(keyword, 0, None)
+                        }
+                        _ => unreachable!("SendSearch is only emitted by search walks"),
+                    };
+                    refused.extend(self.pace_walk_send(now, target, contact.endpoint(), search));
+                }
                 KadWalkAction::SendPublish { contact } => match purpose {
                     // A firewalled node with no buddy states no row (aMule's `PrepareToStop`):
                     // the store is skipped.
                     KadWalkPurpose::PublishSource(request) => {
                         if let Some(publish) = self.publish_source_req(&request) {
-                            self.send(contact.endpoint(), &publish);
+                            refused.extend(self.pace_walk_send(
+                                now,
+                                target,
+                                contact.endpoint(),
+                                publish.encode(),
+                            ));
                         }
                     }
                     KadWalkPurpose::PublishKeyword { target: keyword } => {
-                        self.send_keyword_publish(contact.endpoint(), keyword);
+                        refused.extend(self.send_keyword_publish(now, contact.endpoint(), keyword));
                     }
                     _ => unreachable!("SendPublish is only emitted by publish walks"),
                 },
@@ -218,7 +295,15 @@ impl KadNode {
                             file_hash,
                             requester_tcp_port: tcp_port,
                         };
-                        self.send_envelope(contact.endpoint(), &request.encode());
+                        let pace = self.pace_callback(
+                            now,
+                            PacedSend {
+                                to: contact.endpoint(),
+                                envelope: request.encode(),
+                                road: SendRoad::Contact,
+                            },
+                        );
+                        callback_sends.count(pace);
                     }
                 }
                 KadWalkAction::Complete { outcome } => match outcome {
@@ -266,16 +351,86 @@ impl KadNode {
                     KadWalkOutcome::CallbackWalk { asked } => {
                         self.emit_event(KadEvent::CallbackWalkEnded {
                             buddy_id: target,
-                            end: if asked == 0 {
-                                KadCallbackWalkEnd::NoneNear
-                            } else {
-                                KadCallbackWalkEnd::Asked(asked)
-                            },
+                            end: callback_sends.end(asked),
                         });
                     }
                 },
             }
         }
+        // A send the gate refused is an answer that will not come: the walk
+        // takes the next candidate now, rather than wait out a silence.
+        for to in refused {
+            let actions = self
+                .walks
+                .iter_mut()
+                .find(|walk| walk.target() == target)
+                .map(|walk| walk.on_send_refused(now, to));
+            if let Some(actions) = actions {
+                self.apply_walk_actions(now, purpose, actions);
+            }
+        }
         self.walks.retain(|walk| !walk.is_complete());
+    }
+
+    /// One walk datagram through the **Kad Send Gate**. A hold moves the walk's
+    /// clock for `to` by the same wait. Returns `to` when the gate refused it.
+    pub(super) fn pace_walk_send(
+        &mut self,
+        now: KadInstant,
+        target: KadId,
+        to: KadNodeEndpoint,
+        envelope: KadEnvelope,
+    ) -> Option<KadNodeEndpoint> {
+        let send = PacedSend {
+            to,
+            envelope,
+            road: SendRoad::Contact,
+        };
+        let opcode = send.envelope.opcode();
+        match self.send_gate.offer(now, send) {
+            SendOffer::Leave(send) => self.send_paced(&send),
+            SendOffer::Held(wait) => {
+                if let Some(walk) = self.walks.iter_mut().find(|walk| walk.target() == target) {
+                    walk.on_send_held(to, now + wait);
+                }
+            }
+            SendOffer::Refused => {
+                self.emit_diagnostic(KadNodeDiagnostic::SendRefused { to, opcode });
+                return Some(to);
+            }
+        }
+        None
+    }
+}
+
+/// What the **Callback Pace** made of one walk's sends, which go out together
+/// on the walk's convergence.
+#[derive(Default)]
+struct CallbackWalkSends {
+    refused: usize,
+    /// How long the send held longest waits.
+    held_longest: Option<Duration>,
+}
+
+impl CallbackWalkSends {
+    fn count(&mut self, pace: KadCallbackPace) {
+        match pace {
+            KadCallbackPace::Left => {}
+            KadCallbackPace::Held { leaves_in } => {
+                self.held_longest = self.held_longest.max(Some(leaves_in));
+            }
+            KadCallbackPace::Refused => self.refused += 1,
+        }
+    }
+
+    /// How a walk that met `near` contacts ended.
+    fn end(&self, near: usize) -> KadCallbackWalkEnd {
+        let asked = near - self.refused;
+        match self.held_longest {
+            _ if near == 0 => KadCallbackWalkEnd::NoneNear,
+            _ if asked == 0 => KadCallbackWalkEnd::Refused,
+            Some(leaves_in) => KadCallbackWalkEnd::Held { asked, leaves_in },
+            None => KadCallbackWalkEnd::Asked(asked),
+        }
     }
 }

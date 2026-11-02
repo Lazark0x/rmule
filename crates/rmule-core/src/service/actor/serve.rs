@@ -49,7 +49,7 @@ where
                     Ok(false) => ShareRejectReason::NotShared,
                     Err(_) => ShareRejectReason::RegistryError,
                 };
-                send_event(&self.evt_tx, ServeEvent::ShareRejected { reason }.into()).await;
+                send_event(&self.evt_tx, ServeEvent::ShareRejected { reason }.into());
             }
             ServeCommand::StartServing { listen_addr } => {
                 self.start_serving(listen_addr).await;
@@ -110,8 +110,7 @@ where
             send_event(
                 &self.evt_tx,
                 ServeEvent::ServingStarted { listen_addr }.into(),
-            )
-            .await;
+            );
             return;
         }
         let Some(mut serve_runtime) = self.wiring.serve_runtime.take() else {
@@ -125,8 +124,7 @@ where
                     reason: ServeStartFailure::Adapter,
                 }
                 .into(),
-            )
-            .await;
+            );
             return;
         };
         // The bind happens *here*, on the actor, not inside the task:
@@ -146,7 +144,7 @@ where
                     }
                 };
                 self.wiring.serve_runtime = Some(serve_runtime);
-                send_event(&self.evt_tx, ServeEvent::ServingFailed { reason }.into()).await;
+                send_event(&self.evt_tx, ServeEvent::ServingFailed { reason }.into());
                 return;
             }
         };
@@ -173,7 +171,10 @@ where
             share_changed_rx,
             dialed_serve_rx: Some(dialed_serve_rx),
             credit: Arc::clone(&self.wiring.credit),
-            rerank_interval: self.wiring.config.queue_rerank_interval,
+            // The Held Places every download run publishes (ADR-0116).
+            held_places: self.download_runtime.shared.held_places.clone(),
+            bans: self.wiring.kad_cells.adapters.ban_store.clone(),
+            rerank_interval: crate::serve::RERANK_INTERVAL,
             // The live client-UDP front (ADR-0057): the demuxed
             // `0x90` reask stream feeds the serve reply matrix, and
             // each `SendClientUdp` reply rides the shared socket
@@ -182,8 +183,8 @@ where
             // too. Both are `None` when the client-UDP socket failed to bind.
             reask_rx: self.client_udp_reask_rx.take(),
             client_udp_tx: self.client_udp_reply_tx.clone(),
-            purge_interval: self.wiring.config.upload_purge_interval,
-            purge_after: self.wiring.config.upload_reask_purge_after,
+            purge_interval: crate::serve::PURGE_INTERVAL,
+            purge_after: crate::serve::PURGE_AFTER,
             // The same shared counter state the download
             // runners and `Core::diagnostics_snapshot` hold
             // (ADR-0077), so upload rows and the session up
@@ -196,6 +197,7 @@ where
             peer_roster,
             withheld: self.registry_check.withheld.clone(),
             read_failed_tx: Some(self.registry_check.inputs()),
+            served: self.wiring.served_downloads.clone(),
         };
         let serve_span = tracing::info_span!("serve", %bound);
         // The bump rides *outside* the activity's own future: it must be the last thing that
@@ -240,8 +242,7 @@ where
         send_event(
             &self.evt_tx,
             ServeEvent::ServingStarted { listen_addr: bound }.into(),
-        )
-        .await;
+        );
         let _ = started_tx.send(());
         // The eD2k listener's **Half-Bound Pair** fact,
         // read back from **Address Learning** right here: the serve
@@ -257,8 +258,7 @@ where
             send_event(
                 &self.evt_tx,
                 CoreEvent::SocketBoundWithoutFamily { half_bound },
-            )
-            .await;
+            );
         }
         // The eD2k listener is the mapping that earns a High-ID
         // (ADR-0086), and it only exists from here — but the **Desired
@@ -348,6 +348,6 @@ where
         // chance to emit — they end with the task, silently, from the
         // snapshot's point of view.
         self.diagnostics.close_all_uploads(reason);
-        send_event(&self.evt_tx, ServeEvent::ServingStopped { reason }.into()).await;
+        send_event(&self.evt_tx, ServeEvent::ServingStopped { reason }.into());
     }
 }

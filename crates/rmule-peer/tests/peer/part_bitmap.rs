@@ -4,6 +4,7 @@
 //! m_nPartCount`, never validating the unused bits. rmule mirrors:
 //! `decode` ignores trailing bits, `encode` always writes them as zero.
 
+use rmule_peer::WireStatus;
 use rmule_peer::file::{PartBitmap, PartBitmapDecodeError, PartIndex};
 
 #[test]
@@ -95,4 +96,27 @@ fn empty_bitmap_for_zero_parts() {
     assert_eq!(bitmap.part_count(), 0);
     assert_eq!(bitmap.iter_present().count(), 0);
     assert_eq!(bitmap.encode(), Vec::<u8>::new());
+}
+
+/// Every status is read against the file's real parts: an exact multiple's
+/// phantom bit never reads as a part held or lacked, a count the file has not
+/// got is no status at all, and a zero count holds every part.
+#[test]
+fn advertised_parts_reads_a_status_against_the_files_real_parts() {
+    use rmule_primitives::ED2K_PART_SIZE;
+
+    let bitmap = |parts: u32, present: &[u8]| {
+        let byte = present.iter().fold(0u8, |byte, &i| byte | 1 << i);
+        PartBitmap::decode(parts, &[byte]).unwrap()
+    };
+    let status = |count: u16, present: u8| WireStatus::decode(count, &[present]).unwrap();
+    let size = 2 * ED2K_PART_SIZE;
+    for wire in [status(3, 0b101), status(3, 0b001)] {
+        assert_eq!(wire.advertised_parts(size), Some(bitmap(2, &[0])));
+    }
+    assert_eq!(status(2, 0b11).advertised_parts(size), None);
+    assert_eq!(
+        WireStatus::complete_source().advertised_parts(size),
+        Some(bitmap(2, &[0, 1])),
+    );
 }

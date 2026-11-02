@@ -9,8 +9,9 @@
 //! may not echo), and every other live search must see the row prove its query.
 //! A row that reaches nobody is dropped and counted, never shown.
 
+use parking_lot::Mutex;
 use std::collections::{HashMap, HashSet};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use rmule_primitives::{Ipv4Endpoint, SearchQuery, SearchResult};
 use tokio::sync::{mpsc, watch};
@@ -80,10 +81,7 @@ struct Registration {
 
 impl Drop for Registration {
     fn drop(&mut self) {
-        self.searches
-            .lock()
-            .expect("live searches")
-            .remove(&self.search_id);
+        self.searches.lock().remove(&self.search_id);
     }
 }
 
@@ -109,11 +107,7 @@ impl AttributedRows {
     /// Stop being live, as a search does at completion: rows that would have
     /// been its are counted instead, until [`Self::renew`].
     pub(crate) fn lapse(&mut self) {
-        self.live
-            .searches
-            .lock()
-            .expect("live searches")
-            .remove(&self.live.search_id);
+        self.live.searches.lock().remove(&self.live.search_id);
     }
 
     /// Live again under `query` — a completed search asking its server for
@@ -124,7 +118,6 @@ impl AttributedRows {
         self.live
             .searches
             .lock()
-            .expect("live searches")
             .insert(self.live.search_id, Live { query, rows: tx });
         self.rows = rows;
     }
@@ -169,7 +162,6 @@ impl LiveSearches {
         let (tx, rows) = mpsc::unbounded_channel();
         self.searches
             .lock()
-            .expect("live searches")
             .insert(search_id, Live { query, rows: tx });
         AttributedRows {
             rows,
@@ -203,7 +195,7 @@ impl LiveSearches {
     ) {
         let mut unattributed = 0u64;
         {
-            let searches = self.searches.lock().expect("live searches");
+            let searches = self.searches.lock();
             let mut shares: HashMap<SearchId, Vec<SearchResult>> = HashMap::new();
             for row in batch {
                 let mut reached = false;
@@ -273,6 +265,32 @@ mod tests {
         KeywordQuery::new(Ed2kText::from_utf8(phrase))
             .unwrap()
             .into()
+    }
+
+    /// `ed2k::HASH` is answered from the server's hash index over UDP too
+    /// (ed2k-server `udp.rs:2098`), under the file's own name: the row proves
+    /// the search by its hash, so it is shown and not counted as unattributed.
+    #[test]
+    fn a_global_answer_reaches_the_search_that_named_its_hash() {
+        let diagnostics = DiagnosticsState::default();
+        let live = LiveSearches::new(diagnostics.clone());
+        let hash = "A".repeat(FileHash::BYTE_LEN * 2);
+        let mut named = live.register(SearchId::from_u64(1), query(&format!("ed2k::{hash}")));
+        let elsewhere = format!("ed2k::{}", "B".repeat(32));
+        let mut other = live.register(SearchId::from_u64(2), query(&elsewhere));
+
+        let server = rmule_primitives::Ipv4Endpoint::new([45, 55, 200, 9].into(), 4661);
+        live.deliver_udp_answer(vec![row("field-recording.wav")], server);
+
+        assert_eq!(named.drain().len(), 1);
+        assert!(other.drain().is_empty(), "another hash proves nothing");
+        assert_eq!(
+            diagnostics
+                .snapshot()
+                .session
+                .search_rows_unattributed_total,
+            0
+        );
     }
 
     /// Holding a row is no licence to be updated by an answer that is not the

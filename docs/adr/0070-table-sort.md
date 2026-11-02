@@ -28,8 +28,10 @@ publishes sets, not orders.
   (receiving, verifying, requesting, hash set, queued, handshaking, connecting, idle,
   releasing, retired, shut down); an upload peer's **State** ranks slot-holders first,
   then the queue in its own order.
-- **The default is name ascending in every table**, and the sort is per table and
-  durable, a preference in the store. It is not per search.
+- **A table opens by name ascending unless it is read by another fact**: Transfers, which
+  is watched, by Progress, moving bytes first; Searches, where a result is picked by its
+  availability, by Sources, most first. The sort is per table and durable, a preference in
+  the store, and a kept sort outranks the opening one. It is not per search.
 - **Tie Chain.** Rows equal on the sort column order by name ascending, then by identity
   (file hash, download id, server endpoint), so the order is total and a glyph golden is
   deterministic. Reversing the sort does not reverse the chain.
@@ -50,7 +52,8 @@ publishes sets, not orders.
 - **A waiting row names what it waits on.** The core hands a starved run's wait as a
   code, `SourceWait`, again whenever it changes: a server session up (`Asking`) reads
   *Waiting*; no session with Kad running (`KadAlone`) reads *Asking Kad*; no session and
-  Kad off (`NoSession`) reads *No network*, because the global sweep asks only with a
+  Kad off (`NoSession`) reads *No network*, every source parked on its queue standing
+  (`OnStanding`) reads *Waiting*, because the global sweep asks only with a
   session (ADR-0051). The Sources pane, the details' waiting row and the status bar say
   the same sentence; all three stay in aMule's waiting rank.
 - **Rows re-order live and the cursor follows its row.** Freezing the order during a

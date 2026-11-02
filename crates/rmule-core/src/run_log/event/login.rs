@@ -138,6 +138,8 @@ fn grants(record: Record, grants: ServerGrants) -> Record {
         large_files,
         tcp_obfuscation,
         ipv6,
+        ipv6_update,
+        lowid_holepunch,
     } = grants;
     record
         .flag("compression", compression)
@@ -148,6 +150,8 @@ fn grants(record: Record, grants: ServerGrants) -> Record {
         .flag("large_files", large_files)
         .flag("tcp_obfuscation", tcp_obfuscation)
         .flag("ipv6", ipv6)
+        .flag("ipv6_update", ipv6_update)
+        .flag("lowid_holepunch", lowid_holepunch)
 }
 
 fn test_end(record: Record, end: PortTestEnd) -> Record {
