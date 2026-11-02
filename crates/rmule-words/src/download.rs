@@ -434,7 +434,7 @@ pub fn log_line(event: &DownloadEvent) -> Sentence {
             total_bytes,
             ..
         } => format!(
-            "{} sent {} of bad data out of {}, within the limit; it stays a source",
+            "{} has {} of bad data on its count, out of {}, within the limit; it stays a source",
             address(*peer),
             human_size(*bad_bytes),
             human_size(*total_bytes)

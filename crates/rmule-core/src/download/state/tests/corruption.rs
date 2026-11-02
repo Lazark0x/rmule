@@ -1,7 +1,8 @@
 //! A part that fails its check with no Trusted AICH Root (ADR-0117 §1): the
-//! workers that shared it keep their slots, the refetch names the writer both
-//! failures point to and the verified part proves it, and a part whose
-//! recovery ask is never answered is fetched again rather than stranded.
+//! workers that shared it keep their slots, the writer both failures point to
+//! is set aside from the part and the verified part proves it, an honest
+//! writer never leaves with a bad one, and a part whose recovery ask is never
+//! answered is fetched again rather than stranded.
 
 use std::cell::RefCell;
 

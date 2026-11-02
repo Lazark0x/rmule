@@ -89,9 +89,10 @@ AICH is a block-level recovery layer beside MD4, implemented in both directions.
   the file is not contested, as stock's file request carries it; with no such peer the part
   takes its refetch. `PartAssembly` records
   every worker that wrote a byte into each block's cell (ADR-0117); repair drops only the
-  corrupt cells from the part's **Arrived Ranges**, retires the workers that wrote into
-  them, and distrusts a corrupt cell's sole writer. The dropped blocks are handed again to
-  the next workers with room, and the part re-verifies by MD4.
+  corrupt cells from the part's **Arrived Ranges** and charges the workers that wrote into
+  them in the **Corruption Ledger**, where a sole writer past stock's limit is convicted
+  (ADR-0117 §1). The dropped blocks are handed again to the next workers with room, and the
+  part re-verifies by MD4.
 - **Bad AICH input is a skip, not an error.** An `0x9C` with no ask out closes the link, as
   aMule's reader throws (`DownloadClient.cpp:1606-1608`), and so does one that stops inside
   the part number or the root of the very block asked. Any other malformed `0x9C`, a
@@ -147,12 +148,11 @@ AICH is a block-level recovery layer beside MD4, implemented in both directions.
 
 ## Consequences
 
-- With a trusted root, a corrupt part costs one peer — the poisoner — at once, and only
-  its corrupt cells are fetched again; without one, the whole part is, before the
-  poisoner can be named (ADR-0117 §1).
+- With a trusted root, a corrupt part costs only its corrupt cells; without one, the whole
+  part is, before the poisoner can be shown (ADR-0117 §1).
 - Repair refetches exactly the corrupt blocks. A cell holding two workers' bytes — a
-  duplicate, a freed lost block, an off-grid ask — retires both writers and distrusts
-  neither. The in-memory, per-session lifetime of assembly is unchanged.
+  duplicate, a freed lost block, an off-grid ask — counts against both and proves neither.
+  The in-memory, per-session lifetime of assembly is unchanged.
 - The serve-side cache holds one tree per shared file a peer asked about, about 20 bytes
   per 180 KiB block; nothing bounds it but the share set.
 - The Kad leg is source-derived until a bench settles it: a v9 storer holding a keyword entry
