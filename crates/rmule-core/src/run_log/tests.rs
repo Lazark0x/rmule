@@ -63,7 +63,7 @@ fn file_hash(byte: u8) -> rmule_primitives::FileHash {
 
 /// aMule 2.3.3, as its captured hellos name it.
 fn amule_233() -> rmule_peer::ClientSoftware {
-    crate::diagnostics::client_software(0x0304_0D80, None)
+    rmule_testkit::client_software(0x0304_0D80, None)
 }
 
 /// A search id far above any the process mints.

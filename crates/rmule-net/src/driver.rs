@@ -7,6 +7,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 
+use rmule_primitives::SessionOutput;
 use thiserror::Error;
 use tokio::io::AsyncReadExt;
 use tokio::sync::mpsc::error::TrySendError;
@@ -61,27 +62,6 @@ pub enum DriverError {
     Io(#[from] std::io::Error),
 }
 
-/// One effect drained from a [`DrivenSession`] — the runtime-owned mirror
-/// of each protocol's native `Output`/`PeerOutput`. The session adapter maps
-/// its native outputs onto this in [`DrivenSession::poll_output`].
-#[derive(Debug)]
-pub enum DriverOutput<E, C> {
-    /// Framed bytes to write to the socket. `Arc<[u8]>` so the capture tap
-    /// fans the buffer to the socket *and* the writer task with a refcount
-    /// bump, not a byte-copy.
-    Write(Arc<[u8]>),
-    /// Domain event to forward to the consumer.
-    Event(E),
-    /// Terminal close from the session. The session emits its own paired
-    /// `Disconnected` event immediately before this `Close` on every close
-    /// path, so the driver forwards that event normally and does not
-    /// synthesize one here. (Driver-originated closes — clean EOF and socket
-    /// I/O errors — never reach this variant: [`run_driver`] synthesizes
-    /// their `Disconnected` directly, since the sans-I/O session cannot
-    /// observe them.)
-    Close(C),
-}
-
 /// The runtime adapter [`run_driver`] drives. One impl per concrete session
 /// lives in that session's protocol module, on a **local newtype** around
 /// the sans-I/O session, keeping the runtime adaptation out of the sans-I/O
@@ -92,6 +72,8 @@ pub enum DriverOutput<E, C> {
 /// [`deadline_elapsed`](Self::deadline_elapsed). The driver owns only the
 /// socket, the channels, and one optional startup deadline.
 pub trait DrivenSession {
+    /// Which link this is, in the driver's byte trace.
+    const LINK: &'static str;
     /// What a caller sends in, forwarded verbatim off the command channel.
     type Command;
     /// What the session reports out — forwarded to the consumer, tapped for
@@ -111,7 +93,7 @@ pub trait DrivenSession {
     fn handle_bytes(&mut self, bytes: &[u8]);
     /// Take the next pending effect; the driver drains to `None` after every
     /// other call on this trait.
-    fn poll_output(&mut self) -> Option<DriverOutput<Self::Event, Self::CloseReason>>;
+    fn poll_output(&mut self) -> Option<SessionOutput<Self::Event, Self::CloseReason>>;
     /// Every byte the session has handed over is in the kernel. The driver
     /// takes no command while any is not, so what the last command wrote has
     /// left by now.
@@ -256,7 +238,11 @@ where
                 break;
             };
             match output {
-                DriverOutput::Write(bytes) => {
+                SessionOutput::Write(bytes) => {
+                    if tracing::enabled!(tracing::Level::TRACE) {
+                        let hex: String = bytes.iter().map(|byte| format!("{byte:02x}")).collect();
+                        tracing::trace!(len = bytes.len(), frame = %hex, "{} driver write", S::LINK);
+                    }
                     if let Some(c) = capture.as_ref() {
                         let _ = c
                             .frames
@@ -268,7 +254,7 @@ where
                     }
                     outgoing.push(bytes);
                 }
-                DriverOutput::Event(event) => {
+                SessionOutput::Event(event) => {
                     if S::resolves_deadline(&event) {
                         deadline_pending = false;
                     }
@@ -284,7 +270,7 @@ where
                         unsent.push_back(event);
                     }
                 }
-                DriverOutput::Close(reason) => {
+                SessionOutput::Close(reason) => {
                     // The session emits its own paired `Disconnected` (forwarded
                     // through the `Event` arm above) immediately before every
                     // `Close`, so the driver just records the label and winds

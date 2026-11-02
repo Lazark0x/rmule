@@ -2,7 +2,7 @@
 //! the newtype that satisfies the shared [`DrivenSession`]
 //! contract, so one harness drives both the dialed and the accepted role.
 
-use crate::driver::{DrivenSession, DriverOutput};
+use crate::driver::DrivenSession;
 use rmule_peer::{
     ConnectionCommand, ConnectionEvent, PeerCloseReason, PeerCommand, PeerEvent, PeerOutput,
     PeerSession,
@@ -19,6 +19,7 @@ impl PeerDriven {
 }
 
 impl DrivenSession for PeerDriven {
+    const LINK: &'static str = "peer";
     type Command = PeerCommand;
     type Event = PeerEvent;
     type CloseReason = PeerCloseReason;
@@ -33,7 +34,7 @@ impl DrivenSession for PeerDriven {
         self.0.handle_command(command);
     }
     fn handle_bytes(&mut self, bytes: &[u8]) {
-        // Symmetric to the outbound `poll_output` hex trace below: dump each
+        // Symmetric to the driver's outbound hex trace: dump each
         // inbound socket chunk at TRACE so a serve-side run (`RMULE_SERVE_LOG=
         // trace`) records the *counterparty's* raw frames — a firewalled aMule
         // release build emits no debug logs, so the reverse-harness captures
@@ -45,18 +46,8 @@ impl DrivenSession for PeerDriven {
         }
         self.0.handle_bytes(bytes);
     }
-    fn poll_output(&mut self) -> Option<DriverOutput<PeerEvent, PeerCloseReason>> {
-        self.0.poll_output().map(|output| match output {
-            PeerOutput::Write(bytes) => {
-                if tracing::enabled!(tracing::Level::TRACE) {
-                    let hex: String = bytes.iter().map(|byte| format!("{byte:02x}")).collect();
-                    tracing::trace!(len = bytes.len(), frame = %hex, "peer driver write");
-                }
-                DriverOutput::Write(bytes)
-            }
-            PeerOutput::Event(event) => DriverOutput::Event(event),
-            PeerOutput::Close(reason) => DriverOutput::Close(reason),
-        })
+    fn poll_output(&mut self) -> Option<PeerOutput> {
+        self.0.poll_output()
     }
     fn written(&mut self) {
         self.0.bytes_written();

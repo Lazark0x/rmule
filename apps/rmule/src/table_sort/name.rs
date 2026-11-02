@@ -8,7 +8,7 @@
 
 use std::cmp::Ordering;
 
-use icu_normalizer::DecomposingNormalizerBorrowed;
+use rmule_primitives::fold_accents_and_case;
 
 /// Text folded for comparison. Equality is the comparison's: `file01` and
 /// `file1` are equal names, and the Tie Chain's identity link parts them.
@@ -16,21 +16,9 @@ use icu_normalizer::DecomposingNormalizerBorrowed;
 pub(super) struct NameKey(String);
 
 impl NameKey {
-    /// Fold `text`: decompose (NFD), drop the combining marks the
-    /// decomposition split off, lowercase what is left.
+    /// Fold `text` as a search folds a name's words.
     pub(super) fn new(text: &str) -> Self {
-        // Nothing in ASCII decomposes, and file names are mostly ASCII.
-        if text.is_ascii() {
-            return Self(text.to_ascii_lowercase());
-        }
-        let decomposed = DecomposingNormalizerBorrowed::new_nfd().normalize(text);
-        Self(
-            decomposed
-                .chars()
-                .filter(|c| !is_combining_mark(*c))
-                .flat_map(char::to_lowercase)
-                .collect(),
-        )
+        Self(fold_accents_and_case(text))
     }
 }
 
@@ -38,19 +26,6 @@ impl NameKey {
 #[must_use]
 pub(crate) fn fold(text: &str) -> String {
     NameKey::new(text).0
-}
-
-/// The combining-mark blocks an NFD decomposition of a Latin, Greek or
-/// Cyrillic accented letter splits into.
-fn is_combining_mark(c: char) -> bool {
-    matches!(
-        c,
-        '\u{0300}'..='\u{036F}'
-            | '\u{1AB0}'..='\u{1AFF}'
-            | '\u{1DC0}'..='\u{1DFF}'
-            | '\u{20D0}'..='\u{20FF}'
-            | '\u{FE20}'..='\u{FE2F}'
-    )
 }
 
 impl Ord for NameKey {

@@ -94,5 +94,5 @@ pub use source::{
 };
 pub use splitmix::splitmix64;
 pub use tag::{HASH_TAG_LEN, Tag, TagName, TagNameEncoding, TagValue};
-pub use text::{Ed2kText, WIRE_STRING_MAX, write_wire_string};
+pub use text::{Ed2kText, WIRE_STRING_MAX, fold_accents_and_case, write_wire_string};
 pub use wire_reader::{WireReader, WireTruncated};

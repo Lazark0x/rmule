@@ -4,6 +4,8 @@
 use std::fmt;
 use std::str::Utf8Error;
 
+use icu_normalizer::DecomposingNormalizerBorrowed;
+
 /// The longest string the wire's sixteen-bit length carries. It is a wire limit,
 /// never an invariant: a link's name is any length a stranger wrote, and text a
 /// counterparty sent can outgrow the length once it is rendered as UTF-8.
@@ -16,6 +18,36 @@ pub fn write_wire_string(out: &mut Vec<u8>, bytes: &[u8]) {
     let len = u16::try_from(bytes.len()).unwrap_or(u16::MAX);
     out.extend_from_slice(&len.to_le_bytes());
     out.extend_from_slice(bytes);
+}
+
+/// `text` with accents and case folded away, the one reading a table's sort and
+/// a search's words share so that they never disagree on a name: decomposed
+/// (NFD), the combining marks that split off dropped, lowercased.
+#[must_use]
+pub fn fold_accents_and_case(text: &str) -> String {
+    // Nothing in ASCII decomposes, and file names are mostly ASCII.
+    if text.is_ascii() {
+        return text.to_ascii_lowercase();
+    }
+    DecomposingNormalizerBorrowed::new_nfd()
+        .normalize(text)
+        .chars()
+        .filter(|c| !is_combining_mark(*c))
+        .flat_map(char::to_lowercase)
+        .collect()
+}
+
+/// The combining-mark blocks an NFD decomposition of a Latin, Greek or
+/// Cyrillic accented letter splits into.
+fn is_combining_mark(c: char) -> bool {
+    matches!(
+        c,
+        '\u{0300}'..='\u{036F}'
+            | '\u{1AB0}'..='\u{1AFF}'
+            | '\u{1DC0}'..='\u{1DFF}'
+            | '\u{20D0}'..='\u{20FF}'
+            | '\u{FE20}'..='\u{FE2F}'
+    )
 }
 
 /// Wire-faithful eD2k text value.

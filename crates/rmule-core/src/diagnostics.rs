@@ -82,8 +82,6 @@ pub use kad::{
 pub(crate) use server::PingProbe;
 pub use server::{PingState, ServerDiagnostics, ShareAnnouncement, SharesToServer};
 pub use shared_files::{ShareTotals, SharedFileCounters};
-#[cfg(test)]
-pub(crate) use software::client_software;
 pub use software::{SoftwareName, SoftwareParts, software_parts};
 pub use state::{BuddyHashSpellingCounters, DiagnosticsState};
 pub(crate) use state::{ServerHalf, address_rows};

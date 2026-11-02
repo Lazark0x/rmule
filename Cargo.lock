@@ -2707,7 +2707,6 @@ dependencies = [
  "assert_cmd",
  "chrono",
  "data-encoding",
- "icu_normalizer",
  "parking_lot",
  "predicates",
  "ratatui",
