@@ -126,6 +126,10 @@ restart.
 - A malformed frame costs a link exactly where aMule's handler says it does: rmule
   keeps the link on frames aMule tolerates, and closes it on frames aMule does
   not. The log says why a link closed.
+- A corrupt part no longer costs the honest seeds that shared it. A source that
+  shared a bad block is set aside from that part until a verified part settles it.
+  Only a source proven to have sent the bad bytes alone, past aMule's 32 % limit,
+  is banned for two hours and dropped, and the log says which rule applied.
 
 ### Speed
 
