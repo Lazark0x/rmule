@@ -435,6 +435,33 @@ fn two_writers_alone_narrow_to_one_and_its_attempt_settles_it() {
     );
 }
 
+/// Two writers narrow to one and that one ends: the suspect left out is the
+/// last worker holding the part, so it is asked again. A bad seed that leaves
+/// cannot strand a part with the honest source that stayed.
+#[test]
+fn a_suspect_is_asked_again_when_the_worker_left_open_ends() {
+    let (bad, honest) = (peer(1), peer(2));
+    let mut state = writers_of(file_hash_only_content(NINE_CELLS), 2);
+    let both = [bad, honest];
+    for cell in 0..3 {
+        let _ = deliver(&mut state, bad, (cell * B, (cell + 1) * B), true);
+        let _ = deliver(&mut state, honest, ((cell + 3) * B, (cell + 4) * B), false);
+    }
+    for _ in 0..2 {
+        let _ = refetch(&mut state, &both, &[bad]);
+        let _ = state.on_persist_result(
+            t0(),
+            PartIndex::new(0),
+            Some(honest),
+            Err(DownloadFailure::PartVerificationFailed),
+            Some(file_cells()),
+        );
+    }
+    let _ = state.on_worker_event(t0(), bad, PeerWorkerEvent::Disconnected);
+    let (again, cells) = refetch(&mut state, &[honest], &[]);
+    assert_eq!(cells[0].1.len(), 9, "{cells:?} {again:?}");
+}
+
 /// `peer(1)` has verified bytes behind it and wrote a whole part that failed:
 /// it is proven, within stock's limit, so it stays a source, as stock reports
 /// it and moves nothing, but it is not asked for that part again.
