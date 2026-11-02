@@ -61,11 +61,10 @@ def streams(path):
             flows[key][seq] = payload
     for key, segs in flows.items():
         out = bytearray()
-        start = None
-        for seq in sorted(segs):
-            if start is None:
-                start = seq
-            at = seq - start
+        # The first segment seen opens the stream; sequence numbers wrap at 2^32.
+        start = next(iter(segs), 0)
+        for seq in sorted(segs, key=lambda seq: (seq - start) & 0xFFFFFFFF):
+            at = (seq - start) & 0xFFFFFFFF
             piece = segs[seq]
             if at + len(piece) <= len(out):
                 continue
