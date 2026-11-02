@@ -105,16 +105,15 @@ Part assembly lives in `rmule-core`: one record per in-flight part, its bytes in
   - **No part boundary drains it.** The next handout reaches the worker while its blocks
     are still asked, so the pipeline runs from one part into the next without a round
     trip (ADR-0117).
-- **On a failed part hash:** with a trusted AICH root, the lane checks the recovery data
-  against the bytes in the file; core drops only the corrupt cells from the ranges and
-  retires the workers that wrote into them (ADR-0038, ADR-0117). Without one, core
-  drops the part's ranges, keeps each cell's hash, which the lane read from the file, and
-  its writers as the
-  part's **Failed Cells**, and hands the part's blocks again to every worker holding it.
-  The refetch attributes the bad cells: a verified refetch disproves the old copies
-  that differ, and a repeated failure names the writers both failures point to
-  (ADR-0117 §1). A part one worker wrote whole names that worker at once. Retirement is
-  per download; if it exhausts the swarm, the download fails.
+- **On a failed part hash:** nobody is blamed for the part itself, as at stock (ADR-0117 §1). With
+  a trusted AICH root, the lane checks the recovery data against the bytes in the file; core drops
+  only the corrupt cells from the ranges and charges their writers in the **Corruption Ledger**
+  (ADR-0038, ADR-0117). Without one, core drops the part's ranges, keeps each cell's hash, which
+  the lane read from the file, and its writers as the part's **Failed Cells**, and hands the part's
+  blocks again to every worker holding it. A verified refetch disproves the old copies that differ,
+  and a repeated failure sets aside the writers both failures point to (ADR-0117 §1). A part one
+  worker wrote whole proves that worker. Only a proven sender past stock's 32 % limit is retired;
+  a retirement is per download, and if it exhausts the swarm, the download fails.
 
 ## Consequences
 

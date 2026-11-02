@@ -499,7 +499,7 @@ a Kad source row, a peer that asked us about the file — hands the **Source Boo
 _Avoid_: exchanged source, Kad source (each was one channel's copy)
 
 **Distrusted Peer**:
-A peer proven to have served a download's file bad data — the AICH recovery pinned corrupt blocks on it, it alone sent a part that failed its hash, or it sent a part hash set that is not the file's own. Keyed by **User Hash**, not address, and held for the download's life beside its durable record, so a resumed run starts from it: a source whose record names it is never pooled, and one reached without its hash is retired at its hello (ADR-0090 "A download holds each source under one owner"). A per-file avoidance, not the core-wide, IP-keyed, expiring ban.
+A peer convicted of serving a download's file bad data — proven by bytes it alone wrote and past stock's limit in the **Corruption Ledger** — or that sent a part hash set that is not the file's own. Keyed by **User Hash**, not address, and held for the download's life beside its durable record, so a resumed run starts from it: a source whose record names it is never pooled, and one reached without its hash is retired at its hello (ADR-0090 "A download holds each source under one owner"). A per-file avoidance, not the core-wide, IP-keyed, expiring ban.
 _Avoid_: banned peer (that is `BanStore`), blacklist, bad source
 
 **Reask Routes**:
@@ -946,8 +946,16 @@ A run's one queue of disk work (ADR-0029, ADR-0117 §4): writes, part checks, ch
 _Avoid_: writer thread, flush queue
 
 **Failed Cells**:
-What a part that failed its check with no **Trusted AICH Root** keeps across its refetch (ADR-0117 §1): per 180 KiB cell, the SHA-1 of its bytes and its writers, each with the User Hash its hello named. One attempt per part, the latest, in memory until the part verifies or the run ends. A refetched cell is asked of a worker that did not write it first; when the part verifies, a cell whose hash differs proves its old writers corrupt, and when it fails again, matching cells from disjoint writers are corroborated and differing ones disputed, naming the writers both failures point to.
+What a part that failed its check with no **Trusted AICH Root** keeps across its refetch (ADR-0117 §1): per 180 KiB cell, the SHA-1 of its bytes and its writers, each with the User Hash its hello named. The last four attempts per part, in memory until the part verifies or the run ends. A refetched cell is asked of a worker that did not write it first; when the part verifies, a kept cell whose hash differs is charged to its writers in the **Corruption Ledger**, and when it fails again, matching cells from disjoint writers are corroborated and differing ones disputed, pointing to the writers both failures name, who are **Set Aside**.
 _Avoid_: black box, retire-all, suspects list
+
+**Corruption Ledger**:
+Per file and per sender, the bytes proved good and bad, in memory for the run (ADR-0117 §1), as stock's black box counts them. A corrupt cell charges each writer `EMBLOCKSIZE`; a verified part credits each writer its cells. A sender is **proven** by bytes it alone wrote, and a proven sender past 32 % corrupt is **convicted**: banned core-wide, a **Distrusted Peer**, and retired. Nothing else retires a source for bad data.
+_Avoid_: black box, reputation, strikes
+
+**Set Aside**:
+A source no longer asked for one part's blocks, until that part verifies (ADR-0117 §1), because it is proven on the part or a repeated failure points to it. It keeps its record, standing, slot and every other part: the action has the scope of the evidence. The last worker holding a part is never set aside on suspicion alone.
+_Avoid_: retired, banned, excluded
 
 **Claimed Block**:
 A block of a part handed to one worker to ask, until its range has arrived (ADR-0117): cut from the part's unarrived, unclaimed bytes on its `EMBLOCKSIZE` grid, so off the grid exactly where the gaps are. One worker per block outside the **End Game**; a worker's end, a requeue or a lost block frees it for the next worker with room.
@@ -1035,11 +1043,10 @@ _Avoid_: Kad AICH hash, verified AICH hash (eMule's word: eMule takes it as `h=`
 **AICH Block Recovery**:
 The **Download State** failure-path upgrade (ADR-0038, amending ADR-0029): when a part
 fails MD4 verification and a **Trusted AICH Root** exists, rmule SHA-1s each 180 KiB
-block, localizes the corrupt one(s), retires only the contributing peer(s) by
-*per-block provenance*, and refetches only those blocks — instead of retiring every
-contributor. Repair drops only the corrupt cells from the part's **Arrived Ranges**
-and hands those blocks again; a cell's writers are retired and its sole writer
-distrusted (ADR-0117).
+block, localizes the corrupt one(s), charges their writers by *per-block provenance*
+in the **Corruption Ledger**, and refetches only those blocks. Repair drops only the
+corrupt cells from the part's **Arrived Ranges** and hands those blocks again; a sole
+writer is set aside from the part, and convicted past the limit (ADR-0117).
 _Avoid_: Failed Cells (that is the no-root path), AICH verification (MD4 is verification; this is recovery)
 
 **Peer Reach**:

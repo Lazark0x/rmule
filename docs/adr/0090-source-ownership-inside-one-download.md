@@ -88,7 +88,7 @@ live, not queued. How the worker ends decides the rest:
 | the peer closing after the hello, its file request unanswered | none | leaves, candidate and all, as stock's `DS_CONNECTED` close (`BaseClient.cpp:1288-1293`) | its endpoint, and its Low-ID key: 30 or 45 minutes |
 | the peer's clock holding its slot ask back, or no link standing for a ride (`OnPeersClock`) | kept, or spaced on the clock (ADR-0107 invariants 14, 16) | waits in RemoteQueued | no |
 | the peer saying it lacks the file (`0x48`, at the probe or mid-slot) | ends | leaves the book, whichever road reached it — a called-back source does not return to its lane | every Ask Name its record holds, below |
-| bad data it alone sent, or a part hash set not the file's own | ends | leaves | no: distrusted (invariant 4) |
+| convicted of bad data (ADR-0117 §1), or a part hash set not the file's own | ends | leaves | no: distrusted (invariant 4) |
 | bad bytes a failed part's refetch names it for by elimination (ADR-0117 §1) | ends | leaves | no |
 | a hello naming a distrusted User Hash | ends | leaves | no |
 | crypt stances that cannot meet | (it dialed nothing) | leaves | no |
@@ -283,15 +283,16 @@ Invariants every transition keeps:
    record; the book's one sighting entry is the one pooling seam, including for `0x9E`
    sources.
 3. **One failed dial per endpoint per dead-source window**, whichever road dialed it.
-4. **Bad data is not re-pooled.** A proven sender of bad data for this file — an
-   AICH-attributed block, a failed part's sole contributor, the sole sender of two differing
-   copies of one cell, the sole old writer of a cell a verified refetch disproves (ADR-0117
-   §1), or the sender of a part hash set that is not the file's own — is distrusted,
-   consulted at the sighting entry and at the hello (a source reached without its hash is
-   retired as `Distrusted`, its endpoint unspent). Its User Hash is the one the hello named
-   when it wrote, so a sender proven after its worker ended is distrusted too. Writers a
-   failure names only by elimination are retired and never distrusted. Distrust follows the
-   peer across addresses and stays apart from the IP-keyed, core-wide `BanStore` (ADR-0064).
+4. **Bad data is not re-pooled.** A sender convicted of bad data for this file — proven by an
+   AICH-attributed cell it alone wrote, a failed part it alone wrote, two differing copies of
+   one cell it alone sent, or a cell it alone wrote that a verified refetch disproves, and past
+   stock's 32 % of what it sent (ADR-0117 §1) — or the sender of a part hash set that is not the
+   file's own, is distrusted, consulted at the sighting entry and at the hello (a source reached
+   without its hash is retired as `Distrusted`, its endpoint unspent). Its User Hash is the one
+   the hello named when it wrote, so a sender proven after its worker ended is distrusted too. A
+   writer that shared a corrupt cell, or that a failure points to only by elimination, is never
+   retired or distrusted for it. Distrust follows the peer across addresses and stays apart from
+   the IP-keyed, core-wide `BanStore` (ADR-0064).
 5. **A handover moves no record.** A peer shared by two downloads is one record in each book,
    each with its one owner; only the Queue Standing's holder passes between them, and a run reads
    and writes its own book alone.

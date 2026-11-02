@@ -61,57 +61,111 @@ slower worker is fetching. The first byte to arrive at an offset is kept, in the
 - **A part is complete when its Arrived Ranges cover it.** The Persist Lane then reads it back from
   the file and verifies it by MD4 against the authority in force, unchanged (ADR-0026, ADR-0027).
   A cell hash a failure or a refetch's verdict needs is read from the file on the same lane.
-- **What one bad source costs.**
+- **What one bad source costs**, in stock's rule (the table below). A failed part blames nobody by
+  itself. Bytes proved corrupt are charged to whoever wrote them, in one per-file ledger, and only
+  a proven sender past stock's limit leaves.
   - With a **Trusted AICH Root**, the recovery data names the corrupt cells. Only those cells'
-    bytes leave the Arrived Ranges, and they are fetched again by whoever has room. The workers
-    that wrote into a corrupt cell are retired. A cell's sole writer is distrusted (ADR-0090).
-    Honest workers keep their slots and their blocks.
-  - Without a root, the part's MD4 says only that some cell is corrupt. The refetch attributes
-    it, cell by cell, as aMule's corruption black box does with the ranges each IP sent
-    (`TransferredData`, `PartFile.cpp:2918`; `VerifiedData`, `:3075`, `:3102`, `:3412-3415`).
-    The rules are below. The same path takes a part whose recovery answer is empty, malformed,
-    or names no cell (ADR-0038).
+    bytes leave the Arrived Ranges, and they are fetched again by whoever has room.
+  - Without a root, the part's MD4 says only that some cell is corrupt. Its bytes are dropped and
+    the refetch finds the cells, as below. The same path takes a part whose recovery answer is
+    empty, malformed, or names no cell (ADR-0038).
+
+#### Stock's rule
+
+aMule 2.3.3 and 3.1.0 share one black box; eMule's differs in storage, not in rule (eMuleAI
+`CorruptionBlackBox.cpp`, marked below). `BLOCKSIZE`, `EMBLOCKSIZE` and an AICH block are all
+184,320 bytes (`Constants.h:83-84`), and so is a cell, so stock's unit and rmule's agree. What
+differs is the record: stock keeps the byte ranges each IP sent, rmule the writers of each cell.
+
+| Event | Stock file and line | Who stock blames | What it does to them |
+|---|---|---|---|
+| Part hash fails, no trusted root | `PartFile.cpp:3053-3067`, `:3275-3280`; eMuleAI `PartFile.cpp:5793-5804` | nobody | nothing: the part's gap reopens, every source stays, no credit moves |
+| Part hash fails, trusted root | `PartFile.cpp:3064`, `:3293`, `:3357` | nobody yet | a recovery ask to one source |
+| AICH block matches | `:3412`; eMuleAI `:7191` | nobody | its senders' bytes count good |
+| AICH block differs | `:3415`; eMuleAI `:7194` | every IP with bytes in it | each record counts at least `EMBLOCKSIZE` bad (`CorruptionBlackBox.cpp:171`; eMuleAI `:303`) |
+| After a recovery | `PartFile.cpp:3418`, `CorruptionBlackBox.cpp:191-241`; eMuleAI `:261-333` | an IP with `bad * 100 / (bad + good) > 32` over the whole file (`:38`, `:209`) | ban: core-wide by IP for two hours (`:217`, `:225`, `Constants.h:71`), `DS_BANNED`, disconnected (`:219-220`) |
+| The same, within the limit | `:229-238`; eMuleAI `:326-332` | an IP at 32 % or less | a report line: it stays a source, untouched |
+| Part passes MD4 | `PartFile.cpp:3075`, `:3102`; eMuleAI `:5815` | nobody | every open record counts good, a bad one that was never judged included |
+| A banned IP | `PartFile.cpp:2803`, `BaseClient.cpp:1437`, `ClientTCPSocket.cpp:433` | | its sources are refused, no dial, no answer |
+| Credit | none | | the black box touches no credit |
+
+So stock retires nobody on a failed part alone, and with no root it blames nobody at all, however
+often a part fails: a poisoner sharing its parts is never caught, and each failure costs the part.
+A part's failure is not evidence against any one writer; a cell proved corrupt is, and even then a
+source stays while its bad bytes are under a third of what it sent.
+
+#### What rmule keeps of it, and what it adds
+
+- **One ledger, one limit.** The **Corruption Ledger** holds, per file and per sender, the bytes
+  proved good and bad, in memory for the run, as stock's maps (`CorruptionBlackBox.cpp:168-171`).
+  A corrupt cell charges each of its writers `EMBLOCKSIZE`, stock's floor. A verified part credits
+  each writer its cells, a shared cell split evenly: rmule holds no byte count per writer. Stock's
+  limit stands unchanged: past 32 %, a proven sender is **convicted**.
+- **What conviction does.** Stock's ban, and the file's own avoidance: the address is banned
+  core-wide, the sender is a **Distrusted Peer** (ADR-0090), and it is retired
+  `PartVerificationFailed`, which ends its record. A sender under the limit keeps its record, its
+  standing and its slot, as stock leaves it, and the operator reads the count.
+- **Conviction needs a sole-writer proof.** Stock charges and bans every overlapping sender, on the
+  ratio alone. rmule charges them too, but a writer is **proven** only by bytes it alone wrote:
+  an honest writer's small sample must not be enough, or a bad seed that shared two of its only
+  three cells would take it down. An honest source never alone writes a corrupt cell, so no bad seed
+  can convict it, and so none can empty the book of honest sources.
+- **What each kind of evidence separates.**
+
+| Evidence | What it proves | Charged | Proven | Action |
+|---|---|---|---|---|
+| AICH cell, one writer | it sent bad bytes | that cell | yes | the ledger decides; it is set aside from the part |
+| AICH cell, several writers | one of them did | that cell, to each | no | the ledger counts, nobody moves |
+| A verified part against a failed attempt's cell, one or several writers | exactly what AICH would (the part's bytes are the truth) | as AICH | as AICH | as AICH |
+| A part one worker wrote whole fails | it sent at least one bad cell | one cell | yes | the ledger decides; it is set aside |
+| One writer alone sent two differing copies of a cell | it sent at least one bad copy | that cell | yes | the ledger decides; it is set aside |
+| A repeated failure, by elimination | nothing about any one writer: the argument assumes a single bad sender | nothing | no | the writers it points to are set aside from the part |
+| A first failure with several writers | nothing | nothing | no | the part is fetched again |
+
+- **Set aside, not retired.** A source **set aside** from a part is asked for none of its blocks
+  until it verifies. It keeps its record, its standing, its slot and every other part. The action
+  has the scope of the evidence: elimination speaks of one part, so it costs one part. It may hold
+  no part it can work, and then it gives its slot back as any source with nothing free does.
+- **Attempts are bounded by narrowing.** Stock would fetch a poisoned part for ever. Each repeated
+  failure sets aside the writers both attempts point to, or, when the comparison names none (two
+  senders lied, one in each attempt), every writer of a cell not corroborated. The last worker
+  holding the part is never set aside on suspicion alone: the suspect with the most verified bytes
+  stays, so the part reaches one writer at worst, whose attempt proves it either way. A proof ends
+  the suspicions of that part, since it explains the failure. A source proven on a part stays set
+  aside whoever is left: its copy will not verify, and fetching it again would be the free
+  corruption this rule ends. If no one else holds that part the download waits for a source, with
+  the proven sender still in the book.
+- **A repeat offender.** The ledger never forgets within a run, so every proved cell a source sends
+  counts, in every part, until it crosses the limit. One bad part costs a source that part. A source
+  that keeps at it runs out of good bytes to hide behind. Only bytes of a verified attempt count
+  good: a cell of a failed attempt that turns out right was dropped and fetched again, so a
+  poisoner that flips one cell per part earns no credit from the rest of it.
 
 #### A part that fails with no root
 
-- **Nobody is retired who cannot be named.** The part's bytes are dropped and its blocks are
-  handed again to whoever has room. Workers that shared the part keep their slots.
-- **Kept across the refetch: the Failed Cells.** For each cell of the failed attempt, the SHA-1
-  of its bytes (its AICH block hash) and its writers, each with the User Hash its hello named.
-  A part keeps one attempt, the latest. That is at most 53 hashes of 20 bytes plus one
-  attempt's writers per part. It lives in memory for the run and goes when the part verifies, or
-  when the run ends: it is evidence, and a run that starts without it costs a repeated failure its
-  verdict, never a byte.
+- **Kept across the refetch: the Failed Cells.** For each cell of a failed attempt, the SHA-1 of
+  its bytes (its AICH block hash) and its writers, each with the User Hash its hello named. A part
+  keeps its last four attempts: at most 212 hashes of 20 bytes plus their writers per part. They
+  live in memory for the run and go when the part verifies, or when the run ends: they are
+  evidence, and a run that starts without them costs a repeated failure its verdict, never a byte.
   aMule keeps the same evidence as per-IP ranges until they verify
   (`CorruptionBlackBox.cpp:78-112`).
 - **A refetched cell is asked of someone else.** A worker is handed the blocks of cells it did
   not write first, so a refetched cell comes from another writer whenever one holding the part
   has room. Without that, a writer that refetched its own bad cell would prove nothing.
 - **What a refetched cell's new bytes prove.** When the part next completes, each cell is
-  compared with its Failed Cell.
-  - **The part verifies.** A cell whose hash differs held corrupt bytes, exactly as a root would
-    have named it. Its old writers are retired, and its sole old writer is distrusted. A cell
-    that matches clears its writers. aMule's black box gives the same verdict only through AICH
-    (`:3412-3415`); on a plain MD4 pass it credits every old range as good (`:3075`).
+  compared with its Failed Cells.
+  - **The part verifies.** A kept cell whose hash differs held corrupt bytes, exactly as a root
+    would have named it, and is charged, once per attempt that held it. aMule's black box gives
+    the same verdict only through AICH (`:3412-3415`); on a plain MD4 pass it credits every old
+    range as good (`:3075`).
   - **The part fails again.** A cell whose bytes match the old copy, sent by writers disjoint
     from the old ones, is **corroborated**: two senders agree, so both copies are taken as good.
     A cell whose bytes differ is **disputed**: one of its two copies is corrupt.
-- **Who is named.** An attempt's **suspects** are the writers of its cells that were not
-  corroborated.
-  - **A first failure** names a writer only when one worker wrote the whole part. It is retired
-    and distrusted (ADR-0090). Otherwise nobody is retired.
-  - **A repeated failure** names every writer that could have sent the bad bytes of both
-    attempts: a suspect of both that wrote a copy of every disputed cell. With one bad sender,
-    that is the sender: its corrupt copies are never corroborated, and every disputed cell holds
-    one of them. Every named writer is retired. Several named writers cannot be told apart by
-    the evidence, so retiring them all bounds the refetches. A repeated failure that names
-    nobody (two senders lied, one in each attempt) retires nobody.
-  - Then the attempt becomes the part's Failed Cells.
-- **Who is distrusted.** Only a proven sender (ADR-0090): the sole writer of a whole failed
-  attempt, a writer that alone sent both differing copies of one cell, and the sole old writer
-  of a cell the verified part disproves. A writer named only by elimination is retired, not
-  distrusted, until the part's verified bytes prove it. aMule bans only past 32 % proven-corrupt
-  bytes (`CorruptionBlackBox.cpp:38`, `:191-225`), and without AICH it proves none.
+- **Who the comparison points to.** A writer of an uncorroborated cell in both attempts that wrote
+  a copy of every disputed cell: with one bad sender, that is the sender, whose corrupt copies are
+  never corroborated and sit in every disputed cell. This is an inference, and two writers alone on
+  a part dispute each other's cells, so it decides who stops writing the part and nothing more.
 - **While a recovery ask is out, the part is verifying.** None of its blocks is handed until
   the answer comes. The asked worker's end stands for an empty answer.
 
@@ -217,8 +271,10 @@ slower worker is fetching. The first byte to arrive at an offset is kept, in the
   or replaced takes its rows with it (ADR-0094). A Restart that starts over, a cancel and a clear
   remove them with the rest of the record.
 - **Provenance survives a restart.** The row carries each cell's writers, so a resumed part is an
-  assembly like any other: a failure names the same writers, the sole writer of a corrupt cell is
-  distrusted by the User Hash it wrote under, and a writer no longer connected retires nobody.
+  assembly like any other: a failure names the same writers, a convicted sole writer of a corrupt
+  cell is distrusted by the User Hash it wrote under, and a writer no longer connected retires
+  nobody. The Corruption Ledger starts empty: a restart forgets what was counted, as stock's does,
+  and a resumed cell with no writer proves nobody a sole writer.
   The alternative, a resumed cell with unknown writers, would make "one worker wrote the whole part"
   false on a part with a past, and every rule of §1 would grow a case for it.
 - **A part the checkpoint covers** verifies as its run starts, before any worker: a part that stood
@@ -275,8 +331,14 @@ slower worker is fetching. The first byte to arrive at an offset is kept, in the
   `download.end_game_blocks`.
 - **`PartCorrupt { part_index, writers, named }`** is said when a part fails its check with no
   root to name its corrupt cells (§1): how many sources wrote it, and how many of them the failure
-  named. Its sentence is written in `rmule-words`, and the run log writes it as
-  `download.part_corrupt`. Each named writer still working is retired, said as `PeerRetired`.
+  pointed to. The run log writes it as `download.part_corrupt`.
+- **`SourceSetAside { peer, part_index, proven }`** is said when a source stops being asked for a
+  part, proven or on suspicion. The run log writes it as `download.source_set_aside`.
+- **`BadDataCounted { peer, bad_bytes, total_bytes }`** is stock's report line: a source charged
+  with corrupt cells, still within the limit. The run log writes it as `download.bad_data_counted`.
+- **`PeerRetired`** with `PartVerificationFailed` says a conviction, and only that.
+
+Their sentences are written in `rmule-words`.
 
 ## Consequences
 
@@ -287,9 +349,12 @@ slower worker is fetching. The first byte to arrive at an offset is kept, in the
   those blocks. Duplicate bytes are at most 3 × `EMBLOCKSIZE` per Duplicate Set, against the rest
   of a part per Tail Race.
 - A part boundary no longer drains the pipeline.
-- Without an AICH root, a failed shared part retires nobody it cannot name. With one bad sender
-  among three or more writers, a refetch that fails again usually names it alone. Two writers
-  alone on a part dispute each other's cells, so a repeated failure usually retires both.
+- A failed part retires nobody unless a proven sender is past the limit, with or without a root.
+  With one bad sender among three or more writers, a refetch that fails again usually points to it
+  alone. Two writers alone on a part dispute each other's cells, so the part narrows to one writer,
+  whose attempt settles it.
+- A source that sends one bad part among many good ones stays, as at stock, and is not asked for
+  that part again.
 - Assignment, the End Game, the merge and the rebuild are pure bookkeeping. They are asserted with
   decision sequences and deterministic fake workers, without sockets.
 - **The bench leg.** The flow is `peer-streaming-window` with `--seed complete` and
@@ -335,11 +400,15 @@ slower worker is fetching. The first byte to arrive at an offset is kept, in the
   on its part anyway, and binding it would delay a Streaming Window part freed behind it.
 - **Retire every writer of a part that fails with no root** (ADR-0029's earlier rule). Rejected
   (§1): with blocks shared, one bad sender costs up to six honest workers their slots.
-- **aMule's black box as it is**: per-IP ranges, banned past 32 % corrupt. Not taken alone:
-  without AICH it marks no range bad, and on an MD4 pass it credits every old range as good
-  (`PartFile.cpp:3075`), so a poisoner sharing parts with honest sources is never banned. The
-  Failed Cells keep its per-sender evidence and judge it by the refetch instead.
-- **Refetch a failed part from one worker.** Rejected: its MD4 would name the writer at once, but
-  on a one-part file every other worker would give its slot back.
-- **Keep every failed attempt of a part.** Not taken: the latest is enough to name a single bad
-  sender, and one attempt bounds the evidence at 53 hashes per part.
+- **Retire every writer of a corrupt cell, and every writer a repeated failure names**. Rejected
+  (§1): a cell two seeds wrote takes the honest one with the bad one, 9 of 20 bench runs lost an
+  honest seed that way, and 3 of 20 emptied the book. Stock retires neither.
+- **aMule's black box as it is**: per-IP ranges, banned past 32 % corrupt. Taken for its ledger and
+  limit, not alone: without AICH it marks no range bad, and on an MD4 pass it credits every old
+  range as good (`PartFile.cpp:3075`), so a poisoner sharing parts with honest sources is never
+  banned. The Failed Cells give it evidence without a root.
+- **Refetch a failed part from one worker at once.** Rejected: its MD4 would name the writer at
+  once, but on a one-part file every other worker would give its slot back. A part narrows to one
+  writer only when the evidence can separate them no other way.
+- **Keep every failed attempt of a part.** Not taken: narrowing ends a part's failures in a few
+  attempts, and four bound the evidence at 212 hashes per part. An attempt past them goes uncharged.
