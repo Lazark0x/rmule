@@ -154,6 +154,11 @@ restart.
   files no longer stalls the app.
 - A download whose stored link is damaged says so, rather than blaming a part.
 
+### Releases
+
+- Every archive carries a GitHub attestation of where it was built, which
+  `gh attestation verify` checks.
+
 ### Interop harness
 
 - Every flow writes one typed verdict to one TOML file, and the harness exits
