@@ -6,7 +6,7 @@
 //! preconditions are met, so packet order does not matter. A failed
 //! exchange costs the peer its secured credit, never the connection.
 
-use rmule_primitives::SecureIdentPublicKey;
+use rmule_primitives::{Ed2kIp, SecureIdentPublicKey};
 
 use super::{PeerEvent, PeerSession, SecureIdentFailure, State};
 use crate::ConnectionEvent;
@@ -155,7 +155,7 @@ impl PeerSession {
             (self.ctx.ed2k_client_id.as_u32(), CRYPT_CIP_LOCALCLIENT)
         } else {
             match self.peer.as_v4() {
-                Some(peer) => (u32::from_le_bytes(peer.ip.octets()), CRYPT_CIP_REMOTECLIENT),
+                Some(peer) => (Ed2kIp::new(peer.ip).wire(), CRYPT_CIP_REMOTECLIENT),
                 // Unreachable while `sui_v2_negotiated` refuses V2 on a
                 // native-IPv6 session (ADR-0087); kept because the *verify*
                 // side still has to read this kind from a peer that sends it.
@@ -175,12 +175,9 @@ impl PeerSession {
     /// IPv6 peer, whose 32-bit address we never observe.
     fn v2_verify_ip(&self, ip_kind: u8) -> Option<u32> {
         match ip_kind {
-            CRYPT_CIP_LOCALCLIENT => self
-                .peer
-                .as_v4()
-                .map(|peer| u32::from_le_bytes(peer.ip.octets())),
+            CRYPT_CIP_LOCALCLIENT => self.peer.as_v4().map(|peer| Ed2kIp::new(peer.ip).wire()),
             CRYPT_CIP_REMOTECLIENT => Some(match self.ctx.public_ip {
-                Some(ip) => u32::from_le_bytes(ip.octets()),
+                Some(ip) => Ed2kIp::new(ip).wire(),
                 None if self.ctx.ed2k_client_id.is_high_id() => self.ctx.ed2k_client_id.as_u32(),
                 None => 0,
             }),

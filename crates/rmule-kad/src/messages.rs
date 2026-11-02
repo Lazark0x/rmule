@@ -27,7 +27,7 @@
 //! fixed-layout messages, and strictness is the safer posture for the
 //! adversarial datagrams the mesh tier scripts.
 
-use rmule_primitives::{Tag, TagName, TagValue, WireReader, WireTruncated};
+use rmule_primitives::{Ed2kIp, KadIp, Tag, TagName, TagValue, WireReader, WireTruncated};
 
 use crate::KadBuddyContact;
 
@@ -529,7 +529,7 @@ fn decode_published_source(
     source.buddy = buddy_id.map(|buddy_id| KadBuddyContact {
         buddy_id,
         buddy_udp: crate::source_result::endpoint(
-            buddy_ip,
+            buddy_ip.map(|word| Ed2kIp::from_wire(word).ip()),
             buddy_port,
             crate::net::is_claimed_udp_target,
         ),
@@ -571,13 +571,7 @@ fn encode_published_source(payload: &mut Vec<u8>, source: &KadPublishedSource) {
         source
             .source_type
             .map(|byte| (TAG_SOURCETYPE, TagValue::U8(byte))),
-        buddy_udp.map(|udp| {
-            let [a, b, c, d] = udp.ip.octets();
-            (
-                TAG_SERVERIP,
-                TagValue::U32(u32::from_le_bytes([a, b, c, d])),
-            )
-        }),
+        buddy_udp.map(|udp| (TAG_SERVERIP, TagValue::U32(Ed2kIp::new(udp.ip).wire()))),
         buddy_port.map(|port| (TAG_SERVERPORT, TagValue::U16(port))),
         source.buddy.map(|buddy| {
             (
@@ -801,9 +795,7 @@ fn decode_contact_rows(
 fn encode_contact_rows(payload: &mut Vec<u8>, contacts: &[KadContact]) {
     for contact in contacts {
         payload.extend_from_slice(contact.id().as_bytes());
-        let mut octets = contact.endpoint().ip().octets();
-        octets.reverse();
-        payload.extend_from_slice(&octets);
+        payload.extend_from_slice(&KadIp::new(contact.endpoint().ip()).wire().to_le_bytes());
         payload.extend_from_slice(&contact.endpoint().udp_port().to_le_bytes());
         payload.extend_from_slice(&contact.tcp_port().to_le_bytes());
         payload.push(contact.version());

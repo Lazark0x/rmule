@@ -9,7 +9,7 @@
 
 use std::net::Ipv4Addr;
 
-use rmule_primitives::{Tag, TagName, TagValue};
+use rmule_primitives::{Ed2kIp, Tag, TagName, TagValue};
 
 /// `ST_UDPFLAGS` — the server's UDP flags word.
 const TAG_UDPFLAGS: u8 = 0x92;
@@ -66,7 +66,7 @@ impl ServerMetObfuscation {
             Some(TAG_UDPKEY) => self.udp_key = Some(value).filter(|key| *key != 0),
             Some(TAG_UDPKEYIP) => {
                 self.udp_key_ip =
-                    Some(Ipv4Addr::from(value.to_le_bytes())).filter(|ip| !ip.is_unspecified());
+                    Some(Ed2kIp::from_wire(value).ip()).filter(|ip| !ip.is_unspecified());
             }
             _ => {}
         }
@@ -108,7 +108,7 @@ impl ServerMetObfuscation {
         if let Some(ip) = self.udp_key_ip {
             tags.push(Tag::new(
                 TagName::compact_id(TAG_UDPKEYIP),
-                TagValue::U32(u32::from_le_bytes(ip.octets())),
+                TagValue::U32(Ed2kIp::new(ip).wire()),
             ));
         }
         if let Some(port) = self.udp_port {

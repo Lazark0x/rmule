@@ -9,8 +9,8 @@ use rmule_peer::{
     MiscOptions2, PeerHelloBody, PeerIdentity, SourceExchangeSupport, UdpPortsAdvert,
 };
 use rmule_primitives::{
-    CT_MOD_IP_V6, ClientId, CryptStance, Ed2kText, Ipv4Endpoint, Tag, TagName, TagValue, UserHash,
-    ipv6_address_tag,
+    CT_MOD_IP_V6, ClientId, CryptStance, Ed2kIp, Ed2kText, Ipv4Endpoint, Tag, TagName, TagValue,
+    UserHash, ipv6_address_tag,
 };
 
 use crate::adapters::ServeInput;
@@ -109,10 +109,9 @@ impl HelloFacts {
             tags.push(ipv6_address_tag(CT_MOD_IP_V6, address));
         }
         if let Some(buddy) = self.serving_buddy {
-            let ip = u32::from_le_bytes(buddy.ip.octets());
             tags.push(Tag::new(
                 TagName::compact_id(CT_EMULE_BUDDYIP),
-                TagValue::U32(ip),
+                TagValue::U32(Ed2kIp::new(buddy.ip).wire()),
             ));
             tags.push(Tag::new(
                 TagName::compact_id(CT_EMULE_BUDDYUDP),

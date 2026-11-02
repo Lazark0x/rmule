@@ -229,7 +229,7 @@ impl SharedSelfReach {
             && self.kad_tcp_open()
             && let Some(address) = self.own.public_ip()
         {
-            return ClientId::from_u32(u32::from_le_bytes(address.octets()));
+            return ClientId::from_ipv4(address);
         }
         if let Some(session) = self.own.connected_session() {
             return session.client_id;

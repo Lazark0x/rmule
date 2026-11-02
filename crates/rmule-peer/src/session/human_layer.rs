@@ -117,12 +117,7 @@ impl PeerSession {
 
     /// Whether `id` is a High ID other than the address the link came from.
     fn is_foreign_high_id(&self, id: ClientId) -> bool {
-        id.is_high_id()
-            && self
-                .peer
-                .as_v4()
-                .map(|peer| ClientId::from_u32(u32::from_le_bytes(peer.ip.octets())))
-                != Some(id)
+        id.is_high_id() && self.peer.as_v4().map(|peer| ClientId::from_ipv4(peer.ip)) != Some(id)
     }
 
     /// Drop-with-counter: an inbound chat-captcha challenge or answer.

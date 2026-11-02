@@ -26,7 +26,7 @@ use std::net::IpAddr;
 use std::time::Instant;
 
 use rmule_peer::PeerIdentity;
-use rmule_primitives::{PeerEndpoint, UserHash};
+use rmule_primitives::{ClientId, PeerEndpoint, UserHash};
 
 use rmule_peer::ServerCommand;
 
@@ -50,7 +50,7 @@ pub(super) fn names_address(known: &PeerIdentity, address: PeerEndpoint) -> bool
     match address.ip() {
         IpAddr::V4(ip) => {
             let id = known.client_id();
-            id.is_high_id() && id.as_u32() == u32::from_le_bytes(ip.octets())
+            id.is_high_id() && id == ClientId::from_ipv4(ip)
         }
         IpAddr::V6(ip) => known.peer_ipv6() == Some(ip),
     }

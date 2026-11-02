@@ -4,8 +4,6 @@
 //! holds a queue standing — and a worker's identity rides its Worker stage
 //! (ADR-0090). Every transition moves one record from one stage to one other.
 
-use std::net::Ipv4Addr;
-
 use rmule_peer::PeerIdentity;
 use rmule_primitives::{Ipv4Endpoint, Ipv6Endpoint, PeerEndpoint, UserHash};
 
@@ -599,10 +597,8 @@ impl SourceBook {
             PeerEndpoint::V4(_) => PeerEndpoint::V6(Ipv6Endpoint::new(identity.peer_ipv6()?, port)),
             PeerEndpoint::V6(_) => {
                 let id = identity.client_id();
-                id.is_high_id().then(|| {
-                    let ip = Ipv4Addr::from(id.as_u32().to_le_bytes());
-                    PeerEndpoint::V4(Ipv4Endpoint::new(ip, port))
-                })?
+                id.is_high_id()
+                    .then(|| PeerEndpoint::V4(Ipv4Endpoint::new(id.to_ipv4(), port)))?
             }
         };
         let holder = self

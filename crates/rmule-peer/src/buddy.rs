@@ -30,7 +30,7 @@
 use std::net::Ipv4Addr;
 
 use rmule_primitives::{
-    FileHash, Ipv4Endpoint, Ipv6Endpoint, Packet, PacketProtocol, PeerEndpoint, PeerSource,
+    FileHash, Ipv4Endpoint, Ipv6Endpoint, KadIp, Packet, PacketProtocol, PeerEndpoint, PeerSource,
     WireReader, WireTruncated, is_usable_tag_identity, kad_wire_id,
 };
 use thiserror::Error;
@@ -191,7 +191,7 @@ impl Callback {
         let mut body = Vec::with_capacity(Self::BODY_LEN);
         body.extend_from_slice(&self.buddy_id);
         body.extend_from_slice(&kad_wire_id(*self.file_hash.as_bytes()));
-        body.extend_from_slice(&u32::from(self.requester.ip).to_le_bytes());
+        body.extend_from_slice(&KadIp::new(self.requester.ip).wire().to_le_bytes());
         body.extend_from_slice(&self.requester.port.to_le_bytes());
         Packet::new(PacketProtocol::Emule, PeerOpcode::Callback.as_u8(), body)
     }
@@ -204,7 +204,7 @@ impl Callback {
         let buddy_id = reader.read_array::<BUDDY_ID_LEN>("buddy id")?;
         let file_hash = FileHash::from_bytes(kad_wire_id(reader.read_array("file hash")?));
         let requester = Ipv4Endpoint::new(
-            Ipv4Addr::from(reader.read_u32_le("requester address")?),
+            KadIp::from_wire(reader.read_u32_le("requester address")?).ip(),
             reader.read_u16_le("requester port")?,
         );
         Ok(Self {

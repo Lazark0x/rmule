@@ -19,6 +19,7 @@ mod file_class;
 mod file_name;
 mod hash;
 mod identity;
+mod ip_word;
 mod ipv6_dialect;
 mod link;
 mod obfuscation;
@@ -60,6 +61,7 @@ pub use hash::{
 };
 pub use hash::{OLD_MAX_FILE_SIZE, is_large_file};
 pub use identity::{ClientId, ClientIdentity, ServerEndpoint};
+pub use ip_word::{Ed2kIp, HybridId, KadIp};
 pub use ipv6_dialect::{
     AccountingKey, CT_EMULE_SERVINGBUDDYIPV6, CT_MOD_IP_V6, CT_MOD_MISCOPTIONS, CT_MOD_SVR_IP_V6,
     CT_MOD_YOUR_IP, ST_IPV6, ST_IPV6_STATUS, ServerIpv6Status, ipv6_address_tag,

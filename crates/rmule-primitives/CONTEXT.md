@@ -83,6 +83,10 @@ verdict: a routable address means **High ID**, a value below the low-id
 ceiling means **Low ID** and no inbound dials.
 _Avoid_: user id, session id, peer id
 
+**Address Word**:
+An IPv4 address as the 32-bit integer a protocol carries it as, a type at every site with its order in the type: `Ed2kIp` (`a | b<<8 | c<<16 | d<<24`, so `a.b.c.d` travels as `a b c d`: a High ID, a server's or a buddy's address), `KadIp` (the address as a number, so it travels as `d c b a`: a Kad contact, `TAG_SOURCEIP`, an `OP_CALLBACK` requester) and `HybridId` (a High ID in Kad's word, a Low ID as itself). Stock's "network order", "host order" and hybrid id are these three. Only `ip_word.rs` packs or unpacks one.
+_Avoid_: host order, network order (each names the host, not the wire)
+
 **Endpoint**:
 Where a party is reached. `Ipv4Endpoint` and `Ipv6Endpoint` are the bare
 address+port wire values of one **Address Family** each; `ServerEndpoint` is a

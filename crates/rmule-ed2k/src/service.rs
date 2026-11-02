@@ -8,7 +8,7 @@
 use std::net::Ipv4Addr;
 
 use rmule_primitives::{
-    ClientId, Ed2kText, FileHash, Ipv4Endpoint, Ipv6Endpoint, PeerEndpoint, SearchQuery,
+    ClientId, Ed2kIp, Ed2kText, FileHash, Ipv4Endpoint, Ipv6Endpoint, PeerEndpoint, SearchQuery,
     SearchResult, ServerEndpoint, ServerIdentity, ServerStatusReport, SourceClaim, SourceListTail,
     SourceLookupTarget,
 };
@@ -180,11 +180,11 @@ impl ServerAssignedFacts {
         // all against any server that sends the short `OP_IDCHANGE`, which
         // silently disarms every UDP crypt send gate.
         let public_ip = if id.client_id.is_high_id() {
-            Some(Ipv4Addr::from(id.client_id.as_u32().to_le_bytes()))
+            Some(id.client_id.to_ipv4())
         } else {
             id.public_ip
-                .filter(|raw| *raw >= ClientId::LOW_ID_THRESHOLD)
-                .map(|raw| Ipv4Addr::from(raw.to_le_bytes()))
+                .filter(|word| *word >= ClientId::LOW_ID_THRESHOLD)
+                .map(|word| Ed2kIp::from_wire(word).ip())
         };
         Self {
             public_ip,

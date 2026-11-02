@@ -7,10 +7,8 @@
 //! hybrid-id rule are pinned from aMule `CKnownFile::CreateSrcInfoPacket` /
 //! `CPartFile::AddClientSources` @ `4e8f2b3c`.
 
-use std::net::Ipv4Addr;
-
 use rmule_primitives::{
-    ClientId, Ipv4Endpoint, Ipv6Endpoint, PeerEndpoint, PeerSource, SourceClaim,
+    ClientId, Ed2kIp, HybridId, Ipv4Endpoint, Ipv6Endpoint, PeerEndpoint, PeerSource, SourceClaim,
     SourceCryptOptions, UserHash, WireReader, WireTruncated,
 };
 
@@ -122,15 +120,14 @@ pub(super) fn encode_source_entry(
     source: SourceClaim,
     version: SourceExchangeVersion,
 ) {
-    // A hybrid-id version writes a High ID big-endian; a Low ID rides as-is.
-    // (So would an IPv6 source's sentinel id — the classic exchange has no
+    // A hybrid-id version writes the record's id in hybrid form. (So would an IPv6 source's sentinel id — the classic exchange has no
     // address block for it, which is why the serve path never hands one over.)
     // A Kad callback row has no record at all, and the serve path never hands
     // one over either: it is written as the unassigned id `0`, which names
     // nobody, so every reader drops it.
     let wire_id = match source.peer_source() {
-        Some(record) if version.uses_hybrid_id() && record.is_high_id() => {
-            record.wire_id().swap_bytes()
+        Some(record) if version.uses_hybrid_id() => {
+            HybridId::from_client_id(ClientId::from_u32(record.wire_id())).wire()
         }
         Some(record) => record.wire_id(),
         None => 0,
@@ -266,9 +263,8 @@ fn decode_source_server(
     if ip_raw == 0 && port == 0 {
         return Ok(None);
     }
-    let octets = ip_raw.to_le_bytes();
     Ok(Some(Ipv4Endpoint::new(
-        Ipv4Addr::new(octets[0], octets[1], octets[2], octets[3]),
+        Ed2kIp::from_wire(ip_raw).ip(),
         port,
     )))
 }
@@ -280,16 +276,8 @@ fn decode_source_entry(
     version: SourceExchangeVersion,
 ) -> Result<SourceExchangeEntry, WireTruncated> {
     let raw = reader.read_u32_le("entry client id")?;
-    // LowID-vs-HighID is decided on the as-received bytes, before any swap: a
-    // LowID's magnitude is scheme-invariant, and a HighID's raw wire value
-    // stays >= the threshold under either byte order (barring a leftmost
-    // dotted octet of 0, which never occurs for a routable address — the
-    // exact asymmetry the hybrid encoding exploits). aMule's own
-    // `IsLowID(dwID)` checks the same raw, pre-swap value
-    // (`PartFile.cpp::AddClientSources` @4e8f2b3c).
-    let is_high_id = ClientId::from_u32(raw).is_high_id();
-    let id = if version.uses_hybrid_id() && is_high_id {
-        ClientId::from_u32(raw.swap_bytes())
+    let id = if version.uses_hybrid_id() {
+        HybridId::from_wire(raw).client_id()
     } else {
         ClientId::from_u32(raw)
     };

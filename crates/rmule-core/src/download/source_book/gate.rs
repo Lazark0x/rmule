@@ -80,9 +80,9 @@ impl OwnPosition {
     /// our High ID spells.
     fn our_address(&self, ip: Ipv4Addr) -> bool {
         self.public_ip == Some(ip)
-            || self.session.is_some_and(|session| {
-                session.client_id == ClientId::from_u32(u32::from_le_bytes(ip.octets()))
-            })
+            || self
+                .session
+                .is_some_and(|session| session.client_id == ClientId::from_ipv4(ip))
     }
 
     fn holds_low_id(&self) -> bool {
@@ -389,7 +389,7 @@ mod tests {
     }
 
     fn high_id() -> ClientId {
-        ClientId::from_u32(u32::from_le_bytes(OUR_ADDRESS.octets()))
+        ClientId::from_ipv4(OUR_ADDRESS)
     }
 
     fn low_id() -> ClientId {

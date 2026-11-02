@@ -97,7 +97,7 @@ impl PeerEndpoint {
             Self::V4(ep)
                 if !ep.ip.is_unspecified()
                     && !ep.ip.is_broadcast()
-                    && u32::from_le_bytes(ep.ip.octets()) >= ClientId::LOW_ID_THRESHOLD =>
+                    && ClientId::from_ipv4(ep.ip).is_high_id() =>
             {
                 Some(ep)
             }

@@ -41,7 +41,7 @@
 //! sender keys it earned, and the binding IP keeps them honest — a key learned
 //! under a different public address reads back as no key at all.
 
-use rmule_primitives::WireReader;
+use rmule_primitives::{KadIp, WireReader};
 
 use crate::net::is_good_ip_port;
 use crate::udp_key::KadUdpKey;
@@ -283,10 +283,7 @@ impl NodesDat {
 
         for contact in contacts.iter().take(written) {
             out.extend_from_slice(contact.id().as_bytes());
-            // The reader takes the IP "low octet first" (a.b.c.d on disk as
-            // [d,c,b,a]); the writer is its exact inverse.
-            let octets = contact.endpoint().ip().octets();
-            out.extend_from_slice(&[octets[3], octets[2], octets[1], octets[0]]);
+            out.extend_from_slice(&KadIp::new(contact.endpoint().ip()).wire().to_le_bytes());
             out.extend_from_slice(&contact.endpoint().udp_port().to_le_bytes());
             out.extend_from_slice(&contact.tcp_port().to_le_bytes());
             out.push(contact.version());

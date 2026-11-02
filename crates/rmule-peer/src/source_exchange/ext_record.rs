@@ -29,11 +29,11 @@
 //! `MODMISC_EXTXS`, and its two optional identity tags only to a peer that also
 //! advertised `MODMISC_EXTXS_SKIPTAGS`. A receiver accepts both from anyone.
 
-use std::net::{Ipv4Addr, Ipv6Addr};
+use std::net::Ipv6Addr;
 
 use rmule_primitives::{
-    CT_MOD_IP_V6, ClientId, Ipv4Endpoint, Ipv6Endpoint, PeerSource, PrimitiveError, SourceClaim,
-    SourceCryptOptions, Tag, TagName, TagValue, UserHash, WireReader, WireTruncated,
+    CT_MOD_IP_V6, ClientId, Ed2kIp, Ipv4Endpoint, Ipv6Endpoint, PeerSource, PrimitiveError,
+    SourceClaim, SourceCryptOptions, Tag, TagName, TagValue, UserHash, WireReader, WireTruncated,
     is_usable_tag_identity,
 };
 use thiserror::Error;
@@ -124,7 +124,7 @@ pub(crate) fn encode_ext_record(
         // Always a pair: a server address with no port names nothing dialable.
         tags.push(Tag::new(
             TagName::compact_id(CT_EMULE_SERVERIP),
-            TagValue::compact_uint(u32::from_le_bytes(server.ip.octets())),
+            TagValue::compact_uint(Ed2kIp::new(server.ip).wire()),
         ));
         tags.push(Tag::new(
             TagName::compact_id(CT_EMULE_SERVERTCP),
@@ -294,11 +294,7 @@ impl RecordTags {
             // The pair is written together and read together: an address with
             // no port names nothing a Low-ID routing rule could use.
             (Some(raw), Some(port)) if raw != 0 && port != 0 => {
-                let octets = raw.to_le_bytes();
-                Some(Ipv4Endpoint::new(
-                    Ipv4Addr::new(octets[0], octets[1], octets[2], octets[3]),
-                    port,
-                ))
+                Some(Ipv4Endpoint::new(Ed2kIp::from_wire(raw).ip(), port))
             }
             _ => None,
         };

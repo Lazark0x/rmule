@@ -2,7 +2,7 @@
 # Machine-checkable subset of the repository's code and docs conventions.
 #
 # Walks crates/ apps/ tools/ docs/ (and, for the two text checks, every public
-# tracked file) and reports every violation of the sixteen
+# tracked file) and reports every violation of the seventeen
 # guards below. A violation is suppressed when its exact `<check>:<path>` line appears
 # in scripts/guards-allow.txt (the ratchet — debt drained over time, never
 # grown without justification in the PR).
@@ -38,6 +38,9 @@
 #   vocab      private workflow vocabulary, a plan label or coordinate, a
 #              private branch, worktree or image-tag name, or a path into the
 #              private tree, in any public tracked file
+#   ipword     an IPv4 address packed into or read out of a 32-bit word by hand
+#              in product code under crates/ or apps/: the byte order belongs
+#              to rmule-primitives' ip_word.rs alone
 #   sentence   a `Sentence` made outside a words module: rmule-words, or the
 #              TUI's own words (apps/rmule/src/words.rs and words/)
 #   drawnword  a string literal holding a letter in a module of the TUI that
@@ -252,8 +255,10 @@ fi
 UI_SRC="apps/rmule/src"
 CLI_SRC="apps/rmule-cli/src"
 WORDS_SRC="crates/rmule-words/src"
-uidebug_lines() {
-    awk '
+# non_test_hits <file> <ere>: the numbers of the lines holding <ere>, outside
+# comments, test code and `tracing::` macros.
+non_test_hits() {
+    PATTERN="$2" awk '
         function count(s, c,   n, i) { n = 0; for (i = 1; i <= length(s); i++) if (substr(s, i, 1) == c) n++; return n }
         FNR == 1 { skip = 0; depth = 0; pending = 0; tracing = 0; parens = 0 }
         /^[[:space:]]*\/\// { next }
@@ -295,8 +300,11 @@ uidebug_lines() {
             tracing = parens > 0
             next
         }
-        /\{[A-Za-z0-9_.]*:[^{}"]*\?\}/ { print FNR }
+        $0 ~ ENVIRON["PATTERN"] { print FNR }
     ' "$1"
+}
+uidebug_lines() {
+    non_test_hits "$1" '\{[A-Za-z0-9_.]*:[^{}"]*\?\}'
 }
 # The first line of each `#[error(...)]` whose text, however many lines it
 # spans, holds a Debug format.
@@ -755,6 +763,21 @@ while IFS="$(printf '\t')" read -r path at adr phrase; do
 done <<EOF
 $(adrquote_hits)
 EOF
+
+# 13b. ipword — the two orders an IPv4 address has as a 32-bit word live in one
+# file, so a wrong swap cannot compile: an address is a type at every other site.
+IPWORD='from_[lb]e_bytes\([^()]*\.octets\(\)\)|[.:]swap_bytes|Ipv4Addr::from\(.*\.to_[lb]e_bytes\(\)\)|octets\.reverse\(\)'
+while IFS= read -r f; do
+    case "$f" in
+        crates/rmule-primitives/src/ip_word.rs | crates/rmule-testkit/* | */tests/* | */tests.rs) continue ;;
+        crates/* | apps/*) ;;
+        *) continue ;;
+    esac
+    hits=$(non_test_hits "$f" "$IPWORD" | paste -sd, -)
+    if [ -n "$hits" ]; then
+        report ipword "$f" "address packed by hand at line(s) $hits — use Ed2kIp, KadIp, HybridId or ClientId::from_ipv4"
+    fi
+done < <(rs_files)
 
 # 14. sentence — a Sentence is made only in a words module. Its constructors
 # are public because the TUI's own words, which word the TUI's own types, live

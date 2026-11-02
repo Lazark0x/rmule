@@ -179,7 +179,7 @@ impl LowIdCandidate {
             SourceRoad::DirectUdpCallback { kad_udp, .. } => (kad_udp, None, true),
         };
         Some(Self {
-            low_id: ClientId::from_u32(u32::from_le_bytes(kad_udp.ip.octets())),
+            low_id: ClientId::from_ipv4(kad_udp.ip),
             source_server: None,
             tcp_port: sighting.tcp_port(),
             user_hash: sighting.user_hash(),

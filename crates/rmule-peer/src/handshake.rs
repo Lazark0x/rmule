@@ -11,8 +11,8 @@ use std::sync::Arc;
 
 use rmule_primitives::{
     CT_EMULE_SERVINGBUDDYIPV6, CT_MOD_IP_V6, CT_MOD_MISCOPTIONS, Capabilities, ClientId,
-    ClientIdentity, CryptStance, Ed2kText, Ipv4Endpoint, SecureIdentKey, Tag, TagName, TagValue,
-    ipv6_address_tag,
+    ClientIdentity, CryptStance, Ed2kIp, Ed2kText, Ipv4Endpoint, SecureIdentKey, Tag, TagName,
+    TagValue, ipv6_address_tag,
 };
 
 use crate::capability::{
@@ -186,7 +186,7 @@ impl PeerHelloBody {
         if let Some(buddy) = serving_buddy {
             tags.push(Tag::new(
                 TagName::length_prefixed_id(CT_EMULE_BUDDYIP),
-                TagValue::U32(u32::from_le_bytes(buddy.buddy_udp.ip.octets())),
+                TagValue::U32(Ed2kIp::new(buddy.buddy_udp.ip).wire()),
             ));
             tags.push(Tag::new(
                 TagName::length_prefixed_id(CT_EMULE_BUDDYUDP),

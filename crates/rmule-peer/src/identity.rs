@@ -7,7 +7,7 @@
 use std::net::{Ipv4Addr, Ipv6Addr};
 
 use rmule_primitives::{
-    ClientId, CryptStance, Ed2kText, Informant, Ipv4Endpoint, Ipv6Endpoint, PeerEndpoint,
+    ClientId, CryptStance, Ed2kIp, Ed2kText, Informant, Ipv4Endpoint, Ipv6Endpoint, PeerEndpoint,
     PeerSource, SourceSighting, Tag, TagValue, UserHash,
 };
 
@@ -432,7 +432,7 @@ impl PeerIdentity {
             Some(link)
                 if self.client_id.is_high_id()
                     || self.client_id.as_u32() == 0
-                    || self.client_id.as_u32() == u32::from_le_bytes(link.ip.octets()) =>
+                    || self.client_id == ClientId::from_ipv4(link.ip) =>
             {
                 PeerSource::HighId(Ipv4Endpoint::new(link.ip, self.tcp_port))
             }
@@ -585,7 +585,7 @@ fn serving_buddy_from_tags(tags: &[Tag]) -> Option<ServingBuddyAdvert> {
         integer(CT_EMULE_BUDDYUDP)? as u16,
     );
     (ip != 0 && port != 0).then(|| ServingBuddyAdvert {
-        buddy_udp: Ipv4Endpoint::new(Ipv4Addr::from(ip.to_le_bytes()), port),
+        buddy_udp: Ipv4Endpoint::new(Ed2kIp::from_wire(ip).ip(), port),
         ipv6: PeerIpv6Tags::from_hello_tags(tags).serving_buddy_ipv6,
     })
 }
