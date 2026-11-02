@@ -91,7 +91,7 @@ impl ServeRuntimeService for LoopbackServeRuntime {
     ) -> Result<SocketAddrV4, CoreError> {
         let listener = PeerListener::bind(listen_addr)
             .await
-            .map_err(|e| CoreError::Repository(e.to_string()))?;
+            .map_err(|_| CoreError::ListenerBind(std::io::ErrorKind::AddrNotAvailable))?;
         let bound = SocketAddrV4::new(*listen_addr.ip(), listener.local_port());
         if let Some(tx) = self.bound_tx.take() {
             let _ = tx.send(bound);

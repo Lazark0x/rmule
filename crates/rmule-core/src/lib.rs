@@ -164,7 +164,9 @@ pub use durable::{
     DownloadLifecycle, DownloadMetadata, DownloadMetadataOrigin, DownloadPaths,
     DurableDownloadRecord, KadAichRoot, VerifiedPartRecord,
 };
-pub use error::{CoreError, DownloadFailure, FinalizeError, PartFault, StorageIntegrityFault};
+pub use error::{
+    CoreError, DownloadFailure, FinalizeError, GoneService, PartFault, StorageIntegrityFault,
+};
 pub use join::{
     AutoUpdateOutcome, FirstRunFetch, JoinCommandSink, JoinConfig, JoinOutcome, KadSeedOutcome,
     SeedReadFault, acquire_kad_seeds, run_join_sequence,

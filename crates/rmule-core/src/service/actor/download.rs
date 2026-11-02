@@ -545,6 +545,10 @@ fn start_refusal(error: &CoreError) -> CoreCommandRejectReason {
         | CoreError::InvalidLifecycleTransition
         | CoreError::PartOutOfBounds
         | CoreError::Repository(_)
+        | CoreError::File(_)
+        | CoreError::PathNotUtf8(_)
+        | CoreError::SecureIdentKey(_)
+        | CoreError::ServiceGone(_)
         | CoreError::StoreRefused { .. }
         | CoreError::ProvisionalAuthorityConflict
         | CoreError::KadUnavailable(_)

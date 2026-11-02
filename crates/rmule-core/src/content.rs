@@ -424,7 +424,7 @@ async fn remove_if_present(path: &Path) -> Result<(), CoreError> {
 }
 
 fn io_error(error: std::io::Error) -> CoreError {
-    CoreError::Repository(error.to_string())
+    CoreError::File(error.to_string())
 }
 
 #[cfg(test)]

@@ -45,10 +45,26 @@ pub enum CoreError {
     /// so either the record or the size is wrong and neither can be trusted.
     #[error("verified part is outside the declared file size")]
     PartOutOfBounds,
-    /// The store itself failed (I/O, a SQL error). The string
-    /// is the backend's own message and is for a log, not for matching on.
-    #[error("download repository error: {0}")]
+    /// The store itself failed. The string is the engine's own message and
+    /// is for a log, not for matching on: [`rmule_store::StoreError`] holds
+    /// the engine's error, which neither clones nor compares.
+    #[error("store error: {0}")]
     Repository(String),
+    /// A file of a download or a share would not read or write. The string is
+    /// the operating system's message.
+    #[error("file error: {0}")]
+    File(String),
+    /// A folder has no UTF-8 spelling, and what keeps it keeps text.
+    #[error("{} is not valid UTF-8", .0.display())]
+    PathNotUtf8(std::path::PathBuf),
+    /// The node's secure-ident key could not be made, or the stored one does
+    /// not read. The string is the key library's own message.
+    #[error("secure-ident key: {0}")]
+    SecureIdentKey(String),
+    /// A part of the running node this call needs is not there. Nothing on
+    /// disk is wrong, and a retry finds the same until that part is back.
+    #[error(transparent)]
+    ServiceGone(#[from] GoneService),
     /// The Durable Store would not open: why, for the operator's words, and
     /// what the engine said, for the log.
     #[error("the store would not open: {reason}")]
@@ -78,6 +94,20 @@ pub enum CoreError {
     /// later send fails the same way.
     #[error("core service stopped")]
     ServiceStopped,
+}
+
+/// Which live part of the node an ask found missing.
+#[derive(Clone, Copy, Debug, thiserror::Error, PartialEq, Eq)]
+pub enum GoneService {
+    /// The server session closed.
+    #[error("server session closed")]
+    ServerSession,
+    /// The serve activity was never started.
+    #[error("serve not started")]
+    Serve,
+    /// One inbound serve connection is over.
+    #[error("serve connection closed")]
+    ServeConnection,
 }
 
 /// Why a running download stopped. Delivered on the event stream long after the

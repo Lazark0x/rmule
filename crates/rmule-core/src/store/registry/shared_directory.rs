@@ -98,8 +98,8 @@ impl DurableSharedFileRegistry {
     /// the operator's yes to a parent that replaces its children.
     ///
     /// # Errors
-    /// [`CoreError::Repository`] when the path is not valid UTF-8 or the
-    /// store write fails.
+    /// [`CoreError::PathNotUtf8`] when the path is not valid UTF-8,
+    /// [`CoreError::Repository`] when the store write fails.
     pub(crate) fn add_shared_directory(
         &self,
         dir: &Path,
@@ -258,7 +258,7 @@ fn list(txn: &impl Readable) -> Result<Vec<SetAside>, CoreError> {
 fn utf8(dir: &Path) -> Result<String, CoreError> {
     dir.to_str()
         .map(str::to_owned)
-        .ok_or_else(|| CoreError::Repository(format!("{} is not valid UTF-8", dir.display())))
+        .ok_or_else(|| CoreError::PathNotUtf8(dir.to_owned()))
 }
 
 #[cfg(test)]

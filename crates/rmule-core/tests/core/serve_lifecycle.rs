@@ -65,9 +65,7 @@ impl ServeRuntimeService for FakeServeRuntime {
         _listen_addr: SocketAddrV4,
     ) -> Result<SocketAddrV4, rmule_core::CoreError> {
         if self.start_fails {
-            return Err(rmule_core::CoreError::Repository(
-                "listener bind failed (injected)".into(),
-            ));
+            return Err(rmule_core::GoneService::Serve.into());
         }
         Ok("127.0.0.1:4662".parse().unwrap())
     }

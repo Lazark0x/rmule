@@ -12,7 +12,7 @@ use rmule_peer::{ConnectionCommand, ConnectionEvent, PeerCommand, ServerCommand,
 use rmule_primitives::{PeerEndpoint, UserHash};
 use tokio::sync::mpsc;
 
-use crate::CoreError;
+use crate::{CoreError, GoneService};
 
 /// What one connection hands the **Serve State**: the peer's Server
 /// Capability requests and its connection facts, exactly as its session
@@ -147,7 +147,7 @@ impl ServeConnection {
         self.command_tx
             .send(command)
             .await
-            .map_err(|_| CoreError::Repository("serve connection closed".into()))
+            .map_err(|_| GoneService::ServeConnection.into())
     }
 
     /// The next input, or `None` once the connection is gone. A `None` is the

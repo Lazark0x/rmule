@@ -257,7 +257,7 @@ static SECURE_IDENT: Singleton<SecureIdentKeyRecord> = Singleton {
     table: &SECURE_IDENT_KEY,
     mint: || {
         let key = SecureIdentKey::generate()
-            .map_err(|e| CoreError::Repository(format!("secure-ident keygen: {e}")))?;
+            .map_err(|e| CoreError::SecureIdentKey(format!("keygen: {e}")))?;
         Ok(SecureIdentKeyRecord {
             private_key: key.to_der(),
         })
@@ -344,7 +344,7 @@ impl DurableAppConfig {
     }
 
     /// Persist the download directory, never inside the Data Directory
-    /// (ADR-0101). Fails with [`CoreError::Repository`] on a path that is not
+    /// (ADR-0101). Fails with [`CoreError::PathNotUtf8`] on a path that is not
     /// valid UTF-8, since the preferences column is text.
     pub(crate) fn set_download_dir(&self, dir: &Path) -> Result<(), CoreError> {
         self.set_preference(Preference::DownloadDir, dir_text(dir)?)
@@ -384,7 +384,7 @@ impl DurableAppConfig {
 /// `dir`'s text; the preferences column can hold no other.
 fn dir_text(dir: &Path) -> Result<&str, CoreError> {
     dir.to_str()
-        .ok_or_else(|| CoreError::Repository("directory is not valid UTF-8".to_owned()))
+        .ok_or_else(|| CoreError::PathNotUtf8(dir.to_owned()))
 }
 
 impl AppConfigStore for DurableAppConfig {
@@ -395,7 +395,7 @@ impl AppConfigStore for DurableAppConfig {
     fn ensure_secure_ident_key(&self) -> Result<SecureIdentKey, CoreError> {
         let record = SECURE_IDENT.ensure(&self.store)?;
         SecureIdentKey::from_der(&record.private_key)
-            .map_err(|e| CoreError::Repository(format!("stored secure-ident key: {e}")))
+            .map_err(|e| CoreError::SecureIdentKey(format!("stored: {e}")))
     }
 
     fn ensure_kad_identity(&self) -> Result<KadIdentity, CoreError> {

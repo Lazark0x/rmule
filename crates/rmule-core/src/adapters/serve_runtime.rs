@@ -13,12 +13,12 @@ use rmule_net::family::FamilySelection;
 use rmule_net::peer::{PeerListener, PeerNetError};
 use tokio::sync::mpsc;
 
-use crate::CoreError;
 use crate::ban_store::SharedBanStore;
 use crate::buddy_link::SharedBuddySlot;
 use crate::ip_filter::SharedIpFilter;
 use crate::server_session::{HelloSource, SharedServerSession};
 use crate::service::{LoginStep, PortTestEnd, SharesWithheld};
+use crate::{CoreError, GoneService};
 
 mod accept;
 mod connection;
@@ -584,7 +584,7 @@ impl ServeRuntimeService for RuntimeServeRuntimeService {
                 follower.hand(files);
                 Ok(AnnounceOutcome::Unsaid)
             }
-            None => Err(CoreError::Repository("serve not started".into())),
+            None => Err(GoneService::Serve.into()),
         }
     }
 

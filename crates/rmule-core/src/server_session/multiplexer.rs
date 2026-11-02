@@ -30,7 +30,7 @@ use crate::reachability::{OwnListenEndpoint, SharedIpv6Probe};
 use crate::search::LiveSearches;
 use crate::server_list::ServerFacts;
 use crate::service::SearchId;
-use crate::{CoreError, DownloadFailure};
+use crate::{CoreError, DownloadFailure, GoneService};
 
 mod answer_order;
 #[cfg(test)]
@@ -314,10 +314,8 @@ impl ServerSessionHandle {
                 reply: reply_tx,
             })
             .await
-            .map_err(|_| CoreError::Repository("server session closed".into()))?;
-        reply_rx
-            .await
-            .map_err(|_| CoreError::Repository("server session closed".into()))?
+            .map_err(|_| GoneService::ServerSession)?;
+        reply_rx.await.map_err(|_| GoneService::ServerSession)?
     }
 
     /// Send no more of the set (ADR-0099): what was told stays told.
