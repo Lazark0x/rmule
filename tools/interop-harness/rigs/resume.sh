@@ -1,6 +1,6 @@
 #!/bin/bash
 # A first-class download from a stock aMule, interrupted once and finished.
-#   resume.sh <pause|restart|paused-restart|kill9|forged>
+#   resume.sh <pause|restart|paused-restart|kill9|forged|forged-live>
 # A tap on each seed holds every block, so a byte sent twice is a refetch. A
 # second stock seed joins during the interruption: a stock-shaped client asks a
 # source it has just asked again only after the reask period, as stock does.
@@ -113,6 +113,17 @@ PY
     resume
     box=rig-rmule2
     ;;
+forged-live)
+    # No interruption: the cell goes bad under a running download.
+    python3 -I - "$(part_files | head -1)" "$((CAP * 1024 * HOLD / 2))" >"$R/forged.txt" <<'PY'
+import os, sys
+with open(sys.argv[1], "r+b") as f:
+    f.seek(int(sys.argv[2]))
+    f.write(os.urandom(512))
+print(f"forged_at={sys.argv[2]} len=512 file={sys.argv[1]}")
+PY
+    box=rig-rmule
+    ;;
 kill9)
     docker kill -s KILL rig-rmule >/dev/null
     killed_at=$(date +%s)
@@ -132,8 +143,11 @@ sleep 2
 docker logs rig-srv >"$R/server.log" 2>&1
 docker logs rig-seed >"$R/seed-stdout.log" 2>&1
 amule_log rig-seed >"$R/seed-logfile.log"
-docker stop rig-tap rig-tap2 >/dev/null
-python3 -I "$RIGS/wire_ranges.py" "$R/cap/seed-tap.pcap:$SUB.2" "$R/cap/seed2-tap.pcap:$SUB.3" --json "$R/cap/ranges.json" >"$R/wire.txt"
+docker stop rig-tap >/dev/null
+docker stop rig-tap2 >/dev/null 2>&1
+taps="$R/cap/seed-tap.pcap:$SUB.2"
+[ -f "$R/cap/seed2-tap.pcap" ] && taps="$taps $R/cap/seed2-tap.pcap:$SUB.3"
+python3 -I "$RIGS/wire_ranges.py" $taps --json "$R/cap/ranges.json" >"$R/wire.txt"
 if [ "$mode" = kill9 ]; then
     python3 -I "$RIGS/wire_ranges.py" "$R/cap/seed-tap.pcap:$SUB.2" "$R/cap/seed2-tap.pcap:$SUB.3" --since "$killed_at" --json "$R/cap/after.json" >"$R/after.txt"
     python3 -I "$RIGS/kill_check.py" "$R/seed/in/stream.bin" "$R/at-kill/$(ls "$R/at-kill" | grep -v redb | grep -v link | head -1)" "$R/cap/after.json" | tee "$R/kill-check.txt"
