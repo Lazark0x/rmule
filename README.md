@@ -47,8 +47,10 @@ terminal client and `rmule-cli-<target>` for the headless one, for example
 
 Each archive holds the binary, `LICENSE`, this README and
 `THIRD-PARTY-LICENSES.md`. Each has its own `.sha256` file, and `sha256.sum`
-lists them all. The Windows binaries link the C runtime statically, so they
-need no Visual C++ redistributable.
+lists them all. Every archive also has a GitHub attestation of where it was
+built, which `gh attestation verify <archive> --repo Lazark0x/rmule` checks. The
+Windows binaries link the C runtime statically, so they need no Visual C++
+redistributable.
 
 Shell and PowerShell installers download the right archive and put the binary
 in `~/.local/bin`. They install no updater. For the terminal client:
@@ -107,8 +109,8 @@ eD2k server until you say so.
    to them from aMule's default mirror,
    `http://upd.emule-security.org/server.met`. That mirror is plain HTTP, so
    the seeds stay whatever it answers, and a list that looks wrong is refused.
-   It does so only while the list is empty, and Settings › *Fetch list* turns
-   it off. In Networks (`1`), `U` fetches a list from any URL and `a` adds one
+   It fetches only on a start that finds the list empty, and Settings ›
+   *Fetch list* turns it off. In Networks (`1`), `U` fetches a list from any URL and `a` adds one
    server as `host:port`.
 3. **Connect.** Connecting is yours: select a server in Networks and press
    `c`. Each later start connects to that server again; *Autoconnect* in
@@ -127,7 +129,10 @@ eD2k server until you say so.
 
 ![The Searches tab: the query "bunny" and its three results, with size, sources and type](assets/screenshots/searches.png)
 
-Downloads that were running when you quit start again on the next run.
+Downloads that were running when you quit start again on the next run, with
+everything that had arrived. A download is shared from its first verified part,
+so it gives back while it runs, and `v` on Transfers hands it to your player
+before it finishes.
 
 `rmule --help` prints the options, the data directory in use, and the
 environment variables rmule reads.
@@ -167,6 +172,11 @@ never dialled or served. With neither file, nothing is filtered.
 
 The user hash and the Secure User Identification key in `rmule.redb` carry the
 credit other clients give you. Back up the directory to keep them.
+
+A newer rmule upgrades `rmule.redb` at its first start, and older versions then
+refuse it, so copy the directory first if you may want to go back. This release
+upgrades a store from 0.1.0 or later. An older one is refused and left as it
+was: open it once with rmule 0.2.0, which upgrades it.
 
 ## Ports and firewall
 
@@ -311,9 +321,15 @@ also prints it to stderr, filtered by `RMULE_LOG` (default `info`).
   (EC) interface, so `amulecmd`, `amuleweb` and the aMule GUI cannot attach to
   it, and quitting `rmule` stops every transfer.
 - **No speed limits.** There is no upload or download rate cap.
+- **256 GiB.** That is eD2k's limit on a file. A scan refuses a larger one and
+  says so, and it is never hashed.
 - **No chat, comments or share browsing.** rmule answers these as an aMule set
   to its most private settings would: peers that ask to browse your shares are
   refused, and rmule holds no Kad notes and searches for none.
+
+On macOS, the binaries are not notarized. The installers are not affected. An
+archive downloaded in a browser is quarantined, and Gatekeeper refuses it until
+you clear that with `xattr -d com.apple.quarantine rmule`.
 
 On Windows:
 
