@@ -9,7 +9,7 @@
 use std::path::Path;
 use std::time::Duration;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 
 use crate::docker::RunContainer;
 use crate::flow::bench::Bench;
@@ -165,7 +165,17 @@ pub(super) struct TransferPlan<'a> {
 /// and small enough that a punched path moves it inside one window.
 const TRANSFER_FILE_BYTES: u64 = 9_728_000 * 2 + 4096;
 
+/// The harness environment variable that sizes the transferred file instead:
+/// an exact multiple of the part size is a shape of its own on the wire.
+const TRANSFER_SIZE_ENV: &str = "RMULE_BENCH_NATT_TRANSFER_BYTES";
+
 /// Write the **Synthetic File** the transfer row moves and compute its link.
 pub(in crate::flow::nat::natt) fn synthetic_file(dir: &Path) -> Result<SyntheticFile> {
-    crate::flow::nat::synthetic::write_hashed(dir, TRANSFER_FILE_BYTES)
+    let size = match std::env::var(TRANSFER_SIZE_ENV) {
+        Ok(size) => size
+            .parse()
+            .with_context(|| format!("{TRANSFER_SIZE_ENV}={size}"))?,
+        Err(_) => TRANSFER_FILE_BYTES,
+    };
+    crate::flow::nat::synthetic::write_hashed(dir, size)
 }
