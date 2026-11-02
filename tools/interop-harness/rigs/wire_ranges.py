@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """What a tap on the seed saw of one downloader, in file offsets.
 
-`wire_ranges.py <pcap>:<seed ip>... [--json out]` rebuilds each TCP stream of
+`wire_ranges.py <pcap>:<seed ip>... [--since <unix>] [--json out]` rebuilds each TCP stream of
 each tap, walks its eD2k frames, and prints the bytes the seeds delivered,
 counted once and in all, and the bytes the downloader asked for. The eD2k client
-frames only, plain links only: a rig run leaves obfuscation off.
+frames only, plain links only: a rig run leaves obfuscation off. `--since` keeps
+the streams opened after that moment.
 """
 
 import json
@@ -104,10 +105,17 @@ def main():
         at = args.index("--json")
         out = args[at + 1]
         del args[at : at + 2]
+    since = 0.0
+    if "--since" in args:
+        at = args.index("--since")
+        since = float(args[at + 1])
+        del args[at : at + 2]
     delivered, asked, opcodes = [], [], defaultdict(int)
     for tap in args:
         pcap, seed = tap.rsplit(":", 1)
         for (src, sport, dst, dport), first, buf in streams(pcap):
+            if first < since:
+                continue
             for proto, opcode, body in frames(buf):
                 if src == seed or dst == seed:
                     opcodes[f"{'seed' if src == seed else 'peer'} 0x{proto:02x}/0x{opcode:02x}"] += 1

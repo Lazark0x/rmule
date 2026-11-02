@@ -7,9 +7,11 @@ byte must already match the source in the copy of `.part` taken at the kill.
 """
 
 import json
+import os
 import sys
 
-from wire_ranges import merge
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from wire_ranges import merge  # noqa: E402
 
 
 def main():

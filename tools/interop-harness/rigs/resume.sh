@@ -30,6 +30,14 @@ until amulecmd rig-seed 'Show shared' 2>/dev/null | grep -q stream.bin; do
     [ $SECONDS -lt $end ] || { echo "rig: seed never shared"; exit 3; }
     sleep 1
 done
+if [ -n "${RIG_AICH:-}" ]; then
+    # The seed's AICH master hash, at the head of its known2 file, goes in the link.
+    docker cp rig-seed:/root/.aMule/known2_64.met "$R/known2_64.met" >/dev/null
+    root=$(python3 -I -c "
+import base64
+print(base64.b32encode(open('$R/known2_64.met', 'rb').read()[1:21]).decode())")
+    link="${link%|/}|h=$root|/"
+fi
 tap() { # tap-container seed-container pcap
     docker run -d --name "$1" --network "container:$2" --cap-add NET_RAW --cap-add NET_ADMIN \
         -v "$R/cap":/cap rmule/interop-capture:local tcpdump -i eth0 --immediate-mode -U -s 0 -B 262144 \
@@ -108,6 +116,7 @@ PY
     ;;
 kill9)
     docker kill -s KILL rig-rmule >/dev/null
+    killed_at=$(date +%s)
     mkdir -p "$R/at-kill"
     for f in $(part_files); do cp "$f" "$R/at-kill/"; done
     cp "$R/rmule/rmule.redb" "$R/at-kill/"
@@ -127,7 +136,7 @@ amule_log rig-seed >"$R/seed-logfile.log"
 docker stop rig-tap rig-tap2 >/dev/null
 python3 -I "$RIGS/wire_ranges.py" "$R/cap/seed-tap.pcap:$SUB.2" "$R/cap/seed2-tap.pcap:$SUB.3" --json "$R/cap/ranges.json" >"$R/wire.txt"
 if [ "$mode" = kill9 ]; then
-    python3 -I "$RIGS/wire_ranges.py" "$R/cap/seed2-tap.pcap:$SUB.3" --json "$R/cap/after.json" >"$R/after.txt"
+    python3 -I "$RIGS/wire_ranges.py" "$R/cap/seed-tap.pcap:$SUB.2" "$R/cap/seed2-tap.pcap:$SUB.3" --since "$killed_at" --json "$R/cap/after.json" >"$R/after.txt"
     python3 -I "$RIGS/kill_check.py" "$R/seed/in/stream.bin" "$R/at-kill/$(ls "$R/at-kill" | grep -v redb | grep -v link | head -1)" "$R/cap/after.json" | tee "$R/kill-check.txt"
 fi
 final=$(find "$R/rmule" -type f -size "+$((SIZE / 1024 - 1))k" ! -name '*.redb' | head -3 | tr '\n' ' ')
