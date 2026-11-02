@@ -71,7 +71,7 @@ pub const fn retirement_words(reason: PeerRetirementReason) -> &'static str {
     match reason {
         PeerRetirementReason::PeerDisconnected => "it disconnected",
         PeerRetirementReason::SlotTimeout => "its queue took too long",
-        PeerRetirementReason::PartVerificationFailed => "a part it sent failed its check",
+        PeerRetirementReason::PartVerificationFailed => "too much of what it sent proved corrupt",
         PeerRetirementReason::VerificationAuthorityMismatch => {
             "its part hashes contradicted the file's"
         }
@@ -225,7 +225,7 @@ const fn retired_cell(reason: PeerRetirementReason) -> &'static str {
     match reason {
         PeerRetirementReason::PeerDisconnected => "disconnected",
         PeerRetirementReason::SlotTimeout => "queue timed out",
-        PeerRetirementReason::PartVerificationFailed => "bad part",
+        PeerRetirementReason::PartVerificationFailed => "bad data",
         PeerRetirementReason::VerificationAuthorityMismatch => "bad hashes",
         PeerRetirementReason::CryptIncompatible => "crypt mismatch",
         PeerRetirementReason::Distrusted => "distrusted",

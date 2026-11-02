@@ -89,6 +89,11 @@ pub(crate) trait Progress {
     fn failed_cells(&self, _part_index: PartIndex) -> Option<&Attempt> {
         None
     }
+    /// Whether `peer` is **Set Aside** from `part_index`: it is asked for none
+    /// of its blocks.
+    fn set_aside(&self, _part_index: PartIndex, _peer: PeerEndpoint) -> bool {
+        false
+    }
 }
 
 impl Progress for () {
@@ -198,7 +203,7 @@ impl DownloadScheduler {
             band: &self.band,
             window: self.window(),
         };
-        let held = |part: PartIndex| parts.has(part);
+        let held = |part: PartIndex| parts.has(part) && !progress.set_aside(part, peer);
         let fresh = self.fresh_blocks(peer, room, &held, &inputs, progress);
         let (blocks, duplicate) = if fresh.is_empty() {
             (

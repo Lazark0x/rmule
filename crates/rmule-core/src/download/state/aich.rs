@@ -4,11 +4,12 @@
 //! `SHAHashSet` counts it.
 
 use rmule_peer::PartIndex;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::time::Instant;
 
 use crate::KadAichRoot;
-use crate::service::{DownloadEvent, PeerRetirementReason};
+use crate::assembly::Verdict;
+use crate::service::DownloadEvent;
 use rmule_kad::KadAichRootReport;
 use rmule_primitives::{AichRootHash, PeerEndpoint};
 
@@ -248,8 +249,8 @@ impl DownloadState {
     /// The lane judged a recovery answer for `part_index`: `bad_blocks` are
     /// the corrupt blocks it localizes, none when the data was malformed or
     /// named none. Drop exactly those blocks from the part's Arrived Ranges,
-    /// retire the workers that wrote into them (distrusting a block's sole
-    /// writer), and hand the dropped blocks to workers with room (ADR-0117).
+    /// charge the workers that wrote into them, convicting a proven one past
+    /// the limit, and hand the dropped blocks to workers with room (ADR-0117).
     /// Malformed or untrusted recovery data — or a clean part whose MD4 still
     /// failed (root/file mismatch) — leaves the part to its refetch
     /// (ADR-0117 §1).
@@ -283,49 +284,23 @@ impl DownloadState {
             }
         };
 
-        // Honest attribution: retire only the peers that delivered a corrupt
-        // block (deduped, slot-ordered).
-        let mut bad: Vec<(usize, PeerEndpoint)> = bad_blocks
-            .iter()
-            .flat_map(|&b| assembled.writers_of_block(b as usize).iter().copied())
-            .filter_map(|c| self.worker_slots.get(&c).map(|slot| (slot.as_usize(), c)))
-            .collect();
-        bad.sort_unstable_by_key(|&(slot, _)| slot);
-        bad.dedup_by_key(|&mut (_, c)| c);
-        // A corrupt block's sole writer is its proven sender (ADR-0090).
-        let proven: HashSet<PeerEndpoint> = bad_blocks
-            .iter()
-            .filter_map(|&b| match assembled.writers_of_block(b as usize) {
-                [sole] => Some(*sole),
-                _ => None,
-            })
-            .collect();
-
-        // Forget exactly the corrupt blocks; their bytes are fetched again.
+        // A corrupt cell is charged to everyone who wrote into it, and its
+        // sole writer proven (ADR-0117 §1). Stock counts a recovery's good
+        // cells before it judges (`PartFile.cpp:3412-3418`).
+        let mut verdict = Verdict::default();
+        for &block in &bad_blocks {
+            verdict.charge(assembled.writers_of_block(usize::from(block)));
+        }
         assembled.drop_blocks(&bad_blocks);
+        let good = assembled.shares();
+        let user_hashes = assembled.user_hashes().clone();
         self.assembly.insert(part_index, assembled);
         self.scheduler.failed(part_index);
+        self.settle(now, part_index, &verdict, &good, &user_hashes, out);
 
-        for (_, contributor) in bad {
-            if proven.contains(&contributor) {
-                self.distrust(contributor, out);
-            }
-            out.push(Decision::Emit(DownloadEvent::PeerRetired {
-                download_id: self.download_id,
-                peer: contributor,
-                reason: PeerRetirementReason::PartVerificationFailed,
-            }));
-            self.release(
-                now,
-                contributor,
-                PeerRetirementReason::PartVerificationFailed,
-                out,
-            );
-        }
         // Hand the dropped blocks to still-connected workers with room (slot
         // order), then backfill. Redundant with `release`'s own reassign when
-        // a bad contributor was retired, but covers the case where none still
-        // are.
+        // a convicted writer was retired, but covers the case where none was.
         self.reassign_workers(now, out);
     }
 }

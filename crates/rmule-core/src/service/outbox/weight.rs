@@ -131,6 +131,8 @@ fn of_download(event: &DownloadEvent) -> Weight {
         | E::PartAssigned { .. }
         | E::EndGameBlocks { .. }
         | E::PartCorrupt { .. }
+        | E::SourceSetAside { .. }
+        | E::BadDataCounted { .. }
         | E::PartReleased { .. }
         | E::PeerRetired { .. } => Weight::Note,
     }

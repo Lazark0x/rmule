@@ -13,7 +13,7 @@ use rmule_core::{DownloadEvent, DownloadId, DownloadLifecycle, DownloadMetadata}
 
 use super::Sentence;
 use super::plural::Plural;
-use super::units::address;
+use super::units::{address, human_size};
 
 mod completion;
 mod failure;
@@ -406,17 +406,39 @@ pub fn log_line(event: &DownloadEvent) -> Sentence {
                     Plural::new("{n} source", "{n} sources").of(writers)
                 ),
                 (1, 1) => "its only source sent bad data".to_string(),
-                (named, writers) => Plural::new(
-                    "{n} of its {writers} sources is held to blame",
-                    "{n} of its {writers} sources are held to blame",
-                )
-                .of(named)
-                .replace("{writers}", &writers.to_string()),
+                (named, writers) => {
+                    format!("the failures point to {named} of its {writers} sources")
+                }
             }
         ),
         D::PartReleased {
             part_index, reason, ..
         } => format!("part {part_index} released: {}", release_words(*reason)),
+        D::SourceSetAside {
+            peer,
+            part_index,
+            proven,
+            ..
+        } => format!(
+            "{} is no longer asked for part {part_index}: {}; it stays a source for the rest",
+            address(*peer),
+            if *proven {
+                "it sent bad data there"
+            } else {
+                "the part's failures point to it, not proven"
+            }
+        ),
+        D::BadDataCounted {
+            peer,
+            bad_bytes,
+            total_bytes,
+            ..
+        } => format!(
+            "{} sent {} of bad data out of {}, within the limit; it stays a source",
+            address(*peer),
+            human_size(*bad_bytes),
+            human_size(*total_bytes)
+        ),
         D::PeerRetired { peer, reason, .. } => format!(
             "peer {} retired: {}",
             address(*peer),

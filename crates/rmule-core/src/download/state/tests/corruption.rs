@@ -200,12 +200,13 @@ fn a_shared_part_failing_with_no_root_keeps_every_workers_slot() {
     );
 }
 
-/// `peer(1)` corrupts every cell it sends. The first failure retires nobody;
+/// `peer(1)` corrupts every cell it sends. The first failure moves nobody;
 /// the refetch asks each worker for cells it did not write; the second
-/// failure names `peer(1)` alone and retires it; and once the others' third
-/// attempt verifies, its corrupt cells prove it, so it is distrusted.
+/// failure points to `peer(1)` alone, which sets it aside from the part and
+/// nothing more; and once the others' third attempt verifies, its corrupt
+/// cells prove it, and with no good bytes it is convicted.
 #[test]
-fn a_writer_whose_cells_fail_again_on_the_refetch_is_retired() {
+fn a_writer_both_failures_point_to_is_set_aside_and_the_verified_part_convicts_it() {
     let (bad, honest) = (peer(1), [peer(2), peer(3)]);
     let mut state = writers_of(file_hash_only_content(NINE_CELLS), 3);
     let _ = first_attempt_fails(&mut state, &[bad]);
@@ -230,20 +231,25 @@ fn a_writer_whose_cells_fail_again_on_the_refetch_is_retired() {
         Err(DownloadFailure::PartVerificationFailed),
         Some(file_cells()),
     );
-    assert!(retired_for_bad_data(&failed, bad), "{failed:?}");
+    assert!(
+        failed.iter().any(|d| matches!(
+            d,
+            Decision::Emit(DownloadEvent::SourceSetAside { peer: p, proven: false, .. })
+                if *p == bad
+        )),
+        "{failed:?}"
+    );
+    assert!(
+        !punished(&failed, bad, hash_of(1)),
+        "pointed to by elimination, not proven: {failed:?}"
+    );
     for at in honest {
-        assert!(!retired_for_bad_data(&failed, at), "{failed:?}");
+        assert!(!punished(&failed, at, hash_of(2)), "{failed:?}");
         assert!(
             state.worker_slots.contains_key(&at),
             "{at:?} keeps its slot"
         );
     }
-    assert!(
-        !failed
-            .iter()
-            .any(|d| matches!(d, Decision::DistrustPeer { .. })),
-        "named by elimination, not proven: {failed:?}"
-    );
 
     let (_, _) = refetch(&mut state, &honest, &[]);
     let verified = state.on_persist_result(
@@ -263,8 +269,8 @@ fn a_writer_whose_cells_fail_again_on_the_refetch_is_retired() {
         verified
             .iter()
             .any(|d| matches!(d, Decision::BanSender { peer: at } if *at == peer(1))),
-        "a proven corrupt sender is banned across the node \
-         (`CorruptionBlackBox.cpp:223-231`): {verified:?}"
+        "a convicted sender is banned across the node \
+         (`CorruptionBlackBox.cpp:217-225`): {verified:?}"
     );
 }
 
@@ -318,4 +324,151 @@ fn an_unshared_part_whose_recovery_ask_goes_unanswered_is_fetched_again() {
         ),
         "{again:?}"
     );
+}
+
+/// Whether `decisions` set `at` apart from a working source in any way a
+/// source's record survives only by luck: a ban, a distrust or a retirement
+/// for bad data.
+fn punished(decisions: &[Decision], at: PeerEndpoint, user_hash: UserHash) -> bool {
+    retired_for_bad_data(decisions, at)
+        || decisions.iter().any(|d| match d {
+            Decision::BanSender { peer: p } => *p == at,
+            Decision::DistrustPeer { user_hash: h } => *h == user_hash,
+            _ => false,
+        })
+}
+
+/// `peer(2)` wrote the head of cell 3 and the bad `peer(1)` its tail, so the
+/// cell the verified part disproves has two writers. Stock charges both and
+/// bans neither on that alone: the bad seed goes, on the cells it wrote by
+/// itself, and the honest one that shared its cell stays a source.
+#[test]
+fn an_honest_writer_of_a_shared_corrupt_cell_stays_a_source() {
+    let (bad, honest) = (peer(1), peer(2));
+    let mut state = writers_of(file_hash_only_content(NINE_CELLS), 3);
+    for cell in 0..3 {
+        let _ = deliver(&mut state, bad, (cell * B, (cell + 1) * B), true);
+    }
+    let _ = deliver(&mut state, honest, (3 * B, 3 * B + 4_096), false);
+    let _ = deliver(&mut state, bad, (3 * B + 4_096, 4 * B), true);
+    for cell in 4..6 {
+        let _ = deliver(&mut state, honest, (cell * B, (cell + 1) * B), false);
+    }
+    for cell in 6..9 {
+        let _ = deliver(&mut state, peer(3), (cell * B, (cell + 1) * B), false);
+    }
+    let failed = state.on_persist_result(
+        t0(),
+        PartIndex::new(0),
+        Some(peer(3)),
+        Err(DownloadFailure::PartVerificationFailed),
+        Some(file_cells()),
+    );
+    assert!(!punished(&failed, honest, hash_of(2)), "{failed:?}");
+
+    let (_, _) = refetch(&mut state, &[honest, peer(3)], &[]);
+    let verified = state.on_persist_result(
+        t0(),
+        PartIndex::new(0),
+        Some(peer(3)),
+        Ok(()),
+        Some(file_cells()),
+    );
+    assert!(retired_for_bad_data(&verified, bad), "{verified:?}");
+    assert!(!punished(&verified, honest, hash_of(2)), "{verified:?}");
+    assert!(
+        state.worker_slots.contains_key(&honest),
+        "the honest seed keeps its slot"
+    );
+}
+
+/// Two writers alone on a part dispute each other's cells: nothing tells
+/// them apart, so neither is retired, the part narrows to one of them, and
+/// that writer's own attempt settles it. Here it is the bad one: it is
+/// convicted, the honest one is asked again, and the part verifies. A bad
+/// seed cannot take the honest one with it.
+#[test]
+fn two_writers_alone_narrow_to_one_and_its_attempt_settles_it() {
+    let (bad, honest) = (peer(1), peer(2));
+    let mut state = writers_of(file_hash_only_content(NINE_CELLS), 2);
+    let both = [bad, honest];
+    for cell in 0..3 {
+        let _ = deliver(&mut state, bad, (cell * B, (cell + 1) * B), true);
+        let _ = deliver(&mut state, honest, ((cell + 3) * B, (cell + 4) * B), false);
+    }
+    let attempt = |state: &mut DownloadState| {
+        let _ = refetch(state, &both, &[bad]);
+        state.on_persist_result(
+            t0(),
+            PartIndex::new(0),
+            Some(honest),
+            Err(DownloadFailure::PartVerificationFailed),
+            Some(file_cells()),
+        )
+    };
+    let first = attempt(&mut state);
+    assert!(!punished(&first, bad, hash_of(1)), "{first:?}");
+    let second = attempt(&mut state);
+    assert!(!punished(&second, bad, hash_of(1)), "{second:?}");
+    assert!(!punished(&second, honest, hash_of(2)), "{second:?}");
+
+    let (alone, cells) = refetch(&mut state, &both, &[bad]);
+    assert!(
+        cells.iter().any(|(_, taken)| taken.is_empty()),
+        "one writer is asked for nothing: {cells:?} {alone:?}"
+    );
+    let third = state.on_persist_result(
+        t0(),
+        PartIndex::new(0),
+        Some(bad),
+        Err(DownloadFailure::PartVerificationFailed),
+        Some(file_cells()),
+    );
+    assert!(retired_for_bad_data(&third, bad), "{third:?}");
+    assert!(!punished(&third, honest, hash_of(2)), "{third:?}");
+    assert!(
+        !third
+            .iter()
+            .any(|d| matches!(d, Decision::Emit(DownloadEvent::DownloadFailed { .. }))),
+        "the honest source is still in the book: {third:?}"
+    );
+}
+
+/// `peer(1)` has verified bytes behind it and wrote a whole part that failed:
+/// it is proven, within stock's limit, so it stays a source, as stock reports
+/// it and moves nothing, but it is not asked for that part again.
+#[test]
+fn a_proven_sender_within_the_limit_stays_a_source_set_aside_from_the_part() {
+    let bad = peer(1);
+    let mut state = writers_of(file_hash_only_content(NINE_CELLS), 2);
+    state.ledger.credit(bad, 6 * B);
+    for cell in 0..9 {
+        let _ = deliver(&mut state, bad, (cell * B, (cell + 1) * B), true);
+    }
+    let failed = state.on_persist_result(
+        t0(),
+        PartIndex::new(0),
+        Some(bad),
+        Err(DownloadFailure::PartVerificationFailed),
+        Some(file_cells()),
+    );
+    assert!(!punished(&failed, bad, hash_of(1)), "{failed:?}");
+    assert!(
+        failed.iter().any(|d| matches!(
+            d,
+            Decision::Emit(DownloadEvent::BadDataCounted { peer: p, bad_bytes, .. })
+                if *p == bad && *bad_bytes == B
+        )),
+        "{failed:?}"
+    );
+    assert!(
+        failed.iter().any(|d| matches!(
+            d,
+            Decision::Emit(DownloadEvent::SourceSetAside { peer: p, proven: true, .. })
+                if *p == bad
+        )),
+        "{failed:?}"
+    );
+    let (_, cells) = refetch(&mut state, &[bad, peer(2)], &[]);
+    assert!(cells[0].1.is_empty(), "{cells:?}");
 }

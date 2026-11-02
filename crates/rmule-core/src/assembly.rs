@@ -17,9 +17,11 @@ use rmule_primitives::{EMBLOCKSIZE, PeerEndpoint, UserHash};
 use crate::byte_ranges::ByteRanges;
 use crate::planning::PartPlan;
 
+mod corruption_ledger;
 mod failed_cells;
 
-pub(crate) use failed_cells::{Attempt, Cell, Verdict};
+pub(crate) use corruption_ledger::CorruptionLedger;
+pub(crate) use failed_cells::{Attempt, Cell, KEPT_ATTEMPTS, Verdict};
 
 /// What the file held for one cell: the SHA-1 of its bytes, its AICH block
 /// hash, as the **Persist Lane** read them.
@@ -228,6 +230,25 @@ impl PartAssembly {
             + writers * std::mem::size_of::<PeerEndpoint>()
             + self.user_hashes.capacity()
                 * (std::mem::size_of::<PeerEndpoint>() + std::mem::size_of::<UserHash>())
+    }
+
+    /// The User Hash each writer's hello named when it wrote.
+    pub(crate) const fn user_hashes(&self) -> &HashMap<PeerEndpoint, UserHash> {
+        &self.user_hashes
+    }
+
+    /// The bytes each writer holds in this assembly, for the **Corruption
+    /// Ledger**: a cell's bytes split evenly among its writers, since a cell
+    /// records who wrote and not how much.
+    pub(crate) fn shares(&self) -> HashMap<PeerEndpoint, u64> {
+        let mut shares = HashMap::new();
+        for (cell, writers) in self.writers.iter().enumerate() {
+            let len = (self.plan.len - cell as u64 * EMBLOCKSIZE).min(EMBLOCKSIZE);
+            for &writer in writers {
+                *shares.entry(writer).or_default() += len / writers.len() as u64;
+            }
+        }
+        shares
     }
 
     /// The part's cells as one attempt at it: each cell's AICH block hash and

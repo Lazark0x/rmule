@@ -56,7 +56,7 @@ pub(crate) use sightings::{Channel, Taken, Tally};
 
 use crate::DownloadFailure;
 use crate::adapters::{CallbackKey, PeerWorkerCommand, WorkerOpening};
-use crate::assembly::{ArrivedPart, Attempt, PartAssembly};
+use crate::assembly::{ArrivedPart, Attempt, CorruptionLedger, PartAssembly};
 use crate::callback::CallbackSilence;
 use crate::delivery_rate::DeliveryRate;
 use crate::diagnostics::{PartState, WorkerPhase, WorkerSlot};
@@ -470,9 +470,13 @@ pub(crate) struct DownloadState {
     /// asked worker's end stands for an empty answer.
     awaiting_recovery: HashMap<PartIndex, (PeerEndpoint, PartAssembly)>,
     /// The **Failed Cells** of each part refetched after failing its check
-    /// with no root (ADR-0117 §1): its latest failed attempt, until it
-    /// verifies.
-    failed_cells: HashMap<PartIndex, Attempt>,
+    /// with no root (ADR-0117 §1): its latest failed attempts, oldest first,
+    /// until it verifies.
+    failed_cells: HashMap<PartIndex, Vec<Attempt>>,
+    /// The sources **Set Aside** from each part, until it verifies.
+    set_aside: HashMap<PartIndex, corruption::SetAside>,
+    /// The **Corruption Ledger**: the bytes each sender proved good and bad.
+    ledger: CorruptionLedger,
     /// The parts whose ranges or provenance moved since the last checkpoint.
     moved: BTreeSet<PartIndex>,
     /// Peer → the diagnostics slot its worker occupies. The live command
@@ -629,6 +633,8 @@ impl DownloadState {
             pending_persist: HashMap::new(),
             awaiting_recovery: HashMap::new(),
             failed_cells: HashMap::new(),
+            set_aside: HashMap::new(),
+            ledger: CorruptionLedger::default(),
             moved: BTreeSet::new(),
             worker_slots: HashMap::new(),
             delivery: HashMap::new(),

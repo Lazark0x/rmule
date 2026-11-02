@@ -567,6 +567,8 @@ pub(super) fn fold(state: &mut UiState, event: DownloadEvent) -> bool {
         | E::PartReleased { .. }
         | E::EndGameBlocks { .. }
         | E::PartCorrupt { .. }
+        | E::SourceSetAside { .. }
+        | E::BadDataCounted { .. }
         | E::KadAichRootContested { .. }
         | E::PeerRetired { .. } => false,
     }

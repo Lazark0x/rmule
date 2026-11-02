@@ -10,7 +10,8 @@
 //! The claims: the corrupt seed's part frames of that part carry bytes the
 //! file does not hold (counterparty bytes, off the tap); rmule's first
 //! `download.part_corrupt` names no writer; no honest seed is retired
-//! `part_verification_failed`; the corrupt seed is, and rmule distrusts it;
+//! `part_verification_failed` or set aside as proven; the corrupt seed is
+//! either convicted, retired and distrusted, or counted within stock's limit;
 //! the copy is byte-equal to the file.
 
 use std::fs;
@@ -191,9 +192,17 @@ fn field<'a>(line: &'a str, key: &str) -> Option<&'a str> {
 
 /// The peers rmule retired `part_verification_failed`, in order.
 fn retired_for_failed_parts(log: &str) -> Vec<Ipv4Addr> {
-    records(log, "peer_retired")
+    let retired: Vec<&str> = records(log, "peer_retired")
         .into_iter()
         .filter(|line| field(line, "reason") == Some("part_verification_failed"))
+        .collect();
+    peers_of(&retired)
+}
+
+/// The peers of the records `lines`, in order.
+fn peers_of(lines: &[&str]) -> Vec<Ipv4Addr> {
+    lines
+        .iter()
         .filter_map(|line| field(line, "peer")?.parse::<SocketAddr>().ok())
         .filter_map(|peer| match peer.ip() {
             IpAddr::V4(ip) => Some(ip),
@@ -230,6 +239,10 @@ struct Rows {
     /// distrusted, by role.
     retired_for_failed_parts: Vec<String>,
     distrusted: Vec<String>,
+    /// Every `download.source_set_aside` and `download.bad_data_counted`
+    /// record, as logged.
+    set_aside: Vec<String>,
+    counted: Vec<String>,
 }
 
 #[derive(Serialize)]
@@ -273,6 +286,13 @@ pub(crate) fn write(
     let log = fs::read_to_string(run_dir.join("rmule/stdout.log")).context("read rmule's log")?;
     let trace = fs::read_to_string(run_dir.join("rmule/stderr.log")).unwrap_or_default();
     let corrupt_records = records(&log, "part_corrupt");
+    let set_aside = records(&log, "source_set_aside");
+    let counted = records(&log, "bad_data_counted");
+    let proven_aside: Vec<&str> = set_aside
+        .iter()
+        .copied()
+        .filter(|line| field(line, "evidence") == Some("proven"))
+        .collect();
     let retired = retired_for_failed_parts(&log);
     let distrusted = distrusted(&trace);
     let role_of = |ip: &Ipv4Addr| {
@@ -283,6 +303,12 @@ pub(crate) fn write(
             .map_or_else(|| ip.to_string(), |seed| seed.role.clone())
     };
     let honest_retired = retired.iter().filter(|ip| **ip != seed.ip).count();
+    let honest_proven = peers_of(&proven_aside)
+        .iter()
+        .filter(|ip| **ip != seed.ip)
+        .count();
+    let convicted = retired.contains(&seed.ip) && distrusted.contains(&seed.ip);
+    let within_limit = peers_of(&counted).contains(&seed.ip);
     let first = corrupt_records.first();
     let claims = vec![
         Claim::about(
@@ -324,12 +350,17 @@ pub(crate) fn write(
                 "no part failed, so no retirement could follow one",
             )
         },
+        Claim::absence(
+            "no-honest-seed-was-set-aside-as-proven",
+            i64::try_from(honest_proven).unwrap_or(i64::MAX),
+            format!("download.source_set_aside evidence=proven: {proven_aside:?}"),
+        ),
         Claim::about(
-            "the-corrupt-seed-was-retired-and-distrusted",
-            retired.contains(&seed.ip) && distrusted.contains(&seed.ip),
+            "the-corrupt-seed-was-convicted-or-counted-within-the-limit",
+            convicted || within_limit,
             Evidence::RmuleOnly,
             format!(
-                "retired part_verification_failed: {:?}; distrusted: {:?}",
+                "retired part_verification_failed: {:?}; distrusted: {:?}; counted: {counted:?}",
                 retired.iter().map(role_of).collect::<Vec<_>>(),
                 distrusted.iter().map(role_of).collect::<Vec<_>>()
             ),
@@ -347,6 +378,8 @@ pub(crate) fn write(
             .collect(),
         retired_for_failed_parts: retired.iter().map(role_of).collect(),
         distrusted: distrusted.iter().map(role_of).collect(),
+        set_aside: set_aside.iter().map(|line| (*line).to_owned()).collect(),
+        counted: counted.iter().map(|line| (*line).to_owned()).collect(),
     };
     let (verdict, detail) = label(&claims);
     let text = toml::to_string_pretty(&VerdictFile {
@@ -413,5 +446,15 @@ mod tests {
         );
         let trace = "2026-10-19T07:25:00Z  INFO download{download_id=1}: rmule_core::download::state::worker_event: a peer that served bad data is distrusted for this download peer=172.18.0.5:4662\n";
         assert_eq!(distrusted(trace), [Ipv4Addr::new(172, 18, 0, 5)]);
+    }
+
+    #[test]
+    fn a_set_aside_record_is_read_by_peer_and_evidence() {
+        let log = "download.source_set_aside id=1 peer=172.18.0.5:4662 part_index=1 evidence=suspected\n\
+                   download.source_set_aside id=1 peer=172.18.0.3:4662 part_index=1 evidence=proven\n";
+        let lines = records(log, "source_set_aside");
+        assert_eq!(lines.len(), 2);
+        assert_eq!(field(lines[1], "evidence"), Some("proven"));
+        assert_eq!(peers_of(&lines[1..]), [Ipv4Addr::new(172, 18, 0, 3)]);
     }
 }

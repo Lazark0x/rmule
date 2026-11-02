@@ -434,8 +434,8 @@ pub enum DownloadEvent {
     },
     /// A part failed its check with no Trusted AICH Root to name its corrupt
     /// cells (ADR-0117 §1): its bytes are dropped and it is fetched again.
-    /// The failure names a writer only when the evidence points to it, and
-    /// each one retired is also said as `PeerRetired`.
+    /// A failure blames nobody by itself; what follows is said as
+    /// `SourceSetAside`, `BadDataCounted` or `PeerRetired`.
     PartCorrupt {
         /// The download the part belongs to.
         download_id: DownloadId,
@@ -443,9 +443,33 @@ pub enum DownloadEvent {
         part_index: u32,
         /// How many sources wrote the failed attempt.
         writers: u32,
-        /// How many of them the failure named: each still working is
-        /// retired.
+        /// How many of them the failure pointed to, proven or not.
         named: u32,
+    },
+    /// A source is no longer asked for one part's blocks until it verifies
+    /// (ADR-0117 §1). It keeps its record, its slot and its other parts.
+    SourceSetAside {
+        /// The download the part belongs to.
+        download_id: DownloadId,
+        /// The source.
+        peer: rmule_primitives::PeerEndpoint,
+        /// The zero-based part index within the file.
+        part_index: u32,
+        /// Whether bytes it alone wrote proved it, or a repeated failure only
+        /// points to it.
+        proven: bool,
+    },
+    /// Bad data is on a source's count, within the limit (ADR-0117 §1), stock's
+    /// report line: it stays a source. Past the limit it is `PeerRetired`.
+    BadDataCounted {
+        /// The download its bytes belong to.
+        download_id: DownloadId,
+        /// The source.
+        peer: rmule_primitives::PeerEndpoint,
+        /// Its bytes proved corrupt, in this file so far.
+        bad_bytes: u64,
+        /// Its bytes proved corrupt or good, in this file so far.
+        total_bytes: u64,
     },
     /// A part went back to the unassigned pool for another worker to take.
     PartReleased {

@@ -313,7 +313,7 @@ impl DownloadState {
             Ok(()) => {
                 self.scheduler.complete_verified(part_index);
                 if let Some(assembled) = &assembled {
-                    self.judge_failed_cells(now, part_index, assembled, &mut out);
+                    self.part_verified(now, part_index, assembled, &mut out);
                 }
                 // The verifier and the racers it beat hold no part now: each
                 // granted one is handed its next or gives its slot back, and

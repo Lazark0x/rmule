@@ -18,6 +18,7 @@ use crate::diagnostics::WorkerPhase;
 use crate::scheduler::{Handout, Progress};
 use crate::service::{DownloadEvent, PeerRetirementReason};
 
+use super::corruption::SetAside;
 use super::{Decision, DownloadState};
 
 /// The blocks a grant hands before the worker reports its room: the most the
@@ -94,6 +95,7 @@ impl DownloadState {
         peer: PeerEndpoint,
         out: &mut Vec<Decision>,
     ) -> Handed {
+        self.reopen_set_aside();
         let Some(slot) = self.worker_slots.get(&peer).copied() else {
             return Handed::Unanswered;
         };
@@ -117,6 +119,7 @@ impl DownloadState {
             delivery: &self.delivery,
             assembly: &self.assembly,
             failed_cells: &self.failed_cells,
+            set_aside: &self.set_aside,
         };
         let handout = self.scheduler.hand(
             peer,
@@ -197,7 +200,8 @@ impl DownloadState {
 struct Measured<'a> {
     delivery: &'a HashMap<PeerEndpoint, DeliveryRate>,
     assembly: &'a HashMap<PartIndex, PartAssembly>,
-    failed_cells: &'a HashMap<PartIndex, Attempt>,
+    failed_cells: &'a HashMap<PartIndex, Vec<Attempt>>,
+    set_aside: &'a HashMap<PartIndex, SetAside>,
 }
 
 impl Progress for Measured<'_> {
@@ -210,7 +214,13 @@ impl Progress for Measured<'_> {
     }
 
     fn failed_cells(&self, part_index: PartIndex) -> Option<&Attempt> {
-        self.failed_cells.get(&part_index)
+        self.failed_cells.get(&part_index)?.last()
+    }
+
+    fn set_aside(&self, part_index: PartIndex, peer: PeerEndpoint) -> bool {
+        self.set_aside
+            .get(&part_index)
+            .is_some_and(|aside| aside.holds(peer))
     }
 }
 

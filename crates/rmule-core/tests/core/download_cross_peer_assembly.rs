@@ -94,14 +94,16 @@ async fn a_dropped_workers_bytes_stay_and_the_next_is_handed_only_the_rest() {
 }
 
 #[tokio::test]
-async fn a_shared_part_failing_with_no_root_is_refetched_and_its_changed_cell_names_the_sender() {
+async fn a_shared_part_failing_with_no_root_is_refetched_and_its_changed_cell_counts_on_its_sender()
+{
     let out_dir = tempfile::tempdir().unwrap();
     // ADR-0117 §1: two workers share the one part, and peer B corrupts the
     // first block it is handed, once. The part fails its MD4 hash with no AICH
     // root to name the bad cell, so neither worker is retired and the part is
     // fetched again. The refetch verifies, and the cell whose bytes changed
-    // was B's alone: B is retired, A never is, and the download completes. A
-    // file of exactly one part size carries no link `p=` hash set, so a peer
+    // was B's alone: it counts against B, well within stock's limit since B
+    // wrote good cells of the part too, so B stays a source, as at stock, and
+    // the download completes. A file of exactly one part size carries no link `p=` hash set, so a peer
     // supplies the file's own set, making the per-part verification reachable.
     let correct: Vec<u8> = (0..ED2K_PART_SIZE).map(|i| (i % 251) as u8).collect();
     let part_hashes = FileHashSummary::digest_bytes(&correct)
@@ -189,7 +191,14 @@ async fn a_shared_part_failing_with_no_root_is_refetched_and_its_changed_cell_na
         )),
         "the failure names neither sharer: {events:?}"
     );
-    assert!(retired(peer_b), "the changed cell's sender is retired");
+    assert!(
+        events.iter().any(|event| matches!(
+            event,
+            CoreEvent::Download(DownloadEvent::BadDataCounted { peer, .. }) if *peer == peer_b
+        )),
+        "the changed cell counts against its sender: {events:?}"
+    );
+    assert!(!retired(peer_b), "one bad cell is within the limit");
     assert!(!retired(peer_a), "the honest sharer keeps its slot");
     assert!(
         events.iter().any(|event| matches!(

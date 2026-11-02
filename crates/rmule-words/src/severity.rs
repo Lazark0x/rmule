@@ -95,6 +95,8 @@ const fn download(event: &DownloadEvent) -> Severity {
         | D::PartsDisproved { .. }
         | D::KadAichRootContested { .. }
         | D::PartCorrupt { .. }
+        | D::SourceSetAside { .. }
+        | D::BadDataCounted { .. }
         | D::HoleLessDestination { .. }
         | D::CancelledFileLeft { .. }
         | D::RowsUnreadable { .. } => Severity::Warning,

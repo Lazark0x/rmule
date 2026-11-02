@@ -327,6 +327,26 @@ impl DownloadEvent {
                 .count("part_index", *part_index)
                 .count("writers", *writers)
                 .count("named", *named),
+            D::SourceSetAside {
+                download_id,
+                peer,
+                part_index,
+                proven,
+            } => Record::new("download.source_set_aside")
+                .count("id", download_id.as_u64())
+                .peer_address("peer", peer)
+                .count("part_index", *part_index)
+                .code("evidence", if *proven { "proven" } else { "suspected" }),
+            D::BadDataCounted {
+                download_id,
+                peer,
+                bad_bytes,
+                total_bytes,
+            } => Record::new("download.bad_data_counted")
+                .count("id", download_id.as_u64())
+                .peer_address("peer", peer)
+                .count("bad_bytes", *bad_bytes)
+                .count("total_bytes", *total_bytes),
             D::PartReleased {
                 download_id,
                 peer,
