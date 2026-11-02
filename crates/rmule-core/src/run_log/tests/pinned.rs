@@ -69,7 +69,7 @@ fn reason_events() -> Vec<CoreEvent> {
             ),
         },
         CoreEvent::PeerReachRouted {
-            peer,
+            peer: peer.into(),
             route: crate::PeerReachRoute::Buddy {
                 buddy_id: crate::KadId::from_bytes([0x5A; 16]),
                 emitted_to: Some(rmule_primitives::Ipv4Endpoint::new(

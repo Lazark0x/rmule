@@ -6,10 +6,10 @@
 use rmule_core::LinkTurn;
 use rmule_core::diagnostics::{SourceActivity, WorkerPhase};
 use rmule_core::{
-    DialEnd, IgnoredReaskReply, PartReleaseReason, PeerRetirementReason, PeerViolation,
-    PurgedSource, SourcePurgeReason, SourceWait,
+    CallbackKey, DialEnd, IgnoredReaskReply, PartReleaseReason, PeerRetirementReason,
+    PeerViolation, PurgedSource, SourcePurgeReason, SourceWait,
 };
-use rmule_primitives::{ClientId, Ipv4Endpoint, PeerEndpoint};
+use rmule_primitives::PeerEndpoint;
 
 use super::super::Sentence;
 use super::super::plural::Plural;
@@ -138,20 +138,28 @@ pub const fn violation_words(violation: PeerViolation) -> &'static str {
 pub(super) fn purged_source_words(source: PurgedSource) -> String {
     match source {
         PurgedSource::Endpoint(peer) => format!("peer {}", address(peer)),
-        PurgedSource::LowId { low_id, server } => low_id_source_words(low_id, server),
+        PurgedSource::Callback(key) => callback_source_words(key),
     }
 }
 
-/// A Low-ID source, as the operator reads it: with the server that assigned
-/// the ID.
-pub(super) fn low_id_source_words(low_id: ClientId, server: Option<Ipv4Endpoint>) -> String {
-    match server {
-        None => format!("low-ID peer {} on our server", low_id.as_u32()),
-        Some(server) => format!(
+/// A firewalled source by the key its road stands under.
+pub(super) fn callback_source_words(key: CallbackKey) -> String {
+    match key {
+        CallbackKey::Server {
+            low_id,
+            server: None,
+        } => format!("low-ID peer {} on our server", low_id.as_u32()),
+        CallbackKey::Server {
+            low_id,
+            server: Some(server),
+        } => format!(
             "low-ID peer {} on server {}",
             low_id.as_u32(),
             address(PeerEndpoint::V4(server))
         ),
+        CallbackKey::KadRow { observed } => {
+            format!("Kad source seen at {}", address(PeerEndpoint::V4(observed)))
+        }
     }
 }
 

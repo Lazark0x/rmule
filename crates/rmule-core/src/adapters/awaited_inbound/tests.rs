@@ -33,20 +33,18 @@ fn brief(seed: u8) -> AdoptionBrief {
 
 /// The brain's connected-server key for `low`.
 fn callback(low: u32) -> CallbackKey {
-    CallbackKey {
+    CallbackKey::Server {
         server: None,
         low_id: ClientId::from_u32(low),
-        kad_port: None,
     }
 }
 
 /// The same key resolved against the connected server, as a called-back
 /// peer's hello reports it.
 fn routing(low: u32) -> CallbackKey {
-    CallbackKey {
+    CallbackKey::Server {
         server: Some(Ipv4Endpoint::new(Ipv4Addr::new(45, 55, 200, 1), 4661)),
         low_id: ClientId::from_u32(low),
-        kad_port: None,
     }
 }
 

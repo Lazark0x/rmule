@@ -95,10 +95,9 @@ fn a_queued_source_whose_full_ask_meets_no_file_is_never_asked_again() {
 #[test]
 fn a_called_back_source_that_lacks_the_file_is_not_called_back_again() {
     let server = source_server(9);
-    let key = CallbackKey {
+    let key = CallbackKey::Server {
         server: Some(server),
         low_id: low(7),
-        kad_port: None,
     };
     let mut state = logged_into(server, 1);
     let _ = via_global(&mut state, server, vec![PeerSource::new(low(7), 4662)]);

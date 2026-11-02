@@ -76,10 +76,9 @@ fn link(bytes: &[u8]) -> Ed2kFileLink {
 /// under, because NAT traversal is an additional attempt on one pending
 /// callback and not a second one.
 fn callback_key() -> CallbackKey {
-    CallbackKey {
+    CallbackKey::Server {
         server: None,
         low_id: ClientId::from_u32(7),
-        kad_port: None,
     }
 }
 

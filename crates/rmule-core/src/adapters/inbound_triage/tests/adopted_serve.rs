@@ -36,10 +36,9 @@ async fn adopted_callback(
     // Low ID on no server.
     let awaited = AwaitedInbound::default();
     let (adopt_tx, mut adopt_rx) = mpsc::channel(1);
-    let key = CallbackKey {
+    let key = CallbackKey::Server {
         server: None,
         low_id,
-        kad_port: None,
     };
     let registration = awaited.register(key, adopt_tx, mpsc::channel(1).0);
     registration.await_callback(

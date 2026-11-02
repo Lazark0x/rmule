@@ -233,6 +233,6 @@ impl SourceBook {
 /// no server known is read against whichever server we are on, so it names
 /// nobody past its record.
 pub(super) fn low_id_name(candidate: &LowIdCandidate) -> Option<AskName> {
-    (candidate.from_kad || candidate.source_server.is_some())
+    (candidate.is_kad_row() || candidate.key().server().is_some())
         .then(|| AskName::LowId(candidate.key()))
 }

@@ -167,7 +167,12 @@ mod tests {
         };
         let handle = live_listener(&facts.reach);
         let row = LowIdCandidate {
-            from_kad: true,
+            id: crate::adapters::CallbackKey::KadRow {
+                observed: rmule_primitives::Ipv4Endpoint::new(
+                    std::net::Ipv4Addr::new(198, 51, 100, 7),
+                    4672,
+                ),
+            },
             ..low_id_candidate()
         };
         assert!(!facts.sample().admits(&row), "Low ID and Kad firewalled");

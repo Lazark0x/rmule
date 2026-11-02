@@ -277,7 +277,9 @@ fn roads_held(decisions: &[Decision]) -> Vec<u32> {
     decisions
         .iter()
         .filter_map(|decision| match decision {
-            Decision::Emit(DownloadEvent::SourceRoadHeld { low_id, .. }) => Some(low_id.as_u32()),
+            Decision::Emit(DownloadEvent::SourceRoadHeld { source, .. }) => {
+                source.low_id().map(rmule_primitives::ClientId::as_u32)
+            }
             _ => None,
         })
         .collect()

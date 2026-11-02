@@ -75,7 +75,7 @@ fn a_low_id_downloader_punches_its_low_id_candidate_at_once() {
         decisions.iter().any(|d| matches!(
             d,
             Decision::FallToNatTraversal { candidate, silence, .. }
-                if candidate.low_id == low(7)
+                if candidate.key().low_id() == Some(low(7))
                     && *silence == CallbackSilence::NoCallbackPossible
         )),
         "the first candidate falls to NAT traversal on admission: {decisions:?}"
@@ -113,7 +113,7 @@ fn a_punch_road_slot_waits_on_the_attempt_not_the_30_s_release() {
     assert!(
         lapsed.iter().any(|d| matches!(
             d,
-            Decision::FallToNatTraversal { candidate, .. } if candidate.low_id == low(8)
+            Decision::FallToNatTraversal { candidate, .. } if candidate.key().low_id() == Some(low(8))
         )),
         "the attempt's bound releases the slot to the next candidate: {lapsed:?}"
     );
@@ -158,10 +158,9 @@ fn a_candidate_with_neither_callback_nor_coordinator_still_starves_the_download(
 fn an_adopted_global_callback_peer_binds_then_its_connected_event_assigns_it() {
     use rmule_primitives::PeerSource;
     let server = source_server(9);
-    let key = CallbackKey {
+    let key = CallbackKey::Server {
         server: Some(server),
         low_id: low(7),
-        kad_port: None,
     };
     let mut state = logged_into(server, 1);
     // Requests a callback for low(7), holding slot 0.
@@ -209,10 +208,9 @@ fn a_silent_low_id_is_not_called_back_again_until_its_block_runs_out() {
             .iter()
             .any(|d| matches!(d, Decision::RequestCallback { low_id, .. } if *low_id == low(7)))
     };
-    let key = CallbackKey {
+    let key = CallbackKey::Server {
         server: Some(server),
         low_id: low(7),
-        kad_port: None,
     };
     let mut state = logged_into(server, 1);
     assert!(calls(&via_global(&mut state, server, row())));
@@ -558,7 +556,7 @@ fn a_punch_that_was_the_only_road_ends_the_candidate_when_it_retires() {
     assert!(
         retired.iter().any(|d| matches!(
             d,
-            Decision::FallToNatTraversal { candidate, .. } if candidate.low_id == low(8)
+            Decision::FallToNatTraversal { candidate, .. } if candidate.key().low_id() == Some(low(8))
         )),
         "the released slot punches the next candidate: {retired:?}"
     );
@@ -612,7 +610,7 @@ fn a_server_callback_that_never_left_moves_on_at_once() {
         next_road.iter().any(|d| matches!(
             d,
             Decision::FallToNatTraversal { candidate, silence, .. }
-                if candidate.low_id == low(7) && *silence == CallbackSilence::NoCallbackPossible
+                if candidate.key().low_id() == Some(low(7)) && *silence == CallbackSilence::NoCallbackPossible
         )),
         "the unsent road hands the candidate to the punch now: {next_road:?}"
     );

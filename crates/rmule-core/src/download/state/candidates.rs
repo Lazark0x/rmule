@@ -45,10 +45,9 @@ impl DownloadState {
         if self.callback_slots.contains_key(&reported) {
             return Some(reported);
         }
-        let connected = CallbackKey {
+        let connected = CallbackKey::Server {
             server: None,
-            low_id: reported.low_id,
-            kad_port: None,
+            low_id: reported.low_id()?,
         };
         self.callback_slots
             .contains_key(&connected)
@@ -264,7 +263,7 @@ impl DownloadState {
         // the direct-UDP road it is the `0x95` the candidate itself answers.
         let taken = match pending.road {
             LowIdRoad::DirectUdp => candidate
-                .kad_udp
+                .kad_udp()
                 .map(|target_kad_udp| PeerReachRoute::DirectUdp { target_kad_udp }),
             LowIdRoad::BuddyCallback => candidate.buddy.map(|buddy| match buddy.buddy_udp {
                 Some(buddy_udp) => PeerReachRoute::Buddy {
@@ -277,7 +276,12 @@ impl DownloadState {
             }),
             LowIdRoad::Callback | LowIdRoad::Punch => None,
         }
-        .unwrap_or(PeerReachRoute::Server { low_id: key.low_id });
+        .or_else(|| key.low_id().map(|low_id| PeerReachRoute::Server { low_id }));
+        // Every road but the server's names its route above, and a key with no
+        // Low ID has no server road.
+        let Some(taken) = taken else {
+            return Vec::new();
+        };
         pending.traversal_begun = true;
         vec![self.fall_to_nat_traversal(
             now,

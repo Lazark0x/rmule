@@ -355,10 +355,9 @@ fn low_candidate(n: u32) -> SourceSighting {
 /// The connected-server (`server: None`) callback key for `low_id` — the form
 /// `fill` mints for a connected-server Low-ID candidate (ADR-0039).
 fn connected_key(low_id: ClientId) -> CallbackKey {
-    CallbackKey {
+    CallbackKey::Server {
         server: None,
         low_id,
-        kad_port: None,
     }
 }
 

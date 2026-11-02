@@ -177,8 +177,7 @@ impl DownloadState {
         if held {
             out.push(Decision::Emit(DownloadEvent::SourceRoadHeld {
                 download_id: self.download_id,
-                low_id: key.low_id,
-                server: key.server,
+                source: key,
             }));
         }
         held
@@ -308,10 +307,12 @@ impl DownloadState {
             });
         }
         let ours = self.callback_capability.server();
-        if road == LowIdRoad::Callback {
+        if road == LowIdRoad::Callback
+            && let Some(low_id) = candidate.key().low_id()
+        {
             out.push(Decision::RequestCallback {
-                low_id: candidate.low_id,
-                server: candidate.source_server,
+                low_id,
+                server: candidate.key().server(),
                 want_sources,
                 on_a_link,
             });

@@ -39,10 +39,7 @@ impl DownloadState {
                 download_id: self.download_id,
                 source: match purged {
                     Purged::Endpoint(peer) => PurgedSource::Endpoint(peer),
-                    Purged::LowId(key) => PurgedSource::LowId {
-                        low_id: key.low_id,
-                        server: key.server,
-                    },
+                    Purged::LowId(key) => PurgedSource::Callback(key),
                 },
                 reason: match kind {
                     PurgeKind::LowToLow => SourcePurgeReason::LowToLow,

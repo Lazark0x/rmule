@@ -43,10 +43,9 @@ fn file() -> Ed2kFileLink {
 /// The callback a claim runs beside — what the adopted worker is reported
 /// back under.
 fn callback_key() -> CallbackKey {
-    CallbackKey {
+    CallbackKey::Server {
         server: None,
         low_id: ClientId::from_u32(7),
-        kad_port: None,
     }
 }
 

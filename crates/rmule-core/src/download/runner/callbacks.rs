@@ -77,9 +77,15 @@ impl CallbackContext {
     /// relays its `OP_CALLBACKREQUEST`. A key naming its server is already
     /// concrete and passes through.
     pub(super) fn routing_key(&self, key: CallbackKey) -> CallbackKey {
-        CallbackKey {
-            server: key.server.or_else(|| self.facts.server()),
-            ..key
+        match key {
+            CallbackKey::Server {
+                server: None,
+                low_id,
+            } => CallbackKey::Server {
+                server: self.facts.server(),
+                low_id,
+            },
+            other => other,
         }
     }
 

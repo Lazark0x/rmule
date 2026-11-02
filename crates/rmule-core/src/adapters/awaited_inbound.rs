@@ -75,24 +75,51 @@ use registrations::{CallbackRoad, ClaimRoad, Landing, LetGo, Registrations, Road
 /// over IPv6 has no 32-bit server to report: `0.0.0.0:0` → `None`; such a
 /// callback simply degrades to the timeout.
 ///
-/// `kad_port` is `Some` for a **Kad source row** alone, which is in no
-/// server's namespace: `low_id` is then read from the address its publisher
-/// was observed at, and the Kad UDP port beside it tells two publishers behind
-/// one address apart, as aMule tells Low IDs apart by IP and Kad port
-/// (`CClientList::FindMatchingClient`, stock 2.3.3 `ClientList.cpp:264-280`;
-/// ADR-0090). A server-assigned id leaves it `None`: its server tells it
-/// apart. An inbound hello reports `None` too, so a Kad row's key never
-/// matches a reported one.
+/// A **Kad source row** is in no server's namespace and has no id: it is keyed
+/// by the address its publisher was observed at and the Kad UDP port beside
+/// it, which tell two publishers behind one address apart, as aMule tells
+/// Low IDs apart by IP and Kad port (`CClientList::FindMatchingClient`, stock
+/// 2.3.3 `ClientList.cpp:264-280`; ADR-0090). An inbound hello reports a
+/// server's key, so a Kad row's never matches a reported one.
 ///
 /// It lives here, not in `download::state`, so that the vocabulary it shares
 /// with this registry and `PeerWorkerEvent`/`PeerWorkerCommand` has one home
 /// and the `download::state -> adapters` dependency direction holds; the
 /// lifecycle (the pending set and all callback policy) is still the brain's.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub(crate) struct CallbackKey {
-    pub(crate) server: Option<Ipv4Endpoint>,
-    pub(crate) low_id: ClientId,
-    pub(crate) kad_port: Option<u16>,
+pub enum CallbackKey {
+    /// A Low ID in the namespace of the server that assigned it.
+    Server {
+        /// That server, per the rules above.
+        server: Option<Ipv4Endpoint>,
+        /// The id it assigned.
+        low_id: ClientId,
+    },
+    /// A firewalled Kad publisher.
+    KadRow {
+        /// Where it was observed, its Kad UDP port beside the address.
+        observed: Ipv4Endpoint,
+    },
+}
+
+impl CallbackKey {
+    /// The Low ID a server knows this source by; a Kad row has none.
+    #[must_use]
+    pub const fn low_id(self) -> Option<ClientId> {
+        match self {
+            Self::Server { low_id, .. } => Some(low_id),
+            Self::KadRow { .. } => None,
+        }
+    }
+
+    /// The server whose namespace the id is in, when one is named.
+    #[must_use]
+    pub const fn server(self) -> Option<Ipv4Endpoint> {
+        match self {
+            Self::Server { server, .. } => server,
+            Self::KadRow { .. } => None,
+        }
+    }
 }
 
 /// Where an adopted worker is handed back, tagged with the brain's key of the

@@ -25,6 +25,7 @@ pub use login::{
 };
 pub use peer_reach::{
     NatTraversalUnavailableReason, PeerBuddy, PeerReach, PeerReachDropReason, PeerReachRoute,
+    ReachAddress,
 };
 pub use scan::ScanEvent;
 pub use search::{LegNotSent, SearchEvent, SearchFailure, SearchLegState, SearchLegs, SweepTally};
@@ -642,7 +643,7 @@ pub enum CoreEvent {
     /// all ask the same selector, so they all report here.
     PeerReachRouted {
         /// The peer the route was chosen for.
-        peer: rmule_primitives::PeerEndpoint,
+        peer: ReachAddress,
         /// The chosen route, and for route 2 whether it could be enacted.
         route: PeerReachRoute,
     },

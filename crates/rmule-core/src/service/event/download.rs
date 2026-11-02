@@ -277,10 +277,8 @@ pub enum DownloadEvent {
     SourceRoadHeld {
         /// The download whose road is held.
         download_id: DownloadId,
-        /// The source's Low ID.
-        low_id: rmule_primitives::ClientId,
-        /// The server that assigned it, `None` for our own or a Kad road's.
-        server: Option<rmule_primitives::Ipv4Endpoint>,
+        /// The source, by the key its road stands under.
+        source: crate::CallbackKey,
     },
     /// A source holding nothing this download needs passed to another of our
     /// downloads that holds the peer and may need a part of it (a **Source

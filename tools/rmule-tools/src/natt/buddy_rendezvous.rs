@@ -59,10 +59,10 @@ use clap::{Args, ValueEnum};
 use rmule_core::run_log::Level;
 use rmule_core::{
     Core, CoreCommand, CoreConfig, CoreEvent, ExternalAddressOverride, KadEnableConfig, PeerBuddy,
-    PeerReach, ServeCommand as CoreServeCommand, open_durable_store_in_memory,
+    PeerReach, ReachAddress, ServeCommand as CoreServeCommand, open_durable_store_in_memory,
 };
 use rmule_kad::KadId;
-use rmule_primitives::{ClientId, Ipv4Endpoint, PeerEndpoint, ServerEndpoint, UserHash};
+use rmule_primitives::{ClientId, Ipv4Endpoint, ServerEndpoint, UserHash};
 
 use crate::operand::{parse_hex16, parse_seeded_kad_contacts, parse_user_hash};
 
@@ -471,8 +471,7 @@ fn reach(target: &Target) -> PeerReach {
         } => (buddy_id, buddy_udp),
         Road::DirectUdp { kad_udp } => {
             return PeerReach {
-                id: ClientId::from_u32(1),
-                tcp: PeerEndpoint::V4(Ipv4Endpoint::new(Ipv4Addr::UNSPECIFIED, 0)),
+                address: ReachAddress::LowId(ClientId::from_u32(1)),
                 supports_direct_udp_callback: true,
                 kad_udp: Some(kad_udp),
                 on_our_server: false,
@@ -485,8 +484,7 @@ fn reach(target: &Target) -> PeerReach {
         }
     };
     PeerReach {
-        id: ClientId::from_u32(1),
-        tcp: PeerEndpoint::V4(Ipv4Endpoint::new(Ipv4Addr::UNSPECIFIED, 0)),
+        address: ReachAddress::LowId(ClientId::from_u32(1)),
         supports_direct_udp_callback: false,
         kad_udp: None,
         on_our_server: false,

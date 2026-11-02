@@ -22,7 +22,7 @@ use anyhow::{Context, Result};
 use clap::Args;
 use rmule_core::{
     Core, CoreCommand, CoreConfig, CoreEvent, ExternalAddressOverride, PeerReach, PeerReachRoute,
-    ServeCommand, open_durable_store_in_memory,
+    ReachAddress, ServeCommand, open_durable_store_in_memory,
 };
 use rmule_net::family::FamilySelection;
 use rmule_primitives::{ClientId, Ipv6Endpoint, PeerEndpoint, UserHash};
@@ -150,11 +150,14 @@ pub(crate) async fn run_route(args: Ipv6RouteArgs) -> Result<()> {
         .peer_ipv6
         .map(|address| Ipv6Endpoint::new(address, args.peer_ipv6_port));
     let reach = PeerReach {
-        id: ClientId::from_u32(args.peer_client_id),
-        tcp: PeerEndpoint::V4(rmule_primitives::Ipv4Endpoint::new(
-            *peer_tcp.ip(),
-            peer_tcp.port(),
-        )),
+        address: if ClientId::from_u32(args.peer_client_id).is_high_id() {
+            ReachAddress::Dial(PeerEndpoint::V4(rmule_primitives::Ipv4Endpoint::new(
+                *peer_tcp.ip(),
+                peer_tcp.port(),
+            )))
+        } else {
+            ReachAddress::LowId(ClientId::from_u32(args.peer_client_id))
+        },
         supports_direct_udp_callback: false,
         kad_udp: None,
         on_our_server: args.on_our_server,

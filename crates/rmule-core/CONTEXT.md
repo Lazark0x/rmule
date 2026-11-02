@@ -1255,7 +1255,7 @@ its buddy — the bit alone is the advert, not the road's fact. Governed like
 the other callback roads: the 30 s slot release, and the 12 s **Callback Silence
 Fallback** only for a candidate whose facts admit a coordinator. Claimed the same way a
 **Buddy Callback** is — by the candidate's User Hash, since a Kad candidate's
-`CallbackKey` is a synthetic id no hello reports — so a retiring punch beside it leaves
+`CallbackKey` is the address its publisher was observed at, which no hello reports — so a retiring punch beside it leaves
 the **Dial-Back Claim** standing too. A Kad **Direct-Callback Source Row** names a
 candidate for this road alone — it carries no buddy — so a downloader that cannot be
 called back has no road to it, as aMule drops the row when it is firewalled itself.

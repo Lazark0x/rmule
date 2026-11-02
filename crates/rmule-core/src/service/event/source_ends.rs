@@ -89,12 +89,7 @@ pub enum SourcePurgeReason {
 pub enum PurgedSource {
     /// The endpoint it stood queued at.
     Endpoint(rmule_primitives::PeerEndpoint),
-    /// A Low ID never reached, by the id and the server that assigned it —
-    /// `None` when it was the server we are logged into.
-    LowId {
-        /// Its server-assigned Low ID.
-        low_id: rmule_primitives::ClientId,
-        /// The server that assigned it, when not ours.
-        server: Option<rmule_primitives::Ipv4Endpoint>,
-    },
+    /// A firewalled source never reached, by the key its road stood under:
+    /// its Low ID and the server that assigned it, or a Kad row.
+    Callback(crate::CallbackKey),
 }

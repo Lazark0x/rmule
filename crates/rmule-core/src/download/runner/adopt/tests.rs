@@ -45,10 +45,9 @@ fn high(last: u8) -> PeerEndpoint {
 /// The key the accept-router reports: the connected server it saw the peer
 /// logged into, which the brain resolves to its connected-server callback.
 fn reported() -> CallbackKey {
-    CallbackKey {
+    CallbackKey::Server {
         server: Some(Ipv4Endpoint::new(Ipv4Addr::new(198, 51, 100, 23), 4661)),
         low_id: ClientId::from_u32(LOW_ID),
-        kad_port: None,
     }
 }
 

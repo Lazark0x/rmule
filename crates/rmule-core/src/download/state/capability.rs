@@ -191,7 +191,9 @@ mod tests {
 
     fn kad_candidate() -> LowIdCandidate {
         LowIdCandidate {
-            from_kad: true,
+            id: crate::adapters::CallbackKey::KadRow {
+                observed: Ipv4Endpoint::new(std::net::Ipv4Addr::new(198, 51, 100, 7), 4672),
+            },
             ..server_candidate(None)
         }
     }

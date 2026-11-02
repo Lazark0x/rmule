@@ -14,7 +14,8 @@ again.
 
 A download holds its sources in one **Source Book**: one record per source, however many
 roads reached it and channels sighted it. A record is known by its aliases — up to two
-endpoints, a `CallbackKey` (server, low id) and a User Hash — and one index points each
+endpoints, a `CallbackKey` (server and low id, or a Kad row's observed address, which is
+no id) and a User Hash — and one index points each
 alias at its record. Each record carries exactly one stage, so one owner holds it by
 construction:
 

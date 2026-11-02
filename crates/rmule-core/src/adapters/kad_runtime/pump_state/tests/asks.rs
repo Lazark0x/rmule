@@ -171,10 +171,9 @@ fn waiter(low: u32) -> CallbackReply {
     let (retire_tx, _) = mpsc::channel(1);
     let (held_tx, _) = mpsc::channel(1);
     CallbackReply {
-        key: CallbackKey {
+        key: CallbackKey::Server {
             server: None,
             low_id: rmule_primitives::ClientId::from_u32(low),
-            kad_port: None,
         },
         retire_tx,
         held_tx,

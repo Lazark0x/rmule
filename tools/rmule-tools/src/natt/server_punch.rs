@@ -42,10 +42,10 @@ use anyhow::{Context, Result};
 use clap::Args;
 use rmule_core::run_log::Level;
 use rmule_core::{
-    Core, CoreCommand, CoreConfig, CoreEvent, NattConfig, OwnMapping, PeerReach,
+    Core, CoreCommand, CoreConfig, CoreEvent, NattConfig, OwnMapping, PeerReach, ReachAddress,
     ServeCommand as CoreServeCommand, open_durable_store_in_memory,
 };
-use rmule_primitives::{ClientId, Ipv4Endpoint, PeerEndpoint, ServerEndpoint, UserHash};
+use rmule_primitives::{ClientId, ServerEndpoint, UserHash};
 
 use crate::driver_row::Row;
 use crate::operand::parse_user_hash;
@@ -320,8 +320,7 @@ enum Login {
 /// reads a peer (ADR-0091).
 fn reach(target: &Target) -> PeerReach {
     PeerReach {
-        id: ClientId::from_u32(target.id),
-        tcp: PeerEndpoint::V4(Ipv4Endpoint::new(std::net::Ipv4Addr::UNSPECIFIED, 0)),
+        address: ReachAddress::LowId(ClientId::from_u32(target.id)),
         supports_direct_udp_callback: false,
         kad_udp: None,
         on_our_server: true,

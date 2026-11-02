@@ -207,10 +207,9 @@ pub(crate) async fn triage_inbound_connection(
         InboundOrigin::DialedTunnel(target) => InboundArrival::DialedToward(target),
         InboundOrigin::Socket | InboundOrigin::AcceptedTunnel => InboundArrival::Accepted,
     };
-    let reported = CallbackKey {
+    let reported = CallbackKey::Server {
         server: identity.connected_server(),
         low_id: identity.client_id(),
-        kad_port: None,
     };
     match awaited.triage(arrival, identity.user_hash(), reported) {
         InboundVerdict::Adopt(adoption) => {

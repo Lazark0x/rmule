@@ -174,10 +174,9 @@ fn a_sighting_of_a_held_source_merges_and_never_duplicates() {
     assert_eq!(sight(&mut book, ipv6_only), Sighted::Merged(None));
 
     assert_eq!(sight(&mut book, low_id(7)), Sighted::Pooled(None));
-    let key = CallbackKey {
+    let key = CallbackKey::Server {
         server: None,
         low_id: ClientId::from_u32(7),
-        kad_port: None,
     };
     let hashed = SourceSighting::new(
         PeerSource::new(ClientId::from_u32(7), 4662),

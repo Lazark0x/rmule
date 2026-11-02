@@ -288,10 +288,9 @@ impl Harness {
         mpsc::Receiver<(crate::adapters::CallbackKey, AttemptRetirement)>,
         crate::adapters::AwaitedInboundHandle,
     ) {
-        let callback = crate::adapters::CallbackKey {
+        let callback = crate::adapters::CallbackKey::Server {
             server: None,
             low_id,
-            kad_port: None,
         };
         let (retire_tx, retire_rx) = mpsc::channel(4);
         let claim = self

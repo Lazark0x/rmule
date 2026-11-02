@@ -480,7 +480,7 @@ where
                 // by that road and retracts the claim; the callback keeps its
                 // slot and its 30 s, because the server may still relay it.
                 tracing::debug!(
-                    low_id = key.low_id.as_u32(),
+                    ?key,
                     ?reason,
                     "a NAT traversal attempt retired; the source is temporarily unreachable"
                 );

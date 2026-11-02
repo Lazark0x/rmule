@@ -272,7 +272,7 @@ impl SourceBook {
                 // scenario reads it.
                 tracing::info!(
                     peer = %endpoint,
-                    low_id = record.candidate.map_or(0, |candidate| candidate.low_id.as_u32()),
+                    key = ?record.candidate.map(|candidate| candidate.key()),
                     "rung-0 IPv6 dial failed; the Low-ID candidate falls to its callback roads"
                 );
                 self.hand_to_callback_road(id)
@@ -500,7 +500,7 @@ impl SourceBook {
         {
             tracing::debug!(
                 %half,
-                low_id = candidate.low_id.as_u32(),
+                key = ?candidate.key(),
                 "a Low-ID road ended; rung 0 is open at the candidate's half"
             );
             return Some(self.back_to(id, Lane::of(&candidate, self.own_server), None));

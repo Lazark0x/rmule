@@ -320,11 +320,7 @@ where
                 // road is filed under the candidate's key — one minted with no
                 // server known is resolved to the live one. Filing precedes the
                 // request so an unusually fast dial-back always finds it.
-                let key = CallbackKey {
-                    server,
-                    low_id,
-                    kad_port: None,
-                };
+                let key = CallbackKey::Server { server, low_id };
                 let brief = AdoptionBrief {
                     file: ctx.file.clone(),
                     own_status: ctx.state.our_part_status(),
@@ -681,10 +677,7 @@ where
 /// waiting out the callback deadline for an invitation nobody carried. The
 /// answer is the brain's decisions, for the queue.
 fn never_left<S, P>(ctx: &mut LoopCtx<'_, S, P>, key: CallbackKey) -> Vec<Decision> {
-    tracing::debug!(
-        low_id = key.low_id.as_u32(),
-        "server callback ask never left; its road ends now"
-    );
+    tracing::debug!(?key, "server callback ask never left; its road ends now");
     ctx.state.on_traversal_retired(
         now(),
         key,
@@ -831,7 +824,11 @@ where
     S: SourceLookupService,
     P: PeerTransferService,
 {
-    let Some(server) = ctx.callbacks.routing_key(key).server else {
+    let CallbackKey::Server {
+        server: Some(server),
+        low_id,
+    } = ctx.callbacks.routing_key(key)
+    else {
         return false;
     };
     let brief = WorkerBrief {
@@ -841,7 +838,7 @@ where
         opening: crate::adapters::WorkerOpening::Probe,
     };
     let ridden = ctx.runner.rt.peer_transfer.lock().await.ride_callback_link(
-        key.low_id,
+        low_id,
         server,
         ctx.file.clone(),
         brief,

@@ -139,7 +139,7 @@ pub use adapters::{
     RuntimeSourceLookupService, ServeConnection, ServeInput, ServeOutput, ServeRuntimeService,
     SourceLookupOutcome, SourceLookupService, WorkerBrief, WorkerOpening,
 };
-pub use adapters::{DialBack, DialBackOutcome, FarEnd};
+pub use adapters::{CallbackKey, DialBack, DialBackOutcome, FarEnd};
 pub use address_learning::{
     AddressObservation, AssignedAddress, ConfidenceTier, EndpointVerdict, ExternalAddressOverride,
     NatHint, ObservationOutcome, ObservationSource, SocketRole,
@@ -234,9 +234,9 @@ pub use service::{
     NatTraversalUnavailableReason, NattConfig, PartReleaseReason, PartsLost, PeerBuddy,
     PeerConnections, PeerReach, PeerReachDropReason, PeerReachRoute, PeerRetirementReason,
     PlainLinkReason, PortTestAdmission, PortTestClosedBy, PortTestEnd, PortTestLateAdmission,
-    PurgedSource, QuitStep, RECONNECT_ATTEMPTS, ReconnectEnd, RestartOutcome, ScanCommand,
-    ScanEvent, SearchCommand, SearchEvent, SearchFailure, SearchId, SearchLegState, SearchLegs,
-    ServeCommand, ServeEvent, ServeStartFailure, ServeStopReason, ServerConnectFailure,
+    PurgedSource, QuitStep, RECONNECT_ATTEMPTS, ReachAddress, ReconnectEnd, RestartOutcome,
+    ScanCommand, ScanEvent, SearchCommand, SearchEvent, SearchFailure, SearchId, SearchLegState,
+    SearchLegs, ServeCommand, ServeEvent, ServeStartFailure, ServeStopReason, ServerConnectFailure,
     ServerConnectionEvent, ServerListCommand, ServerListEvent, ShareRejectReason, SharesWithheld,
     SourcePurgeReason, SourceWait, SweepTally, VerificationAuthority, VolumeStop, descriptor_room,
 };

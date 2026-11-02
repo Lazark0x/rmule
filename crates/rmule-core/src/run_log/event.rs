@@ -99,9 +99,14 @@ impl CoreEvent {
 
 /// How the route chosen for a peer reaches it. The peer, its Kad UDP
 /// endpoint, its Low ID and its buddy are the peer's; only the code is ours.
-fn reach_route(peer: &rmule_primitives::PeerEndpoint, route: &crate::PeerReachRoute) -> Record {
+fn reach_route(peer: &crate::ReachAddress, route: &crate::PeerReachRoute) -> Record {
     use crate::PeerReachRoute as R;
-    let record = Record::new("peer_reach.routed").peer_address("peer", peer);
+    let record = Record::new("peer_reach.routed");
+    let record = match peer {
+        crate::ReachAddress::Dial(endpoint) => record.peer_address("peer", endpoint),
+        crate::ReachAddress::LowId(id) => record.peer_id("low_id", *id),
+        crate::ReachAddress::KadRow => record.code("peer", "kad_row"),
+    };
     match route {
         R::Direct { endpoint } => record
             .code("route", "direct")

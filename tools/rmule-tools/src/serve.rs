@@ -12,10 +12,10 @@ use clap::Args;
 use rmule_core::run_log::Level;
 use rmule_core::{
     Core, CoreCommand, CoreConfig, CoreEvent, CoreSettings, ExternalAddressOverride,
-    KadEnableConfig, KadId, KadShutdownSlot, ObfuscationPolicy, PeerReach,
+    KadEnableConfig, KadId, KadShutdownSlot, ObfuscationPolicy, PeerReach, ReachAddress,
     ServeCommand as CoreServeCommand, ServerPolicy, StopRequest, open_durable_store_in_memory,
 };
-use rmule_primitives::{ClientId, Ipv4Endpoint, PeerEndpoint, ServerEndpoint};
+use rmule_primitives::{ClientId, Ipv4Endpoint, ServerEndpoint};
 
 use crate::cli::DownloadIdentityArgs;
 use crate::operand::parse_hex16;
@@ -456,10 +456,7 @@ async fn graceful_shutdown(
 fn firewalled_peer_reach(kad_udp: SocketAddrV4) -> PeerReach {
     let kad_udp = Ipv4Endpoint::new(*kad_udp.ip(), kad_udp.port());
     PeerReach {
-        id: ClientId::from_u32(1),
-        // Never dialed on this route — a LowID peer has no plain dial. Carried so
-        // the routed event names the peer we aimed at.
-        tcp: PeerEndpoint::V4(kad_udp),
+        address: ReachAddress::LowId(ClientId::from_u32(1)),
         supports_direct_udp_callback: true,
         kad_udp: Some(kad_udp),
         on_our_server: false,

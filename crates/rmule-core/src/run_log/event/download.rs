@@ -1,8 +1,8 @@
 //! The Run Log's record of each download event.
 
-use rmule_primitives::{ClientId, Ipv4Endpoint};
+use rmule_primitives::PeerEndpoint;
 
-use crate::{DownloadEvent, PurgedSource, RestartOutcome};
+use crate::{CallbackKey, DownloadEvent, PurgedSource, RestartOutcome};
 
 use crate::run_log::codes;
 use crate::run_log::record::Record;
@@ -209,12 +209,10 @@ impl DownloadEvent {
             }
             D::SourceRoadHeld {
                 download_id,
-                low_id,
-                server,
-            } => low_id_fields(
+                source,
+            } => callback_fields(
                 Record::new("download.source_road_held").count("id", download_id.as_u64()),
-                *low_id,
-                *server,
+                *source,
             ),
             D::SourceHandedOver { download_id, peer } => Record::new("download.source_handed_over")
                 .count("id", download_id.as_u64())
@@ -250,9 +248,7 @@ impl DownloadEvent {
                     .code("reason", codes::source_purge_reason(*reason));
                 match source {
                     PurgedSource::Endpoint(peer) => record.peer_address("peer", peer),
-                    PurgedSource::LowId { low_id, server } => {
-                        low_id_fields(record, *low_id, *server)
-                    }
+                    PurgedSource::Callback(key) => callback_fields(record, *key),
                 }
             }
             D::SourceReaskDropped { download_id, peer } => {
@@ -432,12 +428,22 @@ impl DownloadEvent {
     }
 }
 
-/// A Low-ID source's fields: its ID and, when not ours, the server that
-/// assigned it.
-fn low_id_fields(record: Record, low_id: ClientId, server: Option<Ipv4Endpoint>) -> Record {
-    let record = record.peer_id("low_id", low_id);
-    match server {
-        Some(server) => record.server_address("server", &server),
-        None => record,
+/// A firewalled source's fields: its ID and, when not ours, the server that
+/// assigned it, or the address a Kad row was seen at.
+fn callback_fields(record: Record, key: CallbackKey) -> Record {
+    match key {
+        CallbackKey::Server {
+            low_id,
+            server: Some(server),
+        } => record
+            .peer_id("low_id", low_id)
+            .server_address("server", &server),
+        CallbackKey::Server {
+            low_id,
+            server: None,
+        } => record.peer_id("low_id", low_id),
+        CallbackKey::KadRow { observed } => {
+            record.peer_address("kad_row", &PeerEndpoint::V4(observed))
+        }
     }
 }

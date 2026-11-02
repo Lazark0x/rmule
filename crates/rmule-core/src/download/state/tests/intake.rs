@@ -192,18 +192,16 @@ fn an_exchanged_low_id_row_is_called_back_through_the_server_it_names() {
         let asked: Vec<CallbackKey> = via_exchange(&mut state, peer(1), vec![row])
             .iter()
             .filter_map(|decision| match decision {
-                Decision::RequestCallback { low_id, .. } => Some(CallbackKey {
+                Decision::RequestCallback { low_id, .. } => Some(CallbackKey::Server {
                     server: Some(ours),
                     low_id: *low_id,
-                    kad_port: None,
                 }),
                 _ => None,
             })
             .collect();
-        let expected = (named == ours).then_some(CallbackKey {
+        let expected = (named == ours).then_some(CallbackKey::Server {
             server: Some(ours),
             low_id: low(7),
-            kad_port: None,
         });
         assert_eq!(asked, Vec::from_iter(expected), "a row naming {named}");
     }

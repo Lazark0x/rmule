@@ -39,7 +39,7 @@ impl Lane {
     /// The Low-ID lane `candidate`'s namespace puts it in while we are logged
     /// into `ours`.
     pub(super) fn of(candidate: &LowIdCandidate, ours: Option<Ipv4Endpoint>) -> Self {
-        if candidate.from_kad || candidate.on_server(ours) {
+        if candidate.is_kad_row() || candidate.on_server(ours) {
             Self::LowIdConnected
         } else {
             Self::LowIdGlobal

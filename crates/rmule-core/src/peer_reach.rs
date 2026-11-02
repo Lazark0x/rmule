@@ -88,9 +88,9 @@ impl PeerReacher {
         retire: Option<PendingCallback>,
     ) -> PeerReachRoute {
         let route = self.road(peer, retire).await;
-        tracing::debug!(peer = ?peer.tcp, ?route, "peer reach routed (ADR-0061)");
+        tracing::debug!(peer = ?peer.address, ?route, "peer reach routed (ADR-0061)");
         self.wiring.events.send(CoreEvent::PeerReachRouted {
-            peer: peer.tcp,
+            peer: peer.address,
             route,
         });
         route
@@ -124,7 +124,7 @@ impl PeerReacher {
                     // could be asked".
                     self.wiring.diagnostics.count_natt_download_no_coordinator();
                     tracing::debug!(
-                        peer = ?peer.tcp,
+                        peer = ?peer.address,
                         ?silence,
                         "a download's Low-ID candidate has no NAT-T coordinator (ADR-0091 rung 1)"
                     );

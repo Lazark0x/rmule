@@ -192,10 +192,10 @@ fn a_low_id_source_no_road_reaches_is_let_go_near_the_source_limit() {
     assert_eq!(
         purged(&state.on_tick(first)),
         vec![(
-            PurgedSource::LowId {
+            PurgedSource::Callback(CallbackKey::Server {
                 low_id: low(7),
                 server: Some(source_server(9))
-            },
+            }),
             SourcePurgeReason::LowToLow
         )]
     );

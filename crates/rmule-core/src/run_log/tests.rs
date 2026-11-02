@@ -124,7 +124,7 @@ fn session_events() -> Vec<CoreEvent> {
             user_hash: UserHash::from_bytes([0xCD; 16]),
         },
         CoreEvent::PeerReachRouted {
-            peer,
+            peer: peer.into(),
             route: crate::PeerReachRoute::Direct { endpoint: peer },
         },
         CoreEvent::Search(SearchEvent::SearchResultsReceived {
@@ -345,7 +345,7 @@ fn login_events() -> Vec<CoreEvent> {
             },
         },
         CoreEvent::PeerReachRouted {
-            peer: peer_at(198, 51, 100, 9, 4662),
+            peer: peer_at(198, 51, 100, 9, 4662).into(),
             route: crate::PeerReachRoute::Direct {
                 endpoint: peer_at(198, 51, 100, 9, 4662),
             },

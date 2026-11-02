@@ -203,8 +203,8 @@ pub(crate) enum Decision {
     /// the `0x95` to the Kad UDP endpoint its own row carried —
     /// no server and no buddy involved. The runner claims the same
     /// **dial-back** entry a buddy callback claims, keyed by the candidate's
-    /// User Hash, because a Kad candidate's [`CallbackKey`] is a synthetic id
-    /// (its own address read as one) that no hello will ever report — and
+    /// User Hash, because a Kad candidate's [`CallbackKey`] is an observed address
+    /// no hello will ever report — and
     /// asks the core actor to emit the `0x95`. The held slot's deadline sits on
     /// the candidate's record.
     RequestDirectUdpCallback {
@@ -383,7 +383,7 @@ impl LowIdRoad {
         // to the next one unchanged.
         if callable
             && candidate.direct_udp_callback
-            && candidate.kad_udp.is_some()
+            && candidate.kad_udp().is_some()
             && candidate.user_hash.is_some()
         {
             Some(Self::DirectUdp)

@@ -49,8 +49,9 @@ pub use serve_runtime::{
 pub use source_lookup::{RuntimeSourceLookupService, SourceLookupOutcome, SourceLookupService};
 pub(crate) use udp_transport::{RuntimeServerUdpTransport, ServerUdpTransport};
 
+pub use awaited_inbound::CallbackKey;
 pub(crate) use awaited_inbound::{
-    AdoptSender, AdoptionBrief, AwaitedInbound, AwaitedInboundHandle, CallbackKey, RetireSender,
+    AdoptSender, AdoptionBrief, AwaitedInbound, AwaitedInboundHandle, RetireSender,
 };
 // The question and its answer, named where a test outside the adapters asks
 // the registry directly; production asks it only through the inbound triage.

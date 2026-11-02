@@ -70,10 +70,9 @@ fn one_low_id_on_two_servers_is_two_peers_with_their_own_ask_facts() {
         Sighted::Pooled(None),
         "B's low id 7 is not A's"
     );
-    let on_b = CallbackKey {
+    let on_b = CallbackKey::Server {
         server: Some(SERVER_B),
         low_id: ClientId::from_u32(7),
-        kad_port: None,
     };
     assert!(
         !book.wants_sources_for(on_a, now),

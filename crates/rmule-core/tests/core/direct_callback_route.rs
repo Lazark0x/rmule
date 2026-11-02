@@ -20,7 +20,7 @@ use crate::fixture::{VerdictOnlyKad, identity_with_port};
 use crate::fixture::{dead_port, free_port, serving_started};
 use rmule_core::{
     Core, CoreCommand, CoreConfig, CoreError, CoreEvent, DownloadFailure, PeerReach,
-    PeerReachRoute, PeerTransferService, PeerWorker, ServeCommand, ServeConnection,
+    PeerReachRoute, PeerTransferService, PeerWorker, ReachAddress, ServeCommand, ServeConnection,
     ServeRuntimeService, SourceLookupOutcome, SourceLookupService,
 };
 use rmule_ed2k::OfferedFile;
@@ -93,8 +93,7 @@ fn firewalled_peer(kad_udp: Ipv4Endpoint) -> PeerReach {
     PeerReach {
         // A server-assigned id below the LowID threshold: the callback tree's
         // entry condition.
-        id: ClientId::from_u32(42),
-        tcp: PeerEndpoint::V4(Ipv4Endpoint::new(kad_udp.ip, 4662)),
+        address: ReachAddress::LowId(ClientId::from_u32(42)),
         supports_direct_udp_callback: true,
         kad_udp: Some(kad_udp),
         // Off our server and buddy-less, so nothing but route 2 can fire: a
