@@ -2,17 +2,16 @@
 //! Pair** (ADR-0085 amending ADR-0031 — two listeners, one accept pump) and
 //! yields accepted peer `Connection`s. Pull model — the caller (core) owns the
 //! accept loop; this type owns sockets, not policy.
-use std::io;
 use std::net::{SocketAddr, SocketAddrV4};
 
 use crate::driver::CryptStream;
 use rmule_peer::PeerHandshakeContext;
-use rmule_primitives::{PeerEndpoint, is_plaintext_marker};
+use rmule_primitives::is_plaintext_marker;
 use tokio::sync::Mutex;
 
 use crate::family::{FamilyBinds, FamilySelection, TcpFamilyPair};
 use crate::peer::first_read::{FirstRead, FirstReads};
-use crate::peer::inbound::{InboundSource, PushBack};
+use crate::peer::inbound::PushBack;
 use crate::peer::obfuscation::{AwaitedTesters, ObfuscationPolicy, PeerObfuscationTransport};
 use crate::peer::{ConnectOptions, Connection, PeerNetError};
 
@@ -140,7 +139,7 @@ impl PeerListener {
         let mut first_reads = self.first_reads.lock().await;
         loop {
             tokio::select! {
-                accepted = InboundSource::accept(self) => {
+                accepted = self.inner.accept() => {
                     let (stream, peer) =
                         accepted.map_err(|source| PeerNetError::Accept { source })?;
                     let (ctx, options) = fresh();
@@ -229,13 +228,5 @@ fn discriminate(
              is awaited from — refused"
         );
         Err(PeerNetError::PlaintextRefused { peer })
-    }
-}
-
-impl InboundSource for PeerListener {
-    type Stream = tokio::net::TcpStream;
-
-    async fn accept(&self) -> io::Result<(Self::Stream, PeerEndpoint)> {
-        self.inner.accept().await
     }
 }

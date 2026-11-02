@@ -84,8 +84,8 @@ pub use search::{
 };
 pub use secure_ident::{SUI_RSA_KEY_BITS, SecureIdentKey, SecureIdentPublicKey};
 pub use server::{
-    ServerIdentSource, ServerIdentity, ServerStatusReport, ServerTcpFlag, ServerTcpFlags,
-    ServerUdpFlag, ServerUdpFlags,
+    ServerIdentity, ServerStatusReport, ServerTcpFlag, ServerTcpFlags, ServerUdpFlag,
+    ServerUdpFlags,
 };
 pub use session::{SessionCore, SessionOutput};
 pub use source::{

@@ -54,9 +54,8 @@ errors on an IPv6 address.
   `IPV6_V6ONLY=1`, for the eD2k listener (`Ed2kListener`), client UDP (`ClientUdp`, which
   Kad shares, ADR-0057) and server UDP (`ServerUdp`). Captures record the true family.
 - **One pump per role merges both sockets** and yields `PeerEndpoint`s. The TCP pump is the
-  `InboundSource` seam (the accept loop with a one-byte push-back wrapper in place of
-  `TcpStream::peek`, for the byte-0 discrimination of ADR-0042); the listener of ADR-0031
-  is that pair and pump.
+  accept loop, with a one-byte push-back wrapper in place of `TcpStream::peek` for the
+  byte-0 discrimination of ADR-0042; the listener of ADR-0031 is that pair and pump.
 - **Kad rides the IPv4 half only.** The client-UDP demux drops a Kad datagram that arrives
   on the IPv6 half and counts the declared `0xE4` / `0xE5` form as the dialect gap it is. A
   standalone node (the `rmule-tools` drivers, the Stimulus Node, the mesh sim) binds its

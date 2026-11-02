@@ -74,10 +74,6 @@ _Avoid_: partial bind (says nothing about what it costs), bind failure (that is 
 The consecutive-error counter (`family::ReceiveErrorBudget`) every UDP receive loop in the crate — and its `rmule-core` consumers, the client-UDP and server-UDP runtime transports — shares: a run of receive errors with no successful receive between them ends the pump (`Exhausted`, naming the last `io::ErrorKind` and the count), while any successful receive resets it and a lone error is merely tolerated (`Tolerated`, a short backoff before retrying). Keeps a permanently dead socket from hot-spinning (a closed or failed source ends its task, never busy-spins), without making one transient blip fatal.
 _Avoid_: retry policy, circuit breaker (it counts consecutive failures only; it does not open/close or time-window)
 
-**Inbound Source**:
-The seam over the accept pump — the trait the **Family Pair** implements for TCP and a fake implements in tests — that yields inbound streams with a one-byte push-back for byte-0 protocol discrimination (ADR-0042), so nothing downstream needs a `TcpStream`.
-_Avoid_: acceptor, socket factory
-
 **Inverted hello timeout**:
 A dialed **Connection** times out when *our* `OP_HELLO` goes unanswered; an accepted **Connection** times out when *the peer's* hello never arrives after accept. Same `PeerCloseReason::HelloTimeout`, opposite trigger.
 _Avoid_: connect timeout (that is the TCP-establish timeout, dial-only)

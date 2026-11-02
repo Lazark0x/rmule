@@ -12,8 +12,7 @@
 //! for the closes the session cannot see (clean EOF → `PeerClosed`, socket
 //! I/O error → `Io`). The listener owns sockets, not policy: accepted
 //! connections go up to core, which decides what to serve — and it is a
-//! **Family Pair** behind one accept pump, reached through the
-//! [`InboundSource`] seam (ADR-0085).
+//! **Family Pair** behind one accept pump (ADR-0085).
 
 mod capture;
 mod connection;
@@ -29,7 +28,7 @@ pub use capture::ELISION_MARKER;
 pub use connection::{Connection, DialedStream, OpenedDial, PeerStreamRole};
 pub use error::PeerNetError;
 pub use first_read::UNIDENTIFIED_SOCKET_BOUND;
-pub use inbound::{InboundSource, PushBack};
+pub use inbound::PushBack;
 pub use listener::{Admitted, PeerListener};
 pub use obfuscation::{
     AwaitedTesters, ObfuscationConfig, ObfuscationPolicy, PeerObfuscationTransport,
