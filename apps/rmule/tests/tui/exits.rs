@@ -17,7 +17,11 @@ use std::sync::mpsc;
 use std::time::Duration;
 
 use rmule_core::port_mapping::PortMappingMode;
-use rmule_core::{CoreSettingsHandle, Flag, Setting, open_durable_store};
+use rmule_core::{
+    CoreSettingsHandle, DurableAppConfig, Flag, ManagedServer, ServerListStore, Setting,
+    open_durable_store,
+};
+use rmule_primitives::ServerEndpoint;
 use rustix::io::{FdFlags, fcntl_setfd};
 use rustix::pty::{OpenptFlags, grantpt, openpt, ptsname, unlockpt};
 use tempfile::TempDir;
@@ -50,7 +54,8 @@ fn pty() -> (OwnedFd, File) {
 fn offline_data_dir(home: &Path) {
     let data = home.join("data");
     std::fs::create_dir_all(&data).expect("the data directory");
-    let settings = CoreSettingsHandle::open(open_durable_store(&data).expect("the store"));
+    let store = open_durable_store(&data).expect("the store");
+    let settings = CoreSettingsHandle::open(store.clone());
     rmule_testkit::scratch_ports(&settings);
     for setting in [
         Setting::Flag(Flag::AutoFetchServerMet, false),
@@ -58,6 +63,11 @@ fn offline_data_dir(home: &Path) {
     ] {
         settings.set(setting).expect("the setting");
     }
+    // A listed server keeps this from being a cold start, whose seeds are public.
+    let endpoint = ServerEndpoint::parse_host_port("127.0.0.1:9").expect("the endpoint");
+    DurableAppConfig::new(store)
+        .merge_server(ManagedServer::listed(endpoint))
+        .expect("the server row");
 }
 
 fn assert_stayed_offline(home: &Path) {
