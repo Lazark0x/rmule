@@ -22,7 +22,7 @@ publish = false
 # and the fixtures were captured against; ADR-0045's 2026-08-02 amendment makes
 # its verdicts admissible only while it is unpatched and pinned, so this is a
 # git rev and never a path or a fork.
-ed2k-server = { git = "https://github.com/andrey23127/ed2k-server", rev = "e74aca7009cc1c235d039db43fa669bd88710cf3" }
+ed2k-server = { git = "https://github.com/andrey23127/ed2k-server", rev = "97f97ff9f6961b06435fe306bf27d70b5e5be7f7" }
 
 rmule-ed2k = { path = "../../crates/rmule-ed2k" }
 rmule-primitives = { path = "../../crates/rmule-primitives" }

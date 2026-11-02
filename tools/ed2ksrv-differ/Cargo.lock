@@ -489,8 +489,8 @@ dependencies = [
 
 [[package]]
 name = "ed2k-server"
-version = "0.9.86"
-source = "git+https://github.com/andrey23127/ed2k-server?rev=e74aca7009cc1c235d039db43fa669bd88710cf3#e74aca7009cc1c235d039db43fa669bd88710cf3"
+version = "0.9.87"
+source = "git+https://github.com/andrey23127/ed2k-server?rev=97f97ff9f6961b06435fe306bf27d70b5e5be7f7#97f97ff9f6961b06435fe306bf27d70b5e5be7f7"
 dependencies = [
  "aho-corasick",
  "anyhow",

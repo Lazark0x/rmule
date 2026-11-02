@@ -98,7 +98,7 @@ Facts the bench has to respect:
 | stock aMule 2.3.3 | `amule` | Ubuntu 24.04 package | legacy oracle: ignores every new tag and opcode |
 | kno's aMule | `amule-kno` (the fork's Debian Dockerfile, ffprobe stage stripped, a `--quic` variant) | Fork Pin `kno/amule` `integration/network-parity` `ab483654` | IPv6 client↔client, Kad tags, uTP, rendezvous target, the QUIC gate |
 | emule-qt 0.4.2 | `emuleqt` | `73fff714` | reference body for the IPv6 and port-mapping rows; a Kad body in `kad-node` mode; stimulus elsewhere |
-| ed2k-server | `ed2ksrv` | `e74aca7009cc1c235d039db43fa669bd88710cf3` (`v0.9.86`) | the server punch coordinator, and the IPv6 server surface on `config-ipv6.toml` |
+| ed2k-server | `ed2ksrv` | `97f97ff9f6961b06435fe306bf27d70b5e5be7f7` (`v0.9.87`) | the server punch coordinator, and the IPv6 server surface on `config-ipv6.toml` |
 
 Plus `natgw`, `natprobe` and a `miniupnpd` gateway (`--ipv6 --igd2`, `enable_pcp_pmp=yes`).
 The ed2ksrv pin is verified at build time: `images/ed2ksrv/pin.env` names the commit,
