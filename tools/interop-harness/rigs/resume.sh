@@ -66,7 +66,7 @@ docker run -d --name rig-rmule --network $NET --ip $SUB.10 -e RMULE_LOG=info -v 
 first_ask=$SECONDS
 wait_log rig-rmule 'parts=.*I' 60 || exit 3
 sleep "$HOLD"
-part_files() { find "$R/rmule" -type f ! -name '*.redb' ! -name '*.lock' -size +0 | head -5; }
+part_files() { find "$R/rmule" -type f -name '*.part' ! -name '.*' -size +0 | head -5; }
 resume() {
     docker logs rig-rmule >"$R/rmule-first.log" 2>&1
     docker run --rm --network $NET -v "$R":/w --entrypoint /usr/bin/rmule-tools $TOOLS \
@@ -102,9 +102,8 @@ restart | paused-restart | forged)
 import json, os, sys
 ranges = sorted(tuple(r) for r in json.load(open(sys.argv[1]))["delivered"])
 part_size = 9_728_000
-# The last delivered cell sits in the part still being filled, so it is unverified.
-a, b = ranges[-1]
-cell = a + (b - a) // 2 - 256
+# Half way through what arrived: inside the checkpoint, in a part not yet checked.
+cell = max(b for _, b in ranges) // 2
 with open(sys.argv[2], "r+b") as f:
     f.seek(cell)
     f.write(os.urandom(512))
