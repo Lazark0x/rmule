@@ -11,6 +11,9 @@ frames with one fault:
   late-block     inside the slot, answers a block ask with a block of the other file
   hashset-corrupt  answers the hash ask with hashes whose MD4 is not the file's
   hashset-count    answers the hash ask with one hash too few
+  reset-after-ask  says nothing to a peer's first slot ask and resets the link at
+                   40 s, as a stock source that stopped reading does; later links
+                   of that peer are served
 
 Run as `evil_source.py <mode> <seconds> <server host:port> <address> <dir> <size>`.
 It writes `a.bin`, `b.bin` and `links.txt` under <dir>, and prints one JSON object
@@ -30,6 +33,7 @@ USER_HASH = bytes.fromhex("6e31c57e0e29440fb96dd2718e6f4a3d")
 PART = 9_728_000
 CHUNK = 10_240
 state = {"stimulus_at": None, "first_close": None, "blocks": 0}
+stalled = set()
 lock = threading.Lock()
 
 
@@ -169,8 +173,17 @@ def serve_blocks(mode, conn, file, other, payload):
             state["blocks"] += 1
 
 
+def reset_link(conn, peer):
+    conn.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("<ii", 1, 0))
+    conn.shutdown(socket.SHUT_RD)
+    conn.close()
+    emit(event="reset", peer=peer[0])
+
+
 def serve(conn, peer, mode, files, client_id, is_server):
     by_hash = {file.hash: file for file in files}
+    if not is_server:
+        emit(event="connected", peer=peer[0])
     try:
         while True:
             proto, length = struct.unpack("<BI", recv_exact(conn, 5))
@@ -188,6 +201,10 @@ def serve(conn, peer, mode, files, client_id, is_server):
             elif (proto, opcode) == (0xE3, 0x51):
                 conn.sendall(answer_hash_set(mode, by_hash[payload[:16]], payload))
             elif (proto, opcode) == (0xE3, 0x54):
+                if mode == "reset-after-ask" and peer[0] not in stalled:
+                    stalled.add(peer[0])
+                    threading.Timer(40, reset_link, args=(conn, peer)).start()
+                    continue
                 conn.sendall(frame(0xE3, 0x55, b""))
             elif (proto, opcode) == (0xE3, 0x47):
                 file = by_hash[payload[:16]]
