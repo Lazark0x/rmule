@@ -48,4 +48,4 @@ docker exec rig-qt cat /tmp/emulecored.log >"$R/qt.log" 2>/dev/null
 docker stop rig-tap >/dev/null
 cmp -s "$R/peer/in/stream.bin" "$R/seed/in/stream.bin" && up=yes || up=no
 echo "stay up byte_equal=$up closes=$(grep -o 'peer connection closed reason=[A-Za-z()]*' "$R/rmule-serve.log" | sort | uniq -c | tr -s ' ' | tr '\n' ';')"
-python3 -I "$RIGS/wire_ranges.py" "$R/cap/qt-tap.pcap" $SUB.3 --json "$R/cap/ranges.json"
+python3 -I "$RIGS/wire_ranges.py" "$R/cap/qt-tap.pcap:$SUB.3" --json "$R/cap/ranges.json"

@@ -86,7 +86,9 @@ class File:
             self.bytes = src.read()
         self.name = os.path.basename(path)
         self.parts = [md4(self.bytes[o : o + PART]) for o in range(0, size, PART)]
-        self.hash = md4(b"".join(self.parts))
+        if size % PART == 0:
+            self.parts.append(md4(b""))
+        self.hash = md4(b"".join(self.parts)) if len(self.parts) > 1 else self.parts[0]
 
     def link(self):
         return f"ed2k://|file|{self.name}|{len(self.bytes)}|{self.hash.hex().upper()}|/"
@@ -140,7 +142,7 @@ def block_frames(file, start, end):
 
 
 def answer_hash_set(mode, file, payload):
-    hashes = file.parts + ([md4(b"")] if len(file.bytes) % PART == 0 else [])
+    hashes = file.parts
     if mode == "hashset-corrupt":
         stimulus("hash set whose MD4 is not the file's")
         hashes = [bytes(16 * [i + 1]) for i in range(len(hashes))]

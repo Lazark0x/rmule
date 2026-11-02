@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """What a tap on the seed saw of one downloader, in file offsets.
 
-`wire_ranges.py <pcap> <seed ip> [--json out]` rebuilds each TCP stream, walks
-its eD2k frames, and prints the bytes the seed delivered, counted once and in
-all, and the bytes the downloader asked for. The eD2k client frames only, plain
-links only: a rig run leaves obfuscation off.
+`wire_ranges.py <pcap>:<seed ip>... [--json out]` rebuilds each TCP stream of
+each tap, walks its eD2k frames, and prints the bytes the seeds delivered,
+counted once and in all, and the bytes the downloader asked for. The eD2k client
+frames only, plain links only: a rig run leaves obfuscation off.
 """
 
 import json
@@ -98,26 +98,33 @@ def merge(ranges):
 
 
 def main():
-    pcap, seed = sys.argv[1], sys.argv[2]
+    args = sys.argv[1:]
+    out = None
+    if "--json" in args:
+        at = args.index("--json")
+        out = args[at + 1]
+        del args[at : at + 2]
     delivered, asked, opcodes = [], [], defaultdict(int)
-    for (src, sport, dst, dport), first, buf in streams(pcap):
-        for proto, opcode, body in frames(buf):
-            if src == seed or dst == seed:
-                opcodes[f"{'seed' if src == seed else 'peer'} 0x{proto:02x}/0x{opcode:02x}"] += 1
-            if src == seed and proto == 0xE3 and opcode == 0x46:
-                a, b = struct.unpack_from("<II", body, 16)
-                delivered.append((a, b))
-            elif dst == seed and proto == 0xE3 and opcode == 0x47:
-                starts = struct.unpack_from("<3I", body, 16)
-                ends = struct.unpack_from("<3I", body, 28)
-                asked.extend((a, b) for a, b in zip(starts, ends) if b > a)
+    for tap in args:
+        pcap, seed = tap.rsplit(":", 1)
+        for (src, sport, dst, dport), first, buf in streams(pcap):
+            for proto, opcode, body in frames(buf):
+                if src == seed or dst == seed:
+                    opcodes[f"{'seed' if src == seed else 'peer'} 0x{proto:02x}/0x{opcode:02x}"] += 1
+                if src == seed and proto == 0xE3 and opcode == 0x46:
+                    a, b = struct.unpack_from("<II", body, 16)
+                    delivered.append((a, b))
+                elif dst == seed and proto == 0xE3 and opcode == 0x47:
+                    starts = struct.unpack_from("<3I", body, 16)
+                    ends = struct.unpack_from("<3I", body, 28)
+                    asked.extend((a, b) for a, b in zip(starts, ends) if b > a)
     total = sum(b - a for a, b in delivered)
     once = sum(b - a for a, b in merge(delivered))
     print(f"delivered_total={total} delivered_once={once} refetched={total - once} "
           f"asked_total={sum(b - a for a, b in asked)} asked_once={sum(b - a for a, b in merge(asked))}")
-    if "--json" in sys.argv:
-        with open(sys.argv[sys.argv.index("--json") + 1], "w") as out:
-            json.dump({"delivered": delivered, "asked": asked, "opcodes": opcodes}, out)
+    if out:
+        with open(out, "w") as sink:
+            json.dump({"delivered": delivered, "asked": asked, "opcodes": opcodes}, sink)
 
 
 if __name__ == "__main__":
