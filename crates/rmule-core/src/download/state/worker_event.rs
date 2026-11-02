@@ -399,10 +399,12 @@ impl DownloadState {
             0
         };
         // A copy of a part already assembled or verified — a duplicate's, or a
-        // block still draining — opens no assembly (ADR-0117).
+        // block still draining — opens no assembly (ADR-0117), and one a source
+        // set aside from the part still drains would fail the next attempt.
         if self.pending_persist.contains_key(&part_index)
             || self.awaiting_recovery.contains_key(&part_index)
             || self.scheduler.is_part_verified(part_index)
+            || self.is_set_aside(part_index, peer)
         {
             return;
         }

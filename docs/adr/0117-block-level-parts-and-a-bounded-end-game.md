@@ -124,8 +124,10 @@ source stays while its bad bytes are under a third of what it sent.
 
 - **Set aside, not retired.** A source **set aside** from a part is asked for none of its blocks
   until it verifies. It keeps its record, its standing, its slot and every other part. The action
-  has the scope of the evidence: elimination speaks of one part, so it costs one part. It may hold
-  no part it can work, and then it gives its slot back as any source with nothing free does.
+  has the scope of the evidence: elimination speaks of one part, so it costs one part. A block
+  still draining from it writes nothing into the part, or its bad bytes would fail the next attempt.
+  It may hold no part it can work, and then it gives its slot back as any source with nothing free
+  does.
 - **Attempts are bounded by narrowing.** Stock would fetch a poisoned part for ever. Each repeated
   failure sets aside the writers both attempts point to, or, when the comparison names none (two
   senders lied, one in each attempt), every writer of a cell not corroborated. The last worker

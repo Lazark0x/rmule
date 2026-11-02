@@ -36,6 +36,13 @@ impl SetAside {
 }
 
 impl DownloadState {
+    /// Whether `peer` is set aside from `part_index`.
+    pub(super) fn is_set_aside(&self, part_index: PartIndex, peer: PeerEndpoint) -> bool {
+        self.set_aside
+            .get(&part_index)
+            .is_some_and(|aside| aside.holds(peer))
+    }
+
     /// `part_index`, assembled as `assembled`, failed its check with nothing to
     /// name its corrupt cells: it is fetched again, its failure is compared
     /// with the part's Failed Cells and settled, and the attempt joins them.

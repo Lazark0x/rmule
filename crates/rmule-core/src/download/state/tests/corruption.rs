@@ -435,6 +435,30 @@ fn two_writers_alone_narrow_to_one_and_its_attempt_settles_it() {
     );
 }
 
+/// `peer(1)` is set aside with blocks still draining from its pipeline: what
+/// lands writes nothing, or its bad bytes would fail the next attempt too.
+#[test]
+fn a_block_draining_from_a_source_set_aside_writes_nothing() {
+    let bad = peer(1);
+    let mut state = writers_of(file_hash_only_content(NINE_CELLS), 3);
+    let _ = first_attempt_fails(&mut state, &[bad]);
+    let _ = refetch(&mut state, &[bad, peer(2), peer(3)], &[bad]);
+    let _ = state.on_persist_result(
+        t0(),
+        PartIndex::new(0),
+        Some(peer(3)),
+        Err(DownloadFailure::PartVerificationFailed),
+        Some(file_cells()),
+    );
+    let drained = deliver(&mut state, bad, (0, B), true);
+    assert!(
+        !drained
+            .iter()
+            .any(|d| matches!(d, Decision::WriteBytes { .. })),
+        "{drained:?}"
+    );
+}
+
 /// Two writers narrow to one and that one ends: the suspect left out is the
 /// last worker holding the part, so it is asked again. A bad seed that leaves
 /// cannot strand a part with the honest source that stayed.
