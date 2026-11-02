@@ -111,8 +111,9 @@ is `DownloadScheduler`.
 - Otherwise the first peer hash set — asked of one link at a time, above — becomes
   `PeerHashSet`, persisted with the download as the provisional authority; parts verify against it and the whole-file
   hash at finalize confirms it.
-- A peer hash set whose MD4 is not the file hash is refused, and its sender is
-  retired and distrusted. A proven peer set that disagrees with the link's set
+- A peer hash set of the wrong count, or whose MD4 is not the file hash, is refused
+  at the frame seam: the link closes as stock's `ProcessHashSet` throws, and the
+  download retires and distrusts the sender and passes the ask on. A proven peer set that disagrees with the link's set
   fails the download with `HashSetMismatch`, since the link itself is then wrong.
 - With neither, `FileHashOnly` defers all verification to the finished file.
 

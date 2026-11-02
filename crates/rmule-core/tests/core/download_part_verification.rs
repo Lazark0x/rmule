@@ -319,8 +319,6 @@ async fn resumed_download_retires_peer_that_mismatches_persisted_provisional_aut
     )
     .expect("a size eD2k addresses");
     let hashes = summary.part_hash_set().unwrap().hashes().to_vec();
-    let mut mismatched = hashes.clone();
-    mismatched[0] = PartHash::from_bytes([0x55; 16]);
     let dir = tempfile::tempdir().unwrap();
     let store = open_durable_store(dir.path()).unwrap();
     let repo = DurableDownloadRepository::new(Arc::clone(&store));
@@ -342,7 +340,6 @@ async fn resumed_download_retires_peer_that_mismatches_persisted_provisional_aut
         .source_lookup(two_high_id_sources())
         .peer_transfer(MismatchedThenSuccess {
             mismatched_peer: loopback_peer(1),
-            mismatched_hashes: mismatched,
             correct_hashes: hashes,
             bytes,
         })
@@ -386,7 +383,6 @@ async fn resumed_download_retires_peer_that_mismatches_persisted_provisional_aut
 
 struct MismatchedThenSuccess {
     mismatched_peer: PeerEndpoint,
-    mismatched_hashes: Vec<PartHash>,
     correct_hashes: Vec<PartHash>,
     bytes: Vec<u8>,
 }
@@ -402,7 +398,6 @@ impl PeerTransferService for MismatchedThenSuccess {
         let (command_tx, mut command_rx) = tokio::sync::mpsc::channel(8);
         let (event_tx, event_rx) = tokio::sync::mpsc::channel(16);
         let mismatched_peer = self.mismatched_peer;
-        let mismatched_hashes = self.mismatched_hashes.clone();
         let correct_hashes = self.correct_hashes.clone();
         let bytes = self.bytes.clone();
         tokio::spawn(async move {
@@ -415,11 +410,7 @@ impl PeerTransferService for MismatchedThenSuccess {
                     }
                     PeerWorkerCommand::RequestHashSet => {}
                     PeerWorkerCommand::RequestBlocks { .. } if peer == mismatched_peer => {
-                        let _ = event_tx
-                            .send(PeerWorkerEvent::HashSetReceived {
-                                part_hashes: mismatched_hashes.clone(),
-                            })
-                            .await;
+                        let _ = event_tx.send(PeerWorkerEvent::HashSetRefused).await;
                         break;
                     }
                     PeerWorkerCommand::RequestBlocks { blocks, handout } => {

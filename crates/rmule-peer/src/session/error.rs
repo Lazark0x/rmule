@@ -94,6 +94,9 @@ pub enum PeerViolation {
     Unsolicited,
     /// Its file status counted other parts than the file has.
     PartCountMismatch,
+    /// Its hash set was not the file's: the wrong count, or hashes whose MD4
+    /// is not the file hash.
+    BadHashSet,
 }
 
 impl PeerViolation {
@@ -109,6 +112,7 @@ impl PeerViolation {
             Self::WrongFile => "wrong_file",
             Self::Unsolicited => "unsolicited",
             Self::PartCountMismatch => "part_count_mismatch",
+            Self::BadHashSet => "bad_hash_set",
         }
     }
 }

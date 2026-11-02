@@ -129,14 +129,7 @@ fn only_one_link_asks_the_set_and_a_refused_answer_passes_it_on() {
     let second = state.on_worker_event(t0(), peer(2), PeerWorkerEvent::SlotGranted);
     assert!(!asks_any_hash_set(&second), "{second:?}");
 
-    let hashes = set_held_content(THREE_PARTS, Vec::new()).resolved.hashes;
-    let answered = state.on_worker_event(
-        t0(),
-        peer(1),
-        PeerWorkerEvent::HashSetReceived {
-            part_hashes: hashes,
-        },
-    );
+    let answered = state.on_worker_event(t0(), peer(1), PeerWorkerEvent::HashSetRefused);
     assert!(
         answered.iter().any(|d| matches!(
             d,

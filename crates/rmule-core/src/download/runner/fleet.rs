@@ -7,7 +7,7 @@
 use std::collections::{HashSet, VecDeque};
 
 use rmule_peer::PeerHandshakeContext;
-use rmule_primitives::{Ed2kFileLink, SourceSighting, UserHash};
+use rmule_primitives::{Ed2kFileLink, PartHashSet, SourceSighting, UserHash};
 use tokio::sync::mpsc;
 
 use crate::adapters::{
@@ -21,9 +21,7 @@ use crate::download::state::{
 };
 use crate::download::worker_pool::{WorkerChannels, WorkerPool};
 use crate::error::DownloadFailure;
-use crate::hashing::{
-    ResolvedHashSet, hash_set_proves_file, proven_link_hash_set, resolve_hash_set_authority,
-};
+use crate::hashing::{ResolvedHashSet, proven_link_hash_set, resolve_hash_set_authority};
 use crate::peer_roster::{PeerRelation, RelationLease};
 use crate::scheduler::PartOrder;
 use crate::service::{
@@ -173,7 +171,7 @@ where
     // persisted before sets were proven on arrival may not be.
     let resolved = if link_hash_set.is_none()
         && !persisted_provisional_hashes.is_empty()
-        && hash_set_proves_file(file.file_hash, file.size(), &persisted_provisional_hashes)
+        && PartHashSet::proves_file(file.file_hash, file.size(), &persisted_provisional_hashes)
     {
         ResolvedHashSet {
             authority: VerificationAuthority::PeerHashSet,

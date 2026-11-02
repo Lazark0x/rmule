@@ -82,12 +82,15 @@ pub enum RequesterCommand {
         file_size: u64,
     },
     /// Ask the peer for `file_hash`'s part hash set (`OP_HASHSETREQUEST`), once
-    /// per file on this connection; the answer arrives as `HashSetReceived`.
+    /// per file on this connection; the answer arrives as `HashSetReceived`,
+    /// or closes the link as `HashSetRefused` when it is not the file's own.
     /// Nothing waits on it here: which link asks, and when its slot ask
     /// follows, is the download's decision (ADR-0026).
     RequestHashSet {
         /// The file whose part hashes are wanted.
         file_hash: FileHash,
+        /// The file's size, which says how many hashes its set must hold.
+        file_size: u64,
     },
     /// Request a specific set of part ranges. Without a slot ask yet, this
     /// asks the probe (when none was asked) and then the slot once the probe
@@ -181,9 +184,10 @@ impl PeerSession {
                 file_hash,
                 file_size,
             } => self.handle_take_offered_slot(file_hash, file_size),
-            RequesterCommand::RequestHashSet { file_hash } => {
-                self.handle_request_hash_set(file_hash);
-            }
+            RequesterCommand::RequestHashSet {
+                file_hash,
+                file_size,
+            } => self.handle_request_hash_set(file_hash, file_size),
             RequesterCommand::RequestParts {
                 file_hash,
                 file_size,

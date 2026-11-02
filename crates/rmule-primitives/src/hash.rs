@@ -482,6 +482,16 @@ impl PartHashSet {
         // hash is the plain MD4 of its input.
         FileHash::from_bytes(ed2k::Ed2kBlue::digest(&listed).into()) == file_hash
     }
+
+    /// Whether `hashes` is the set of the file `file_hash` and `file_size`
+    /// name: the count the size implies, and [`Self::belongs_to`]. aMule's rule
+    /// for a received set, `CKnownFile::LoadHashsetFromFile(.., checkhash =
+    /// true)` (2.3.3 `src/KnownFile.cpp:522-542`). A set that fails it is
+    /// proven wrong by the file hash alone, no peer's word needed.
+    #[must_use]
+    pub fn proves_file(file_hash: FileHash, file_size: u64, hashes: &[PartHash]) -> bool {
+        Self::from_hashes(file_size, hashes.to_vec()).is_ok_and(|set| set.belongs_to(file_hash))
+    }
 }
 
 /// Everything hashing a file yields: its size, its eD2k file hash, and its

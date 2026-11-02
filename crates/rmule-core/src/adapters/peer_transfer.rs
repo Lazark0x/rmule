@@ -144,12 +144,17 @@ pub enum PeerWorkerEvent {
     /// A dialed worker's comes off its hello; an adopted inbound worker's is
     /// the one the accept side read off the same hello.
     Identity(PeerIdentity),
-    /// The peer answered `OP_HASHSETREQUEST`. These hashes are provisional
-    /// until the finished file's own hash confirms them.
+    /// The peer answered `OP_HASHSETREQUEST` with the file's own set: the
+    /// count its size implies, and the MD4 of the hashes is the file hash
+    /// (the session refuses any other). These hashes are provisional until
+    /// the finished file's own hash confirms them.
     HashSetReceived {
         /// The part hashes in part order.
         part_hashes: Vec<PartHash>,
     },
+    /// The peer's answer to `OP_HASHSETREQUEST` was not the file's own set:
+    /// the session closed the link on it, and this is the worker's end.
+    HashSetRefused,
     /// Our upload request (`OP_STARTUPLOADREQ`) left: the peer queues us,
     /// ranked or not (aMule `DS_ONQUEUE`, ADR-0090).
     SlotAsked,

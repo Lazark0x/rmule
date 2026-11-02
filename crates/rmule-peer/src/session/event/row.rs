@@ -136,6 +136,9 @@ fn requester_row(event: &RequesterEvent) -> EventRow {
         } => EventRow::new("hash_set_received", "HashSetReceived")
             .file(*file_hash)
             .plain("part_hash_count", part_hashes.len()),
+        RequesterEvent::HashSetRefused { file_hash } => {
+            EventRow::new("hash_set_refused", "HashSetRefused").file(*file_hash)
+        }
         RequesterEvent::QueueRanked { file_hash, rank } => {
             EventRow::new("queue_ranked", "QueueRanked")
                 .file(*file_hash)

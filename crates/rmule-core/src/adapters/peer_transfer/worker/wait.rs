@@ -10,7 +10,7 @@ use rmule_peer::{
     ConnectionEvent, FileProbeStatus, NoticeEvent, PeerCommand, PeerEvent, RequesterCommand,
     RequesterEvent, SlotReleaseReason,
 };
-use rmule_primitives::FileHash;
+use rmule_primitives::{Ed2kFileLink, FileHash};
 use tokio::sync::mpsc;
 
 use super::pipeline::Pipeline;
@@ -26,13 +26,14 @@ use crate::adapters::peer_transfer::{PeerWorkerCommand, PeerWorkerEvent};
 /// ends.
 pub(super) async fn await_probe(
     link: &mut WorkerLink<'_>,
-    file_hash: FileHash,
+    file: &Ed2kFileLink,
     timeout: Duration,
 ) -> Streamed {
+    let file_hash = file.file_hash;
     let event_tx = link.event_tx;
     let deadline = tokio::time::Instant::now() + timeout;
     let status = loop {
-        let event = match next_event(link, file_hash, deadline, None).await {
+        let event = match next_event(link, file, deadline, None).await {
             Ok(event) => event,
             // Never sent before the probe answers; served after it if it were.
             Err(Streamed::Handed | Streamed::GatherDue) => continue,
@@ -78,10 +79,11 @@ pub(super) async fn await_probe(
 /// wait as `Stalled`; `gather_due` ends it as `GatherDue`.
 pub(super) async fn next_event(
     link: &mut WorkerLink<'_>,
-    file_hash: FileHash,
+    file: &Ed2kFileLink,
     deadline: tokio::time::Instant,
     gather_due: Option<tokio::time::Instant>,
 ) -> Result<Option<PeerEvent>, Streamed> {
+    let file_hash = file.file_hash;
     loop {
         let aich_due = link.aich_due();
         tokio::select! {
@@ -105,7 +107,7 @@ pub(super) async fn next_event(
                 }
                 Some(PeerWorkerCommand::RequestHashSet) => {
                     let _ = link.cmd_tx
-                        .send(PeerCommand::Requester(RequesterCommand::RequestHashSet { file_hash }))
+                        .send(PeerCommand::Requester(RequesterCommand::RequestHashSet { file_hash, file_size: file.size() }))
                         .await;
                 }
                 Some(later @ PeerWorkerCommand::RequestBlocks { .. }) => {
@@ -322,6 +324,13 @@ pub(super) async fn forward_shared(
             {
                 return Err(Ended);
             }
+        }
+        // The session closed on it: the conviction is the worker's last word.
+        Some(PeerEvent::Requester(RequesterEvent::HashSetRefused { file_hash: refused }))
+            if refused == file_hash =>
+        {
+            let _ = event_tx.send(PeerWorkerEvent::HashSetRefused).await;
+            return Err(Ended);
         }
         Some(PeerEvent::Requester(RequesterEvent::SourcesReceived {
             file_hash: received,

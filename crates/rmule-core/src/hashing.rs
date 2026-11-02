@@ -38,23 +38,6 @@ pub(crate) fn resolve_hash_set_authority(
     }
 }
 
-/// Whether a peer-supplied part hash set is `file_hash`'s own: the count
-/// `file_size` implies, and — for a file with a set at all — the MD4 of the
-/// part hashes laid end to end equals the file hash. aMule's rule for a
-/// received set, `CKnownFile::LoadHashsetFromFile(.., checkhash = true)`
-/// (`src/KnownFile.cpp:521-543` at `4e8f2b3c`: the count at `:524`, the
-/// hash of the list at `:535-536` via `CreateHashFromHashlist`, `:787-799`).
-/// A set that fails it is proven wrong by the file hash alone — no peer's word
-/// needed — so its sender can be distrusted (ADR-0090 "A download holds each source under one
-/// owner").
-pub(crate) fn hash_set_proves_file(
-    file_hash: FileHash,
-    file_size: u64,
-    hashes: &[PartHash],
-) -> bool {
-    PartHashSet::from_hashes(file_size, hashes.to_vec()).is_ok_and(|set| set.belongs_to(file_hash))
-}
-
 /// The link's part hash set, when it is the file's own; `None` otherwise, so
 /// the first peer set proven against the file hash verifies the parts. aMule
 /// checks a link's set when the download is made from it

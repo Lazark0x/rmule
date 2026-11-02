@@ -17,8 +17,9 @@ use rmule_core::{
 };
 use rmule_peer::PeerHandshakeContext;
 use rmule_primitives::{
-    ClientId, Ed2kFileLink, Ed2kText, FileHash, FileHashSummary, Informant, Ipv4Endpoint,
-    PeerEndpoint, PeerSource, SafeFileName, ServerEndpoint, SourceLookupTarget, SourceSighting,
+    ClientId, Ed2kFileLink, Ed2kText, FileHash, FileHashSummary, Informant, Ipv4Endpoint, PartHash,
+    PartHashSet, PeerEndpoint, PeerSource, SafeFileName, ServerEndpoint, SourceLookupTarget,
+    SourceSighting,
 };
 use tokio::time::timeout;
 
@@ -144,7 +145,7 @@ impl PeerTransferService for StaticPeerTransfer {
     ) -> Result<PeerWorker, DownloadFailure> {
         Ok(scripted_worker(
             peer,
-            file.size(),
+            &file,
             self.outcome.clone(),
             PlanExpectation::Count(self.expected_plan_count),
         ))
@@ -170,7 +171,7 @@ impl PeerTransferService for PlanAssertingPeerTransfer {
     ) -> Result<PeerWorker, DownloadFailure> {
         Ok(scripted_worker(
             peer,
-            file.size(),
+            &file,
             self.outcome.clone(),
             PlanExpectation::Indexes(self.expected_plan_indexes.clone()),
         ))
@@ -270,6 +271,18 @@ enum PlanExpectation {
     Indexes(Vec<u32>),
 }
 
+/// What a worker reports of `hashes` answered for `file`: the session passes
+/// the file's own set and refuses any other.
+fn hash_set_answer(file: &Ed2kFileLink, hashes: Vec<PartHash>) -> PeerWorkerEvent {
+    if PartHashSet::proves_file(file.file_hash, file.size(), &hashes) {
+        PeerWorkerEvent::HashSetReceived {
+            part_hashes: hashes,
+        }
+    } else {
+        PeerWorkerEvent::HashSetRefused
+    }
+}
+
 /// A `PeerWorker` that connects, is granted its slot the moment it asks —
 /// an uploader with a free slot — answers the hash-set ask, or else its first
 /// `RequestBlocks`, with the outcome's hash set (when it has one), delivers
@@ -277,10 +290,12 @@ enum PlanExpectation {
 /// the runner shuts it down.
 fn scripted_worker(
     peer: PeerEndpoint,
-    file_size: u64,
+    file: &Ed2kFileLink,
     outcome: PeerDownloadOutcome,
     expectation: PlanExpectation,
 ) -> PeerWorker {
+    let file_size = file.size();
+    let hash_set_answer = hash_set_answer(file, outcome.peer_hashes.clone());
     let (command_tx, mut command_rx) = tokio::sync::mpsc::channel(8);
     let (event_tx, event_rx) = tokio::sync::mpsc::channel(16);
     tokio::spawn(async move {
@@ -296,11 +311,7 @@ fn scripted_worker(
                 PeerWorkerCommand::RequestHashSet => {
                     if !sent_hashes && !outcome.peer_hashes.is_empty() {
                         sent_hashes = true;
-                        let _ = event_tx
-                            .send(PeerWorkerEvent::HashSetReceived {
-                                part_hashes: outcome.peer_hashes.clone(),
-                            })
-                            .await;
+                        let _ = event_tx.send(hash_set_answer.clone()).await;
                     }
                 }
                 PeerWorkerCommand::RequestBlocks { blocks, handout } => {
@@ -311,11 +322,7 @@ fn scripted_worker(
                     }
                     if !sent_hashes && !outcome.peer_hashes.is_empty() {
                         sent_hashes = true;
-                        let _ = event_tx
-                            .send(PeerWorkerEvent::HashSetReceived {
-                                part_hashes: outcome.peer_hashes.clone(),
-                            })
-                            .await;
+                        let _ = event_tx.send(hash_set_answer.clone()).await;
                     }
                     emit_blocks(&event_tx, &outcome.parts, &blocks, handout).await;
                 }

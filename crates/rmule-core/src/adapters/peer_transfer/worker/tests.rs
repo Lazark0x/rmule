@@ -159,7 +159,7 @@ async fn a_probe_answered_with_no_file_reports_no_parts_and_nothing_after() {
         &mut worker_cmd_rx,
         Duration::from_secs(5),
     );
-    let probed = await_probe(&mut link, file.file_hash, Duration::from_secs(5)).await;
+    let probed = await_probe(&mut link, &file, Duration::from_secs(5)).await;
     assert!(matches!(probed, Streamed::WindDown));
     drop(event_tx);
     let mut reported = Vec::new();
@@ -574,7 +574,8 @@ async fn the_hash_set_ask_leaves_while_blocks_stream() {
     }
     assert!(
         sent.contains(&PeerCommand::Requester(RequesterCommand::RequestHashSet {
-            file_hash: file.file_hash
+            file_hash: file.file_hash,
+            file_size: file.size(),
         })),
         "{sent:?}"
     );
@@ -892,3 +893,28 @@ async fn out_of_part_requests_during_an_aich_wait_end_the_slot_at_once() {
 }
 
 mod gathered;
+
+/// A link closes on the set of one file; the worker of another file sharing
+/// it reads an ordinary end, and only the asker's download convicts.
+#[tokio::test]
+async fn a_refused_hash_set_ends_only_the_worker_that_asked() {
+    let (asked, other) = (FileHash::from_bytes([1; 16]), FileHash::from_bytes([2; 16]));
+    let refused = || {
+        Some(PeerEvent::Requester(RequesterEvent::HashSetRefused {
+            file_hash: asked,
+        }))
+    };
+    let (event_tx, mut events) = mpsc::channel(4);
+
+    assert!(matches!(
+        forward_shared(&event_tx, other, refused()).await,
+        Ok(Some(_))
+    ));
+    assert!(events.try_recv().is_err());
+
+    assert!(forward_shared(&event_tx, asked, refused()).await.is_err());
+    assert_eq!(
+        events.try_recv().ok(),
+        Some(PeerWorkerEvent::HashSetRefused)
+    );
+}

@@ -73,6 +73,7 @@ async fn main() -> Result<()> {
                 // The session asks a hash set only when told (ADR-0025).
                 conn.send(PeerCommand::Requester(RequesterCommand::RequestHashSet {
                     file_hash: file.file_hash,
+                    file_size: file.size(),
                 }))
                 .await
                 .ok();

@@ -87,6 +87,7 @@ async fn live_transfer_reaches_hash_set_received() {
                 identified = true;
                 conn.send(PeerCommand::Requester(RequesterCommand::RequestHashSet {
                     file_hash: file.file_hash,
+                    file_size: file.size(),
                 }))
                 .await
                 .ok();

@@ -39,6 +39,13 @@ pub enum RequesterEvent {
         /// every block that follows.
         part_hashes: Vec<PartHash>,
     },
+    /// The peer's `OP_HASHSETANSWER` was not the file's own set, and the link
+    /// closes on it. It names the file a close does not, so that the download
+    /// asking convicts its sender and another sharing the link does not.
+    HashSetRefused {
+        /// The file the refused set claimed to be.
+        file_hash: FileHash,
+    },
     /// Our `OP_STARTUPLOADREQ` for the file left: the uploader queues us, as
     /// aMule sets `DS_ONQUEUE` when it sends one (stock 2.3.3
     /// `DownloadClient.cpp:163-169`), whether or not a rank follows.

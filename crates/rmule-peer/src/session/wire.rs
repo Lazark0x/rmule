@@ -14,12 +14,12 @@
 use rmule_primitives::{Packet, SessionCore};
 
 use super::{PeerEvent, PeerSession, PeerViolation, State};
-use crate::NoticeEvent;
 use crate::capability::MiscOptions1;
 use crate::file_request::ExtendedRequests;
 use crate::opcode::PeerOpcode;
 use crate::packet::PeerPacket;
 use crate::software::SoftwareEvidence;
+use crate::{NoticeEvent, RequesterEvent};
 
 impl PeerSession {
     /// Append bytes from the socket, extract complete frames, and dispatch
@@ -92,6 +92,14 @@ impl PeerSession {
             }
         };
         if let Some(violation) = self.refused_as_unsolicited(&frame, &peer_packet) {
+            if let (PeerViolation::BadHashSet, PeerPacket::HashSetAnswer(answer)) =
+                (violation, &peer_packet)
+            {
+                self.core
+                    .push_event(PeerEvent::Requester(RequesterEvent::HashSetRefused {
+                        file_hash: answer.file_hash,
+                    }));
+            }
             self.close_protocol_violation(violation);
             return;
         }

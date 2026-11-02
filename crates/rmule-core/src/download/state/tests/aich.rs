@@ -495,16 +495,8 @@ fn a_hash_set_that_is_not_the_files_own_is_refused_and_its_sender_distrusted() {
     let mut state = two_part_state(&file);
     let _ = state.on_worker_event(t0(), peer(2), identified(FORGER));
     let _ = connect(&mut state, t0(), peer(2));
-    let mut forged = file.part_hash_set().expect("two parts").hashes().to_vec();
-    forged[0] = PartHash::from_bytes([0x22; 16]);
 
-    let out = state.on_worker_event(
-        t0(),
-        peer(2),
-        PeerWorkerEvent::HashSetReceived {
-            part_hashes: forged,
-        },
-    );
+    let out = state.on_worker_event(t0(), peer(2), PeerWorkerEvent::HashSetRefused);
 
     assert!(
         out.iter()

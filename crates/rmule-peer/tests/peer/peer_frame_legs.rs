@@ -10,11 +10,11 @@
 use crate::fixture::{identified_session, plain_hello_body};
 use rmule_peer::{
     Hello, NoticeEvent, PartRanges, PeerCloseReason, PeerCommand, PeerEvent, PeerOutput,
-    PeerSession, PeerViolation, RequesterCommand, ServerEvent, WireStatus,
+    PeerSession, PeerViolation, RequesterCommand, RequesterEvent, ServerEvent, WireStatus,
 };
 use rmule_primitives::session::drain;
-use rmule_primitives::{FileHash, Packet, PacketProtocol, UserHash};
-use rmule_testkit::peer_session::{ctx, peer};
+use rmule_primitives::{FileHash, FileHashSummary, Packet, PacketProtocol, PartHash, UserHash};
+use rmule_testkit::peer_session::{ctx, events, peer};
 
 use PacketProtocol::{Edonkey, Emule};
 
@@ -290,7 +290,8 @@ fn an_answer_about_the_asked_file_reads_only_what_it_takes() {
 }
 
 /// `ProcessHashSet`, `DownloadClient.cpp:576-578`: only a set this client is
-/// waiting for is read, so a second one closes too.
+/// waiting for is read, so a second one closes too. The asked one is the empty
+/// set a file below one part owns.
 #[test]
 fn an_unasked_hash_set_closes_and_an_asked_one_reads_past_its_hashes() {
     let answer = frame(Edonkey, 0x52, &with_file(&[0, 0, 9, 9]));
@@ -301,6 +302,7 @@ fn an_unasked_hash_set_closes_and_an_asked_one_reads_past_its_hashes() {
     let mut session = asking_session();
     session.handle_command(PeerCommand::Requester(RequesterCommand::RequestHashSet {
         file_hash: hash(FILE),
+        file_size: 9,
     }));
     let _ = drain(|| session.poll_output());
     assert_eq!(cost_of(&mut session, &answer), Keeps);
@@ -564,4 +566,69 @@ fn a_malformed_slot_ask_keeps_the_link_and_still_counts_as_an_ask() {
         PeerOutput::Event(PeerEvent::Server(ServerEvent::MalformedSlotAsk))
     )));
     assert!(!outputs.iter().any(|o| matches!(o, PeerOutput::Close(_))));
+}
+
+/// `ProcessHashSet`, `DownloadClient.cpp:580-584`, on the verdict of
+/// `LoadHashsetFromFile`, `KnownFile.cpp:522-542`: a set of the wrong count or
+/// whose MD4 is not the file hash throws, and the file's own is read.
+#[test]
+fn a_hash_set_that_is_not_the_files_own_closes_the_link() {
+    let bytes = vec![0x5A; 9_728_000 + 100];
+    let summary = FileHashSummary::digest_bytes(&bytes);
+    let file_hash = summary.file_hash();
+    let own = summary
+        .part_hash_set()
+        .expect("two parts")
+        .hashes()
+        .to_vec();
+    let answer = |hashes: &[PartHash]| {
+        let mut body = file_hash.as_bytes().to_vec();
+        body.extend_from_slice(&u16::try_from(hashes.len()).unwrap().to_le_bytes());
+        body.extend(hashes.iter().flat_map(|part| *part.as_bytes()));
+        frame(Edonkey, 0x52, &body)
+    };
+    let asked = || {
+        let mut session = identified_session();
+        session.handle_command(PeerCommand::Requester(RequesterCommand::RequestHashSet {
+            file_hash,
+            file_size: summary.file_size(),
+        }));
+        let _ = drain(|| session.poll_output());
+        session
+    };
+
+    let mut corrupt = own.clone();
+    corrupt[0] = PartHash::from_bytes([0x55; 16]);
+    for refused in [corrupt.as_slice(), &own[..1], &[]] {
+        let mut session = asked();
+        session.handle_bytes(&answer(refused).encode());
+        let outputs = drain(|| session.poll_output());
+        assert!(
+            matches!(
+                outputs.last(),
+                Some(PeerOutput::Close(PeerCloseReason::ProtocolViolation(
+                    PeerViolation::BadHashSet
+                )))
+            ),
+            "{} hashes: {outputs:?}",
+            refused.len()
+        );
+        let said: Vec<_> = events(&outputs);
+        assert!(
+            said.iter().any(|event| matches!(
+                event,
+                PeerEvent::Requester(RequesterEvent::HashSetRefused { file_hash: named })
+                    if *named == file_hash
+            )),
+            "{said:?}"
+        );
+        assert!(
+            !said.iter().any(|event| matches!(
+                event,
+                PeerEvent::Requester(RequesterEvent::HashSetReceived { .. })
+            )),
+            "{said:?}"
+        );
+    }
+    assert_eq!(cost_of(&mut asked(), &answer(&own)), Keeps);
 }

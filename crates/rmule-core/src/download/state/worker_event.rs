@@ -12,7 +12,7 @@ use crate::DownloadFailure;
 use crate::adapters::{PeerWorkerCommand, PeerWorkerEvent};
 use crate::assembly::{ArrivedPart, CellHash, PartAssembly};
 use crate::diagnostics::WorkerPhase;
-use crate::hashing::{hash_set_proves_file, resolve_hash_set_authority};
+use crate::hashing::resolve_hash_set_authority;
 use crate::service::{DownloadEvent, PeerRetirementReason, VerificationAuthority};
 
 use super::{Decision, DownloadState};
@@ -249,8 +249,9 @@ impl DownloadState {
                 self.reassign_workers(now, &mut out);
             }
             PeerWorkerEvent::HashSetReceived { part_hashes } => {
-                self.on_hash_set(now, peer, &part_hashes, &mut out);
+                self.on_hash_set(&part_hashes, &mut out);
             }
+            PeerWorkerEvent::HashSetRefused => self.on_hash_set_refused(now, peer, &mut out),
             // The runner takes a source-exchange answer at the wire boundary,
             // through the gate, as a sighting batch (`on_sightings`).
             PeerWorkerEvent::SourcesReceived { .. } => {}
@@ -498,35 +499,28 @@ impl DownloadState {
             })
             .collect()
     }
-    /// Adopt or reconcile a peer-supplied part hash set (ADR-0027). A set that
-    /// is not the file's own — its MD4 is not the file hash, aMule's
-    /// `LoadHashsetFromFile` rule — is refused and its sender retired and
-    /// distrusted: the file hash proves it wrong, whatever authority is in
-    /// force. A proven set is re-resolved against the link's own
-    /// hashes, persisted when it becomes the provisional authority, and
-    /// announced; one proven set can never contradict another.
-    fn on_hash_set(
-        &mut self,
-        now: Instant,
-        peer: PeerEndpoint,
-        part_hashes: &[PartHash],
-        out: &mut Vec<Decision>,
-    ) {
-        if !hash_set_proves_file(self.file_hash, self.file_size, part_hashes) {
-            self.distrust(peer, out);
-            out.push(Decision::Emit(DownloadEvent::PeerRetired {
-                download_id: self.download_id,
-                peer,
-                reason: PeerRetirementReason::VerificationAuthorityMismatch,
-            }));
-            self.release(
-                now,
-                peer,
-                PeerRetirementReason::VerificationAuthorityMismatch,
-                out,
-            );
-            return;
-        }
+    /// A set that was not the file's own closed `peer`'s link at the frame
+    /// seam: the file hash proves it wrong, whatever authority is in force, so
+    /// its sender is retired and distrusted and the ask passes on.
+    fn on_hash_set_refused(&mut self, now: Instant, peer: PeerEndpoint, out: &mut Vec<Decision>) {
+        self.distrust(peer, out);
+        out.push(Decision::Emit(DownloadEvent::PeerRetired {
+            download_id: self.download_id,
+            peer,
+            reason: PeerRetirementReason::VerificationAuthorityMismatch,
+        }));
+        self.release(
+            now,
+            peer,
+            PeerRetirementReason::VerificationAuthorityMismatch,
+            out,
+        );
+    }
+    /// Adopt or reconcile a peer's part hash set, proven the file's own at the
+    /// frame seam (ADR-0027). It is re-resolved against the link's own hashes,
+    /// persisted when it becomes the provisional authority, and announced; one
+    /// proven set can never contradict another.
+    fn on_hash_set(&mut self, part_hashes: &[PartHash], out: &mut Vec<Decision>) {
         match resolve_hash_set_authority(self.link_part_hash_set.as_ref(), Some(part_hashes)) {
             Ok(resolved) => {
                 self.resolved = resolved;

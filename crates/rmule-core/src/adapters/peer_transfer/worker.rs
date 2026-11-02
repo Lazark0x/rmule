@@ -293,7 +293,7 @@ async fn work_the_link(
     // source is never handed a part it lacks.
     let probed = match opening {
         WorkerOpening::Probe | WorkerOpening::ProbeOnLink => {
-            await_probe(&mut link, file.file_hash, slot_wait_timeout).await
+            await_probe(&mut link, file, slot_wait_timeout).await
         }
         WorkerOpening::Granted => Streamed::Next,
     };
@@ -339,7 +339,10 @@ async fn work_the_link(
                             file_hash,
                             file_size: file.size(),
                         },
-                        _ => RequesterCommand::RequestHashSet { file_hash },
+                        _ => RequesterCommand::RequestHashSet {
+                            file_hash,
+                            file_size: file.size(),
+                        },
                     };
                     if link.cmd_tx.send(PeerCommand::Requester(ask)).await.is_err() {
                         let _ = link.event_tx.send(PeerWorkerEvent::Disconnected).await;
@@ -548,7 +551,7 @@ async fn stream_blocks(
         // Bound every wait by the no-progress budget: a peer that grants can
         // stall sending nothing. The deadline resets whenever a block arrives
         // (below), so a healthy transfer is never cut off.
-        let event = match next_event(link, file_hash, progress_deadline, gathered.due()).await {
+        let event = match next_event(link, file, progress_deadline, gathered.due()).await {
             Ok(event) => event,
             // Blocks handed meanwhile queue behind the rest.
             Err(Streamed::Handed) => {

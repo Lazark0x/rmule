@@ -8,7 +8,7 @@ use rmule_peer::{
     RequesterEvent, SlotReleaseReason,
 };
 use rmule_primitives::session::drain;
-use rmule_primitives::{ED2K_PART_SIZE, FileHash, Packet, PartHash};
+use rmule_primitives::{ED2K_PART_SIZE, FileHash, FileHashSummary, Packet};
 use rmule_testkit::peer_session::*;
 
 /// A multi-part `RequestParts` asks the probe, then the slot the moment the
@@ -105,12 +105,14 @@ fn ask_slot_asks_once_with_no_part_and_no_hash_set() {
 /// moves no slot.
 #[test]
 fn request_hash_set_asks_once_and_moves_no_slot() {
-    let h = file_hash(0xC6);
+    let file = FileHashSummary::digest_bytes(&vec![0xC6; ED2K_PART_SIZE as usize + 1]);
+    let (h, file_size) = (file.file_hash(), file.file_size());
     let mut session = identified_session();
-    file_request_answered(&mut session, h, ED2K_PART_SIZE + 1);
+    file_request_answered(&mut session, h, file_size);
 
     session.handle_command(PeerCommand::Requester(RequesterCommand::RequestHashSet {
         file_hash: h,
+        file_size,
     }));
     let opcodes: Vec<u8> = writes(&drain(|| session.poll_output()))
         .iter()
@@ -119,10 +121,12 @@ fn request_hash_set_asks_once_and_moves_no_slot() {
     assert_eq!(opcodes, vec![0x51]);
     session.handle_command(PeerCommand::Requester(RequesterCommand::RequestHashSet {
         file_hash: h,
+        file_size,
     }));
     assert!(writes(&drain(|| session.poll_output())).is_empty());
 
-    session.handle_bytes(&hashset_answer(h, &[PartHash::from_bytes([0xDD; 16])]));
+    let own = file.part_hash_set().expect("two parts").hashes();
+    session.handle_bytes(&hashset_answer(h, own));
     let answered = drain(|| session.poll_output());
     assert!(writes(&answered).is_empty(), "no slot ask follows the set");
     assert!(events(&answered).iter().any(|e| matches!(

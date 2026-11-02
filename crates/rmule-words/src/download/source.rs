@@ -129,6 +129,7 @@ pub const fn violation_words(violation: PeerViolation) -> &'static str {
         PeerViolation::WrongFile => "it answered about a file nobody asked it about",
         PeerViolation::Unsolicited => "it answered something nobody asked",
         PeerViolation::PartCountMismatch => "it counted the wrong parts for the file",
+        PeerViolation::BadHashSet => "its part hashes were not the file's",
     }
 }
 

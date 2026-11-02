@@ -88,11 +88,14 @@ pub(super) enum ProbeState {
 pub(super) enum HashSetState {
     #[default]
     NotIssued,
-    Pending,
+    // Asked, of a file this size: what its answer is judged against.
+    Pending {
+        file_size: u64,
+    },
     // The hashes themselves are emitted on the wire-event channel
     // immediately; the session only remembers that they arrived, so a
-    // repeated `RequestHashSet` asks nothing. Verification is core's
-    // (ADR-0026), so the hashes are not kept here.
+    // repeated `RequestHashSet` asks nothing. What the hashes verify is
+    // core's (ADR-0026), so they are not kept here.
     Cached,
 }
 
@@ -651,7 +654,7 @@ impl PeerSession {
 
     /// `RequestHashSet`: ask the peer for `file_hash`'s part hash set, once per
     /// file on this connection. Its answer moves no slot (ADR-0026).
-    pub(super) fn handle_request_hash_set(&mut self, file_hash: FileHash) {
+    pub(super) fn handle_request_hash_set(&mut self, file_hash: FileHash, file_size: u64) {
         if !self.require_identified() {
             return;
         }
@@ -659,7 +662,7 @@ impl PeerSession {
         if !matches!(flow.hash_set, HashSetState::NotIssued) {
             return;
         }
-        flow.hash_set = HashSetState::Pending;
+        flow.hash_set = HashSetState::Pending { file_size };
         self.write_packet(HashSetRequest { file_hash }.encode_packet());
     }
 

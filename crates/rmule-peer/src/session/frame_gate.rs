@@ -9,12 +9,13 @@
 //! decoded packet, ahead of the event it would raise; the malformed path takes
 //! the frames no decoder could read.
 
-use rmule_primitives::{FileHash, Packet, PacketProtocol, part_count};
+use rmule_primitives::{FileHash, Packet, PacketProtocol, PartHashSet, part_count};
 
 use super::download::{HashSetState, SlotState};
 use super::{PeerEvent, PeerSession, PeerViolation, State};
 use crate::aich::HEADER_LEN as AICH_HEADER_LEN;
 use crate::error::{PeerPacketDecodeError, WireFault};
+use crate::hash_set::HashSetAnswer;
 use crate::hello::HelloRefusal;
 use crate::opcode::PeerOpcode;
 use crate::packet::PeerPacket;
@@ -86,15 +87,9 @@ impl PeerSession {
             PeerPacket::FileStatus(status) => self
                 .asked_about(status.file_hash)
                 .or_else(|| self.status_cut_short(frame, status)),
-            // `DownloadClient.cpp:573-578`: `m_fHashsetRequesting` falls when
-            // an answer lands, so a second one throws as a first unasked does.
-            PeerPacket::HashSetAnswer(answer) => self.asked_about(answer.file_hash).or_else(|| {
-                let pending = self
-                    .per_file
-                    .get(&answer.file_hash)
-                    .is_some_and(|flow| matches!(flow.hash_set, HashSetState::Pending));
-                (!pending).then_some(PeerViolation::Unsolicited)
-            }),
+            PeerPacket::HashSetAnswer(answer) => self
+                .asked_about(answer.file_hash)
+                .or_else(|| self.hash_set_refused(answer)),
             // `BaseClient.cpp:1178-1183`: a comment names no file, and throws
             // when the client has none.
             PeerPacket::FileDesc(_) => self.per_file.is_empty().then_some(PeerViolation::WrongFile),
@@ -115,6 +110,20 @@ impl PeerSession {
 
     fn asked_about(&self, file_hash: FileHash) -> Option<PeerViolation> {
         (!self.per_file.contains_key(&file_hash)).then_some(PeerViolation::WrongFile)
+    }
+
+    /// `DownloadClient.cpp:573-578`: `m_fHashsetRequesting` falls when an
+    /// answer lands, so a second one throws as a first unasked does. `:579-584`:
+    /// one that `LoadHashsetFromFile` refuses, the wrong count or a hash list
+    /// whose MD4 is not the file hash (`KnownFile.cpp:522-542`), throws too.
+    fn hash_set_refused(&self, answer: &HashSetAnswer) -> Option<PeerViolation> {
+        let flow = self.per_file.get(&answer.file_hash)?;
+        let HashSetState::Pending { file_size } = flow.hash_set else {
+            return Some(PeerViolation::Unsolicited);
+        };
+        let own =
+            PartHashSet::proves_file(answer.file_hash, file_size, answer.part_hashes.hashes());
+        (!own).then_some(PeerViolation::BadHashSet)
     }
 
     /// `ProcessFileStatus` reads the bitmap one part at a time up to the

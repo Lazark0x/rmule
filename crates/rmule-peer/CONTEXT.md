@@ -17,7 +17,7 @@ The half of a **Peer Session** that answers the remote peer's intent to download
 _Avoid_: upload session, seed side, served session
 
 **Peer Violation**:
-What a peer did that cost it the link: one stable code for each way aMule's handler throws, carried by the close and written as a sentence by the words module. The frame gate rules it before any leg acts: by when the frame came (*before hello*, *handshake unfinished*), then by who asked (*wrong file*, *unsolicited*), and only then by its body (*malformed frame*). A frame aMule logs and returns on is no violation.
+What a peer did that cost it the link: one stable code for each way aMule's handler throws, carried by the close and written as a sentence by the words module. The frame gate rules it before any leg acts: by when the frame came (*before hello*, *handshake unfinished*), then by who asked (*wrong file*, *unsolicited*), and only then by its body (*malformed frame*, and the *bad hash set* that is not the asked file's own). A frame aMule logs and returns on is no violation.
 _Avoid_: protocol error (a code, not a message), malformed (only one of the codes)
 
 **Wire Fault**:
