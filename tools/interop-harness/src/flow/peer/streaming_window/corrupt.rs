@@ -307,7 +307,9 @@ pub(crate) fn write(
         .iter()
         .filter(|ip| **ip != seed.ip)
         .count();
-    let convicted = retired.contains(&seed.ip) && distrusted.contains(&seed.ip);
+    // A seed that already gave its slot back is convicted with no worker to
+    // retire: the distrust is the conviction's own mark.
+    let convicted = distrusted.contains(&seed.ip);
     let within_limit = peers_of(&counted).contains(&seed.ip);
     let first = corrupt_records.first();
     let claims = vec![
