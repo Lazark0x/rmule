@@ -6,6 +6,23 @@ All notable changes to rmule are recorded here. The format follows
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-11-02
+
+Part files stay sparse and live in a Temp Directory, a download can be previewed
+and shared while it runs, and the terminal client is rebuilt around one way of
+typing, finding and acting. Under that, every rule rmule keeps with its peers was
+read again against aMule, and arrived data now survives a pause, a quit and a
+restart.
+
+### Upgrading
+
+- The store moves to version 19 at the first start, and earlier versions of rmule
+  then refuse it. Copy the data directory first if you may want to go back.
+- A store from before the first release needs one start of rmule 0.2.0 first; see
+  Store below.
+- Autoconnect is now on by default, and Shared Files' upload filter moved from `a`
+  to `f`.
+
 ### Bootstrap
 
 - A release carries a seed list. A first start lists its servers before any
@@ -89,16 +106,35 @@ All notable changes to rmule are recorded here. The format follows
 - Part files are sparse where the file system allows.
 - Parts are fetched by availability inside a streaming window, down to the
   block, with a bounded end game.
+- Arriving blocks reach the part file as they land, behind a write cache of
+  64 MiB. Pause, quit and a restart keep them, so nothing that arrived is fetched
+  again, and a bad block still fails its part. A download's memory no longer
+  grows with the parts in flight.
+- Quit gives each download up to 15 seconds to finish writing.
 - A file is shared from its first verified part, and a queued or paused
   download is offered again once it passes the offer check after a restart.
 - Preview hands a download's file to your player.
 - A Temp Directory holds part files, and `rmule-cli config set-temp-dir` sets
   it. Completed files move out of it when they finish.
+- A file past eD2k's 256 GiB limit is refused by the scan, unread, with its size
+  and the limit. A row stored before this rule is withheld.
 
 ### Peers
 
 - One peer holds one link and one place in a queue across several downloads,
   and rmule asks each source on one clock.
+- A malformed frame costs a link exactly where aMule's handler says it does: rmule
+  keeps the link on frames aMule tolerates, and closes it on frames aMule does
+  not. The log says why a link closed.
+
+### Speed
+
+- Shared Files stays near 1 ms a frame at 10,000 rows while traffic moves, and
+  every sorted table rebuilds only when what it reads has changed. Counters and
+  speeds now move on every tick, not at the next event.
+- A long search list takes its results in a fraction of the time.
+- Work on a download's sources follows what changed, not how many there are, and
+  a terminal that stops reading holds about 12 MiB rather than 69.
 
 ### Terminal
 
@@ -229,6 +265,7 @@ The first public release.
 - On Windows the data directory is `%LOCALAPPDATA%\rmule`, and the binaries
   link the C runtime statically.
 
-[Unreleased]: https://github.com/Lazark0x/rmule/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/Lazark0x/rmule/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/Lazark0x/rmule/releases/tag/v0.3.0
 [0.2.0]: https://github.com/Lazark0x/rmule/releases/tag/v0.2.0
 [0.1.0]: https://github.com/Lazark0x/rmule/releases/tag/v0.1.0

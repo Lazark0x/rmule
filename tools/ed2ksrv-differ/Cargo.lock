@@ -1602,7 +1602,7 @@ dependencies = [
 
 [[package]]
 name = "rmule-ed2k"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "flate2",
  "rmule-primitives",
@@ -1611,7 +1611,7 @@ dependencies = [
 
 [[package]]
 name = "rmule-primitives"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "crypto-bigint",
  "data-encoding",
