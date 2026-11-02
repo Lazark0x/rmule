@@ -60,15 +60,17 @@ pub(crate) fn copy_path(destination: &Path) -> PathBuf {
 /// Run `work` on the blocking pool and answer what it returned: the one way
 /// core's file work leaves the async threads. A panic in `work` resumes on
 /// the caller, as if it had run there; what the work itself can fail with is
-/// its own result's to say.
+/// its own result's to say. Work a runtime going down refuses never runs and
+/// answers nothing: the caller waits where it stands until the shutdown drops
+/// it, the quiet end every other task of a quit takes.
 pub(crate) async fn on_pool<T: Send + 'static>(work: impl FnOnce() -> T + Send + 'static) -> T {
     match tokio::task::spawn_blocking(work).await {
         Ok(done) => done,
         Err(error) => match error.try_into_panic() {
             Ok(panic) => std::panic::resume_unwind(panic),
             // The pool cancels only work it never started, as the runtime
-            // shuts down, when nothing awaits it any more.
-            Err(error) => unreachable!("the blocking pool cancelled work it took: {error}"),
+            // shuts down; a task already mid-poll still awaits it here.
+            Err(_cancelled) => std::future::pending().await,
         },
     }
 }
@@ -423,4 +425,48 @@ async fn remove_if_present(path: &Path) -> Result<(), CoreError> {
 
 fn io_error(error: std::io::Error) -> CoreError {
     CoreError::Repository(error.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    use super::on_pool;
+
+    /// Says on drop whether the task it sits in went down panicking.
+    struct EndWatch(mpsc::Sender<bool>);
+
+    impl Drop for EndWatch {
+        fn drop(&mut self) {
+            let _ = self.0.send(std::thread::panicking());
+        }
+    }
+
+    /// A task mid-poll when the runtime starts down is not stopped: its next
+    /// `spawn_blocking` answers cancelled, and that must end it as any other
+    /// quit does.
+    #[test]
+    fn work_refused_by_a_runtime_going_down_ends_the_task_quietly() {
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .build()
+            .expect("runtime");
+        let (polling, in_poll) = mpsc::channel();
+        let (down, runtime_down) = mpsc::channel::<()>();
+        let (ended, end) = mpsc::channel();
+        runtime.spawn(async move {
+            let _watch = EndWatch(ended);
+            polling.send(()).expect("the test waits");
+            runtime_down.recv().expect("the test says");
+            on_pool(|| ()).await;
+        });
+        in_poll.recv().expect("the task polls");
+        runtime.shutdown_background();
+        down.send(()).expect("the task waits");
+        let panicked = end
+            .recv_timeout(Duration::from_secs(5))
+            .expect("the task ends");
+        assert!(!panicked, "a quit is not a panic");
+    }
 }
